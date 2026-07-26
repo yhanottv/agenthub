@@ -18,3 +18,7 @@ npm-debug.log*
 Thumbs.db
 .idea/
 .vscode/
+
+# Configuration locale d'outils (peut contenir des jetons)
+.claude/
+.cursor/
