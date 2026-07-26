@@ -1,0 +1,7 @@
+# Le projet tourne dans un conteneur Linux : on garde des fins de ligne LF
+# dans le dépôt, quelle que soit la machine qui commite.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary

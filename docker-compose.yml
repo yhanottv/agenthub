@@ -1,0 +1,59 @@
+services:
+  agenthub:
+    build: .
+    image: agenthub:latest
+    container_name: agenthub
+    restart: unless-stopped
+    environment:
+      PORT: "8090"
+      DATA_DIR: /data
+
+      # Ces variables n'amorcent la base qu'au TOUT PREMIER démarrage.
+      # Ensuite les fournisseurs se gèrent depuis Réglages → Fournisseurs,
+      # et c'est la base de données qui fait foi.
+      HERMES_API_URL: ${HERMES_API_URL:-http://hermes-agent:8642}
+      HERMES_API_KEY: ${HERMES_GATEWAY_API_KEY:-}
+      HERMES_MODEL: ${HERMES_MODEL:-hermes-agent}
+
+      AGENTROUTER_API_URL: ${AGENTROUTER_API_URL:-}
+      AGENTROUTER_API_KEY: ${AGENTROUTER_API_KEY:-}
+      AGENTROUTER_MODEL: ${AGENTROUTER_MODEL:-}
+
+      # Fournisseur utilisé par les agents qui n'en précisent pas.
+      DEFAULT_PROVIDER: ${AGENTHUB_DEFAULT_PROVIDER:-hermes}
+
+      # Refuse de démarrer si ces deux-là ne sont pas définis : un mot de passe
+      # ou un secret de session par défaut serait une porte ouverte.
+      APP_PASSWORD: ${AGENTHUB_PASSWORD:?definis AGENTHUB_PASSWORD dans .env}
+      APP_SECRET: ${AGENTHUB_SECRET:?definis AGENTHUB_SECRET dans .env}
+    volumes:
+      - agenthub-data:/data
+    ports:
+      - "8090:8090"
+
+    # ───────────────────────────────────────────────────────────────────────
+    # Hermes tourne déjà quelque part ? Attache AgentHub à son réseau pour
+    # qu'il puisse le joindre par son nom de conteneur, et décommente le bloc
+    # `networks:` en bas du fichier :
+    #
+    # networks:
+    #   - hermes-net
+    #
+    # Derrière Traefik ? Retire la section `ports:` ci-dessus — sinon le
+    # service reste joignable en HTTP clair — et décommente :
+    #
+    # labels:
+    #   - traefik.enable=true
+    #   - traefik.http.routers.agenthub.rule=Host(`agenthub.${TRAEFIK_HOST}`)
+    #   - traefik.http.routers.agenthub.entrypoints=websecure
+    #   - traefik.http.routers.agenthub.tls.certresolver=letsencrypt
+    #   - traefik.http.services.agenthub.loadbalancer.server.port=8090
+    # ───────────────────────────────────────────────────────────────────────
+
+# networks:
+#   hermes-net:
+#     external: true
+#     name: <nom-reel-du-reseau-docker-d-hermes>
+
+volumes:
+  agenthub-data:

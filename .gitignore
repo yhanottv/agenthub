@@ -1,0 +1,20 @@
+# Secrets — ne JAMAIS committer
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Données locales
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Dépendances et bruit
+node_modules/
+npm-debug.log*
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
