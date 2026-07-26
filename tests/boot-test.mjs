@@ -22,7 +22,9 @@ process.env.DATA_DIR = DATA_DIR;
 delete process.env.APP_PASSWORD;
 delete process.env.APP_SECRET;
 process.env.HERMES_API_URL = 'http://127.0.0.1:9';   // unused, never called
-process.env.AGENTROUTER_API_KEY = 'test-key-boot';
+process.env.HERMES_API_KEY = 'test-key-boot';
+// AGENTROUTER_API_KEY deliberately unset: an unconfigured service must NOT be seeded.
+delete process.env.AGENTROUTER_API_KEY;
 
 let pass = 0, fail = 0;
 const ok = (label, cond, extra = '') => {
@@ -122,7 +124,7 @@ cookie = (reLogin.headers.get('set-cookie') || '').split(';')[0];
 const state = await fetch(`${base}/api/state`, { headers: { cookie } }).then((r) => r.json());
 ok('state exposes a seeded org', state.agents.length > 0 && state.channels.length > 0,
   `${state.agents.length} agents / ${state.channels.length} channels`);
-ok('state exposes the provider catalogue', Array.isArray(state.providers) && state.providers.length === 2,
+ok('state exposes the provider catalogue', Array.isArray(state.providers) && state.providers.length === 1,
   JSON.stringify(state.providers && state.providers.map((p) => p.id)));
 ok('no API key reaches the client', !JSON.stringify(state).includes('test-key-boot'));
 
@@ -157,7 +159,22 @@ await fetch(`${base}/api/setup/complete`, { method: 'POST', headers: { cookie } 
 const setup2 = await fetch(`${base}/api/setup`, { headers: { cookie } }).then((r) => r.json());
 ok('completing the wizard is remembered', setup2.done === true);
 
-const provList = await fetch(`${base}/api/providers`, { headers: { cookie } }).then((r) => r.json());
+// A fresh install on someone else's machine must not inherit a provider that
+// points at infrastructure only the author runs.
+const seeded = await fetch(`${base}/api/providers`, { headers: { cookie } }).then((r) => r.json());
+const seededIds = seeded.providers.map((p) => p.id);
+ok('a keyless install seeds Hermes only', seededIds.length === 1 && seededIds[0] === 'hermes',
+  JSON.stringify(seededIds));
+ok('no provider points at the author private proxy',
+  !seeded.providers.some((p) => /agentrouter-proxy/.test(p.base)),
+  JSON.stringify(seeded.providers.map((p) => p.base)));
+// What matters is that a fresh install never phones home to anything the
+// author runs — not the exact shape of the URL.
+ok('the seeded Hermes points at nothing public',
+  !/hstgr|\.cloud|agentrouter\.org|147\.93\./i.test(seeded.providers[0].base),
+  seeded.providers[0].base);
+
+const provList = seeded;
 ok('providers endpoint exposes presets', Array.isArray(provList.presets) && provList.presets.length >= 4,
   `${(provList.presets || []).length} presets`);
 ok('presets include OpenRouter', (provList.presets || []).some((p) => p.id === 'openrouter'));

@@ -61,18 +61,18 @@ au clavier, mobile, `prefers-reduced-motion`.
 
 ### Ce qu'il te faut
 
-- **Docker** avec Compose (la voie recommandée) — ou Node ≥ 20 en direct
-- **Un service de modèles** compatible OpenAI. Au choix :
-  - une clé [OpenRouter](https://openrouter.ai) — le plus simple pour démarrer,
-    des centaines de modèles derrière une seule clé ;
-  - une clé OpenAI, Groq, Together… ;
-  - [Ollama](https://ollama.com) en local, sans clé ni connexion sortante ;
-  - un gateway [Nous Hermes Agent](https://github.com/NousResearch/hermes-agent)
-    si tu en as déjà un.
+- **Ton propre serveur** — un VPS, une machine locale, peu importe. AgentHub
+  s'installe chez toi et ne dépend d'aucun service hébergé par qui que ce soit.
+- **Docker** avec Compose (la voie recommandée) — ou Node ≥ 20 en direct.
+- **Un service de modèles** compatible OpenAI :
+  - [Nous Hermes Agent](https://github.com/NousResearch/hermes-agent) sur le même
+    serveur — le compagnon pour lequel AgentHub est pensé ;
+  - ou une clé [OpenRouter](https://openrouter.ai), OpenAI, Groq, Together… ;
+  - ou [Ollama](https://ollama.com) en local, sans clé ni connexion sortante.
 
-Tu n'as **pas** besoin d'Hermes : AgentHub fonctionne avec n'importe lequel de ces
-services. Hermes apporte simplement en plus sa continuité de session, ses outils et
-sa mémoire persistante.
+Hermes n'est pas obligatoire, mais c'est lui qui apporte la continuité de session,
+ses outils et sa mémoire persistante. Le reste du guide part du principe que tu l'as
+déjà sur ton serveur.
 
 ### En deux commandes
 
@@ -85,13 +85,36 @@ docker compose up -d --build
 C'est tout. **Aucun fichier de configuration à créer.**
 
 Ouvre **http://localhost:8090** : le site te demande de choisir ton mot de passe, puis
-un assistant te fait brancher un service de modèles. Le secret de session est généré
+un assistant te fait brancher ton service de modèles. Le secret de session est généré
 tout seul au premier démarrage et conservé dans la base.
 
 > ⚠️ **Prends la main tout de suite.** Tant que personne n'a choisi de mot de passe,
 > le premier visiteur peut le faire. Ouvre l'application depuis ta machine avant
 > d'exposer le port sur Internet. Une fois le mot de passe défini, toute nouvelle
 > tentative est refusée.
+
+### Si Hermes tourne déjà sur ce serveur
+
+C'est le cas le plus courant, et **la seule étape qui demande un peu d'attention**.
+Les deux conteneurs doivent partager un réseau Docker, sinon AgentHub ne peut pas
+joindre Hermes par son nom.
+
+Trouve le réseau d'Hermes :
+
+```bash
+docker inspect <conteneur-hermes> \
+  --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}'
+```
+
+Décommente ensuite les deux blocs `networks:` de `docker-compose.yml` en y mettant ce
+nom, puis relance `docker compose up -d`.
+
+Il te faudra aussi la clé du gateway Hermes : c'est la valeur de `API_SERVER_KEY`
+dans sa configuration. L'assistant te la demande à l'étape 2, teste la connexion et
+liste les modèles disponibles.
+
+> Si le nom de ton conteneur n'est pas `hermes-agent` ou si son port n'est pas 8642,
+> corrige simplement l'URL depuis l'assistant — rien n'est figé dans le code.
 
 ### Sans Docker
 
@@ -111,16 +134,12 @@ le mot de passe circule en clair. Le fichier contient les labels
 [Traefik](https://traefik.io) prêts à décommenter ; avec Caddy ou nginx, fais pointer
 le proxy sur le port 8090 du conteneur.
 
-### À côté d'un Hermes existant
+### Où vivent tes données
 
-Si Hermes tourne déjà en Docker, attache AgentHub à son réseau pour qu'il le joigne
-par son nom de conteneur. Trouve le nom du réseau :
-
-```bash
-docker inspect <conteneur-hermes> --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}'
-```
-
-Puis décommente les blocs `networks:` dans `docker-compose.yml` en y mettant ce nom.
+Tout reste chez toi : la base SQLite dans un volume Docker, les clés API dans cette
+base, les conversations aussi. AgentHub ne contacte que les services de modèles que
+tu as toi-même configurés. Aucune télémétrie, aucun serveur central, rien qui
+remonte à l'auteur du projet.
 
 ---
 

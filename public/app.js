@@ -1347,9 +1347,18 @@ function wizHermes(s) {
       </div>
       ${h.reachable ? '' : `
         <div class="wiz-help">
-          <strong>Pistes :</strong> vérifie que le conteneur tourne
-          (<code>docker ps | grep hermes</code>), que l'URL est correcte, et que la clé
-          correspond à <code>API_SERVER_KEY</code> côté Hermes.
+          <strong>Dans l'ordre :</strong>
+          <ol style="margin:8px 0 0;padding-left:20px;line-height:1.75">
+            <li>Hermes tourne-t-il ? <code>docker ps | grep hermes</code></li>
+            <li><strong>Les deux conteneurs partagent-ils un réseau ?</strong> C'est la
+              cause la plus fréquente : sans réseau commun, le nom
+              <code>hermes-agent</code> ne résout pas. Décommente le bloc
+              <code>networks:</code> de <code>docker-compose.yml</code> avec le nom
+              renvoyé par&nbsp;:<br>
+              <code>docker inspect &lt;conteneur-hermes&gt; --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}'</code></li>
+            <li>L'URL correspond-elle au nom réel du conteneur et à son port&nbsp;?</li>
+            <li>La clé correspond-elle à <code>API_SERVER_KEY</code> côté Hermes&nbsp;?</li>
+          </ol>
         </div>`}
       <button class="btn ghost" id="wiz-h-edit" type="button" style="margin-top:14px">Configurer Hermes</button>
       <button class="btn ghost" id="wiz-h-retry" type="button" style="margin-top:14px">Revérifier</button>`,

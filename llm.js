@@ -19,8 +19,9 @@ export const PRESETS = [
   },
   {
     id: 'agentrouter', label: 'AgentRouter', base_url: 'http://agentrouter-proxy:8318/v1',
-    hint: 'Modèles Claude via ton proxy local. Rapide, sans la couche Hermes.',
-    needs_key: true, local: true,
+    hint: "Modèles Claude. Suppose un conteneur proxy `agentrouter-proxy` que tu fais "
+        + "tourner toi-même — adapte l'URL si le tien est ailleurs.",
+    needs_key: true,
   },
   {
     id: 'openrouter', label: 'OpenRouter', base_url: 'https://openrouter.ai/api/v1',
@@ -46,7 +47,15 @@ export const PRESETS = [
   },
 ];
 
-/** Seed the provider table from env the first time the app boots. */
+/**
+ * Seed the provider table from env the first time the app boots.
+ *
+ * Only Hermes is created unconditionally: it is the companion this app is
+ * designed to sit next to, and the setup wizard needs an entry to probe and
+ * configure. Everything else is created ONLY when actually configured —
+ * otherwise a fresh install on someone else's VPS would inherit a dead
+ * provider pointing at a container that exists nowhere but the author's box.
+ */
 export function seedProvidersFromEnv() {
   if (Providers.count() > 0) return 0;
   let n = 0;
@@ -63,8 +72,14 @@ export function seedProvidersFromEnv() {
     });
     n++;
   };
-  seed('hermes', process.env.HERMES_API_KEY, process.env.HERMES_API_URL, process.env.HERMES_MODEL || 'hermes-agent');
-  seed('agentrouter', process.env.AGENTROUTER_API_KEY, process.env.AGENTROUTER_API_URL, process.env.AGENTROUTER_MODEL);
+
+  seed('hermes', process.env.HERMES_API_KEY, process.env.HERMES_API_URL,
+    process.env.HERMES_MODEL || 'hermes-agent');
+
+  if (process.env.AGENTROUTER_API_KEY) {
+    seed('agentrouter', process.env.AGENTROUTER_API_KEY, process.env.AGENTROUTER_API_URL,
+      process.env.AGENTROUTER_MODEL);
+  }
   return n;
 }
 
