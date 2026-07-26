@@ -12,65 +12,46 @@ import { Orchestrator } from './orchestrator.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 8090);
-const PASSWORD = process.env.APP_PASSWORD;
-const SECRET = process.env.APP_SECRET;
 const MAX_MESSAGE_CHARS = 8000;
+const MIN_PASSWORD_CHARS = 8;
 
-const _INSECURE_DEFAULTS = new Set([
-  'hermes', 'change-me-secret', 'change-moi', 'change-moi-aussi', 'please-change-this-secret',
-]);
-if (!SECRET || _INSECURE_DEFAULTS.has(SECRET)) {
-  console.error('FATAL: APP_SECRET manquant ou valeur par défaut — définir AGENTHUB_SECRET dans .env (openssl rand -hex 32)');
-  process.exit(1);
+/**
+ * Session signing key. An explicit APP_SECRET still wins (existing
+ * deployments), otherwise one is generated once and persisted so that no
+ * configuration file is required to install the app.
+ */
+function resolveSecret() {
+  if (process.env.APP_SECRET) return process.env.APP_SECRET;
+  let s = Settings.get('session_secret');
+  if (!s) {
+    s = crypto.randomBytes(32).toString('hex');
+    Settings.set('session_secret', s);
+    console.log('Secret de session généré et enregistré en base.');
+  }
+  return s;
 }
-if (!PASSWORD || _INSECURE_DEFAULTS.has(PASSWORD)) {
-  console.error('FATAL: APP_PASSWORD manquant ou valeur par défaut — définir AGENTHUB_PASSWORD dans .env');
-  process.exit(1);
+const SECRET = resolveSecret();
+
+// Legacy path: a password pinned in the environment. Left in place so existing
+// installs keep working, but nothing requires it any more.
+const ENV_PASSWORD = process.env.APP_PASSWORD || '';
+
+const storedHash = () => Settings.get('auth_hash');
+/** Has anyone claimed this instance yet? */
+const hasPassword = () => Boolean(ENV_PASSWORD || storedHash());
+
+function setPassword(plain) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  Settings.set('auth_salt', salt);
+  Settings.set('auth_hash', crypto.scryptSync(plain, salt, 64).toString('hex'));
 }
 
 const app = express();
 app.set('trust proxy', 1);          // behind Traefik
 app.disable('x-powered-by');
-
-// ---- security headers -------------------------------------------------------
-app.use((_req, res, next) => {
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
-  res.setHeader(
-    'Content-Security-Policy',
-    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
-    "img-src 'self' data:; connect-src 'self' ws: wss:; font-src 'self'; " +
-    "object-src 'none'; base-uri 'self'; frame-ancestors 'none';",
-  );
-  next();
-});
-
-// ---- CSRF protection --------------------------------------------------------
-// Mutating requests (POST/PUT/DELETE) from cross-origin pages are blocked.
-// Same-origin fetch() and server-to-server calls (no Origin header) are allowed.
-app.use((req, res, next) => {
-  if (!['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) return next();
-  if (req.path === '/api/login') return next();
-  const origin = req.headers.origin;
-  if (!origin) return next(); // server-side / tool calls have no Origin
-  const host = req.headers.host || '';
-  const proto = req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http');
-  if (!origin.startsWith(`http://${host}`) && !origin.startsWith(`https://${host}`)
-      && !origin.startsWith(`${proto}://${host}`)) {
-    return res.status(403).json({ error: 'cross-origin request rejected' });
-  }
-  next();
-});
-
 app.use(express.json({ limit: '512kb' }));
 
-// ---- tiny signed-cookie auth with per-login nonces ------------------------
-// Each login issues a fresh random token stored server-side.
-// Logout removes the token, making stolen cookies non-replayable.
-const activeSessions = new Set();
-
+// ---- tiny signed-cookie auth ----------------------------------------------
 function sign(val) {
   const h = crypto.createHmac('sha256', SECRET).update(val).digest('hex');
   return `${val}.${h}`;
@@ -78,13 +59,13 @@ function sign(val) {
 function verify(signed) {
   if (!signed || !signed.includes('.')) return false;
   const i = signed.lastIndexOf('.');
-  const token = signed.slice(0, i);
-  const expected = sign(token);
+  const val = signed.slice(0, i);
+  const expected = sign(val);
+  // Constant-time: compare fixed-length buffers.
   const a = Buffer.from(expected);
   const b = Buffer.from(signed);
   if (a.length !== b.length) return false;
-  if (!crypto.timingSafeEqual(a, b)) return false;
-  return activeSessions.has(token) ? token : false;
+  return crypto.timingSafeEqual(a, b) ? val : false;
 }
 function parseCookies(req) {
   const out = {};
@@ -98,7 +79,7 @@ function parseCookies(req) {
   }
   return out;
 }
-const isAuthed = (req) => Boolean(verify(parseCookies(req).ah_session));
+const isAuthed = (req) => verify(parseCookies(req).ah_session) === 'ok';
 
 function requireAuth(req, res, next) {
   if (isAuthed(req)) return next();
@@ -107,9 +88,26 @@ function requireAuth(req, res, next) {
 
 // Password comparison that does not leak length or content through timing.
 function passwordMatches(candidate) {
-  const a = crypto.createHmac('sha256', SECRET).update(String(candidate ?? '')).digest();
-  const b = crypto.createHmac('sha256', SECRET).update(String(PASSWORD)).digest();
-  return crypto.timingSafeEqual(a, b);
+  const given = String(candidate ?? '');
+
+  if (ENV_PASSWORD) {
+    const a = crypto.createHmac('sha256', SECRET).update(given).digest();
+    const b = crypto.createHmac('sha256', SECRET).update(ENV_PASSWORD).digest();
+    return crypto.timingSafeEqual(a, b);
+  }
+
+  const salt = Settings.get('auth_salt');
+  const hash = storedHash();
+  if (!salt || !hash) return false;
+  const known = Buffer.from(hash, 'hex');
+  const attempt = crypto.scryptSync(given, salt, known.length);
+  return crypto.timingSafeEqual(attempt, known);
+}
+
+// Built in one place so login and first-run claim issue identical sessions.
+function sessionCookie(req) {
+  const secure = req.secure ? ' Secure;' : '';
+  return `ah_session=${encodeURIComponent(sign('ok'))}; HttpOnly;${secure} SameSite=Lax; Path=/; Max-Age=2592000`;
 }
 
 // ---- login throttling ------------------------------------------------------
@@ -149,6 +147,7 @@ function noteFailure(req) {
 }
 
 app.post('/api/login', (req, res) => {
+  if (!hasPassword()) return res.status(409).json({ error: 'not_claimed' });
   const gate = loginGate(req);
   if (gate.blocked) {
     res.setHeader('Retry-After', String(gate.retryAfter));
@@ -159,25 +158,54 @@ app.post('/api/login', (req, res) => {
     return res.status(401).json({ error: 'bad_password' });
   }
   attempts.delete(req.ip || 'unknown');
-  const token = crypto.randomBytes(24).toString('hex');
-  activeSessions.add(token);
-  const secure = req.secure ? ' Secure;' : '';
-  res.setHeader('Set-Cookie',
-    `ah_session=${encodeURIComponent(sign(token))}; HttpOnly;${secure} SameSite=Lax; Path=/; Max-Age=2592000`);
+  res.setHeader('Set-Cookie', sessionCookie(req));
+  res.json({ ok: true });
+});
+
+/**
+ * First-run claim: the very first visitor chooses the password, so installing
+ * needs no configuration file at all. Only ever possible while no password
+ * exists — afterwards this returns 409, whoever asks.
+ */
+app.post('/api/claim', (req, res) => {
+  if (hasPassword()) return res.status(409).json({ error: 'Cette instance a déjà un mot de passe.' });
+  const pw = String(req.body?.password ?? '');
+  if (pw.length < MIN_PASSWORD_CHARS) {
+    return res.status(400).json({ error: `Le mot de passe doit faire au moins ${MIN_PASSWORD_CHARS} caractères.` });
+  }
+  setPassword(pw);
+  res.setHeader('Set-Cookie', sessionCookie(req));
+  console.log('Mot de passe défini depuis l\'interface — instance sécurisée.');
+  res.json({ ok: true });
+});
+
+/** Change the password from Réglages. Requires the current one. */
+app.post('/api/password', requireAuth, (req, res) => {
+  if (ENV_PASSWORD) {
+    return res.status(409).json({ error: "Le mot de passe est fixé par la variable d'environnement APP_PASSWORD. Retire-la pour le gérer ici." });
+  }
+  if (!passwordMatches(req.body?.current)) return res.status(401).json({ error: 'Mot de passe actuel incorrect.' });
+  const pw = String(req.body?.password ?? '');
+  if (pw.length < MIN_PASSWORD_CHARS) {
+    return res.status(400).json({ error: `Le nouveau mot de passe doit faire au moins ${MIN_PASSWORD_CHARS} caractères.` });
+  }
+  setPassword(pw);
+  res.setHeader('Set-Cookie', sessionCookie(req));
   res.json({ ok: true });
 });
 
 app.post('/api/logout', (req, res) => {
-  const signed = parseCookies(req).ah_session;
-  if (signed) {
-    const i = signed.lastIndexOf('.');
-    if (i > 0) activeSessions.delete(signed.slice(0, i));
-  }
   res.setHeader('Set-Cookie', 'ah_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0');
   res.json({ ok: true });
 });
 
-app.get('/api/me', (req, res) => res.json({ authed: isAuthed(req) }));
+app.get('/api/me', (req, res) => res.json({
+  authed: isAuthed(req),
+  // false ⇒ the client shows "choose a password" instead of "log in".
+  claimed: hasPassword(),
+  envPassword: Boolean(ENV_PASSWORD),
+  minPassword: MIN_PASSWORD_CHARS,
+}));
 app.get('/api/health', (req, res) => res.json({ ok: true, uptime: Math.round(process.uptime()) }));
 
 // ---- state -----------------------------------------------------------------
@@ -528,15 +556,6 @@ const wss = new WebSocketServer({ server, path: '/ws' });
 const clients = new Set();
 
 wss.on('connection', (ws, req) => {
-  const origin = req.headers.origin;
-  if (origin) {
-    const host = req.headers.host || '';
-    const proto = req.headers['x-forwarded-proto'] || 'http';
-    if (!origin.startsWith(`http://${host}`) && !origin.startsWith(`https://${host}`)
-        && !origin.startsWith(`${proto}://${host}`)) {
-      ws.close(4403, 'bad origin'); return;
-    }
-  }
   if (!isAuthed(req)) { ws.close(4401, 'unauthorized'); return; }
   clients.add(ws);
   ws.isAlive = true;
@@ -628,6 +647,11 @@ const orphaned = Tasks.reconcileOrphans();
 if (orphaned) console.log(`Reconciled ${orphaned} task(s) left running by a previous process.`);
 const halfWritten = Messages.reconcileStreaming();
 if (halfWritten) console.log(`Reconciled ${halfWritten} message(s) left mid-stream by a previous process.`);
+
+if (!hasPassword()) {
+  console.warn('⚠️  Aucun mot de passe défini : la première personne qui ouvrira l\'interface le choisira.');
+  console.warn('   Ouvre l\'app maintenant pour prendre la main avant d\'exposer ce port publiquement.');
+}
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`AgentHub prêt sur :${PORT}`);

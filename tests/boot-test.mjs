@@ -17,8 +17,10 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 
 process.env.PORT = String(PORT);
 process.env.DATA_DIR = DATA_DIR;
-process.env.APP_PASSWORD = PASSWORD;
-process.env.APP_SECRET = 'boot-test-secret';
+// Deliberately NO password and NO secret: a fresh install must come up with
+// zero configuration and let the first visitor claim it.
+delete process.env.APP_PASSWORD;
+delete process.env.APP_SECRET;
 process.env.HERMES_API_URL = 'http://127.0.0.1:9';   // unused, never called
 process.env.AGENTROUTER_API_KEY = 'test-key-boot';
 
@@ -44,14 +46,78 @@ for (let i = 0; i < 50; i++) {
 ok('server listens and answers /api/health', up);
 if (!up) process.exit(1);
 
-// A fresh database must seed itself.
+// ---- first-run claim -------------------------------------------------------
+const me0 = await fetch(`${base}/api/me`).then((r) => r.json());
+ok('a fresh install reports itself as unclaimed', me0.claimed === false, JSON.stringify(me0));
+ok('and advertises the minimum password length', me0.minPassword >= 8);
+
+const tooShort = await fetch(`${base}/api/claim`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ password: 'court' }),
+});
+ok('a short password is refused', tooShort.status === 400, `status ${tooShort.status}`);
+
+const loginBeforeClaim = await fetch(`${base}/api/login`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ password: PASSWORD }),
+});
+ok('logging in before claiming is impossible', loginBeforeClaim.status === 409,
+  `status ${loginBeforeClaim.status}`);
+
+const claim = await fetch(`${base}/api/claim`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ password: PASSWORD }),
+});
+ok('the first visitor can claim the instance', claim.status === 200, `status ${claim.status}`);
+let cookie = (claim.headers.get('set-cookie') || '').split(';')[0];
+ok('claiming logs you straight in', Boolean(cookie));
+
+const secondClaim = await fetch(`${base}/api/claim`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ password: 'attacker-password' }),
+});
+ok('A SECOND CLAIM IS REFUSED', secondClaim.status === 409, `status ${secondClaim.status}`);
+
+const me1 = await fetch(`${base}/api/me`).then((r) => r.json());
+ok('the instance now reports itself as claimed', me1.claimed === true);
+
+// The password must be stored hashed, never in the clear.
+const dump = fs.readFileSync(`${DATA_DIR}/agenthub.db`, 'latin1');
+ok('THE PASSWORD IS NOT STORED IN THE CLEAR', !dump.includes(PASSWORD),
+  'the plaintext password was found inside the database file');
+
 const login = await fetch(`${base}/api/login`, {
   method: 'POST', headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ password: PASSWORD }),
 });
-ok('login succeeds', login.status === 200, `status ${login.status}`);
-const cookie = (login.headers.get('set-cookie') || '').split(';')[0];
+ok('login succeeds with the chosen password', login.status === 200, `status ${login.status}`);
+cookie = (login.headers.get('set-cookie') || '').split(';')[0];
 ok('a session cookie is issued', Boolean(cookie));
+
+const wrongLogin = await fetch(`${base}/api/login`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ password: 'pas-le-bon' }),
+});
+ok('a wrong password is rejected', wrongLogin.status === 401);
+
+// Changing the password from the app.
+const badCurrent = await fetch(`${base}/api/password`, {
+  method: 'POST', headers: { cookie, 'Content-Type': 'application/json' },
+  body: JSON.stringify({ current: 'faux', password: 'nouveau-mot-de-passe' }),
+});
+ok('changing the password needs the current one', badCurrent.status === 401);
+
+const changed = await fetch(`${base}/api/password`, {
+  method: 'POST', headers: { cookie, 'Content-Type': 'application/json' },
+  body: JSON.stringify({ current: PASSWORD, password: 'nouveau-mot-de-passe' }),
+});
+ok('the password can be changed from the app', changed.status === 200);
+const reLogin = await fetch(`${base}/api/login`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ password: 'nouveau-mot-de-passe' }),
+});
+ok('the new password works', reLogin.status === 200);
+cookie = (reLogin.headers.get('set-cookie') || '').split(';')[0];
 
 const state = await fetch(`${base}/api/state`, { headers: { cookie } }).then((r) => r.json());
 ok('state exposes a seeded org', state.agents.length > 0 && state.channels.length > 0,

@@ -15,27 +15,9 @@
   <!-- ============================ Login ============================ -->
   <!-- Starts hidden: init() reveals either this or the app once /api/me answers,
        so an already-signed-in user never sees the login card flash by. -->
+  <!-- Rempli par app.js : ouverture de compte au premier lancement, connexion ensuite. -->
   <div id="login" class="login-screen hidden">
-    <form id="login-form" class="login-card" autocomplete="on">
-      <span class="login-logo" aria-hidden="true">
-        <svg viewBox="0 0 48 48" fill="none" aria-hidden="true">
-          <path d="M40.74 21.05A17 17 0 1 1 34.93 10.98" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/>
-          <path d="M24 16v-5.5M30.93 28l4.76 2.75M17.07 28l-4.76 2.75" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" opacity=".5"/>
-          <circle cx="24" cy="24" r="4.6" fill="currentColor"/>
-          <circle cx="24" cy="7" r="3.6" fill="currentColor"/>
-          <circle cx="38.72" cy="32.5" r="3.6" fill="currentColor"/>
-          <circle cx="9.28" cy="32.5" r="3.6" fill="currentColor"/>
-        </svg>
-      </span>
-      <h1>AgentHub</h1>
-      <p class="muted">Ton organisation d'agents</p>
-      <label for="login-password" class="sr-only">Mot de passe</label>
-      <input type="password" id="login-password" name="password"
-             placeholder="Mot de passe" autocomplete="current-password" required />
-      <button type="submit" id="login-submit">Entrer</button>
-      <div id="login-error" class="login-error" role="alert" aria-live="assertive"></div>
-      <div class="login-seal">藍 · ai</div>
-    </form>
+    <form id="login-form" class="login-card" autocomplete="on"></form>
   </div>
 
   <!-- ============================= App ============================= -->

@@ -14,6 +14,7 @@ const S = {
   stats: null, activity: [],
   notes: [], usage: null, usageRange: '7d',
   presets: [], setup: null, wizStep: 0, wizProvider: null,
+  auth: { claimed: true, envPassword: false, minPassword: 8 },
   view: 'home',             // home | chat | team | brain | usage | journal | settings
   animatedView: null,       // last destination that played the enter animation
   current: null,            // channel id (chat view)
@@ -194,14 +195,46 @@ const IC = {
 };
 
 // ============================ auth ==========================================
+/**
+ * The card is rendered rather than hardcoded because it has two faces: on a
+ * brand-new install nobody has a password yet, so the first visitor *creates*
+ * one instead of being asked for it. No configuration file involved.
+ */
+function renderAuthCard() {
+  const claim = !S.auth.claimed;
+  $('#login-form').innerHTML = `
+    <span class="login-logo" aria-hidden="true">${MARK}</span>
+    <h1>AgentHub</h1>
+    <p class="muted">${claim ? 'Choisis ton mot de passe pour prendre la main.' : "Ton organisation d'agents"}</p>
+
+    <label for="login-password" class="sr-only">Mot de passe</label>
+    <input type="password" id="login-password" name="password" required
+           placeholder="${claim ? 'Nouveau mot de passe' : 'Mot de passe'}"
+           autocomplete="${claim ? 'new-password' : 'current-password'}"
+           ${claim ? `minlength="${S.auth.minPassword}"` : ''}>
+
+    ${claim ? `
+      <label for="login-confirm" class="sr-only">Confirmer le mot de passe</label>
+      <input type="password" id="login-confirm" name="confirm" required
+             placeholder="Confirme le mot de passe" autocomplete="new-password">
+      <p class="login-hint">${S.auth.minPassword} caractères minimum. Il n'y a pas de
+        récupération : note-le quelque part.</p>` : ''}
+
+    <button type="submit" id="login-submit">${claim ? 'Créer mon accès' : 'Entrer'}</button>
+    <div id="login-error" class="login-error" role="alert" aria-live="assertive"></div>
+    <div class="login-seal">藍 · ai</div>`;
+}
+
 function showLogin() {
   $('#login').classList.remove('hidden');
   $('#app').classList.add('hidden');
   S.booted = false;
   if (S.ws) { try { S.ws.close(1000, 'logout'); } catch {} S.ws = null; }
   clearTimeout(S.wsTimer);
+  renderAuthCard();
   setTimeout(() => $('#login-password')?.focus(), 40);
 }
+
 function showApp() {
   $('#login').classList.add('hidden');
   $('#app').classList.remove('hidden');
@@ -209,24 +242,51 @@ function showApp() {
 
 $('#login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
+  const claim = !S.auth.claimed;
   const btn = $('#login-submit');
   const input = $('#login-password');
+  const confirm = $('#login-confirm');
   const errBox = $('#login-error');
   errBox.textContent = '';
+
+  if (claim) {
+    if (input.value.length < S.auth.minPassword) {
+      errBox.textContent = `Au moins ${S.auth.minPassword} caractères.`;
+      return;
+    }
+    if (input.value !== confirm.value) {
+      errBox.textContent = 'Les deux mots de passe ne correspondent pas.';
+      confirm.select();
+      return;
+    }
+  }
+
+  const label = btn.textContent;
   btn.disabled = true;
-  btn.textContent = 'Connexion…';
+  btn.textContent = claim ? 'Création…' : 'Connexion…';
   try {
-    const r = await fetch('/api/login', {
+    const r = await fetch(claim ? '/api/claim' : '/api/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ password: input.value }),
     });
     if (r.ok) {
       input.value = '';
+      if (confirm) confirm.value = '';
+      S.auth.claimed = true;
       showApp();
       await boot();
-    } else if (r.status === 429) {
-      errBox.textContent = 'Trop de tentatives. Réessaie dans un instant.';
+      if (claim) toast('Accès créé. Ton mot de passe est enregistré.', { kind: 'success' });
+      return;
+    }
+    if (r.status === 429) errBox.textContent = 'Trop de tentatives. Réessaie dans un instant.';
+    else if (r.status === 409) {
+      // Someone claimed it between our check and this submit.
+      errBox.textContent = 'Cette instance vient d\'être configurée. Recharge la page.';
+      S.auth.claimed = true;
+    } else if (claim) {
+      const d = await r.json().catch(() => ({}));
+      errBox.textContent = d.error || 'Création impossible.';
     } else {
       errBox.textContent = 'Mot de passe incorrect';
       input.select();
@@ -235,7 +295,7 @@ $('#login-form').addEventListener('submit', async (e) => {
     errBox.textContent = 'Serveur injoignable.';
   } finally {
     btn.disabled = false;
-    btn.textContent = 'Entrer';
+    btn.textContent = label;
   }
 });
 
@@ -1693,6 +1753,32 @@ function renderSettings(v) {
       </div>
 
       <div class="agent-card">
+        <h3 style="margin:0 0 14px;font-size:14px">Mot de passe</h3>
+        ${S.auth.envPassword ? `
+          <div class="field-hint" style="line-height:1.7">
+            Le mot de passe est imposé par la variable d'environnement <code>APP_PASSWORD</code>.
+            Retire-la de ta configuration pour pouvoir le gérer ici.
+          </div>` : `
+          <div class="field">
+            <label for="pw-current">Mot de passe actuel</label>
+            <input id="pw-current" type="password" autocomplete="current-password">
+          </div>
+          <div class="field" style="margin-top:12px">
+            <label for="pw-new">Nouveau mot de passe</label>
+            <input id="pw-new" type="password" autocomplete="new-password" minlength="${S.auth.minPassword}">
+          </div>
+          <div class="field" style="margin-top:12px">
+            <label for="pw-confirm">Confirmation</label>
+            <input id="pw-confirm" type="password" autocomplete="new-password">
+          </div>
+          <div class="field-err" id="pw-err" style="margin-top:8px"></div>
+          <button class="btn" id="save-password" type="button" style="margin-top:12px">Changer le mot de passe</button>
+          <div class="field-hint" style="margin-top:10px">
+            ${S.auth.minPassword} caractères minimum. Aucune récupération possible : note-le.
+          </div>`}
+      </div>
+
+      <div class="agent-card">
         <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
           <h3 style="margin:0;font-size:14px;flex:1">Fournisseurs de modèles</h3>
           <button class="btn ghost" id="run-wizard" type="button">Relancer l'assistant</button>
@@ -1727,6 +1813,24 @@ function renderSettings(v) {
       </div>
     </div>
   </div>`;
+
+  const savePw = $('#save-password', v);
+  if (savePw) savePw.onclick = async (e) => {
+    const err = $('#pw-err', v);
+    const cur = $('#pw-current', v).value;
+    const nw = $('#pw-new', v).value;
+    const cf = $('#pw-confirm', v).value;
+    err.textContent = '';
+    if (nw.length < S.auth.minPassword) { err.textContent = `Au moins ${S.auth.minPassword} caractères.`; return; }
+    if (nw !== cf) { err.textContent = 'La confirmation ne correspond pas.'; return; }
+    e.currentTarget.disabled = true;
+    const r = await tryApi(api('POST', '/api/password', { current: cur, password: nw }), 'Changement de mot de passe');
+    e.currentTarget.disabled = false;
+    if (r) {
+      $('#pw-current', v).value = ''; $('#pw-new', v).value = ''; $('#pw-confirm', v).value = '';
+      toast('Mot de passe changé.', { kind: 'success' });
+    }
+  };
 
   $('#run-wizard', v).onclick = () => checkSetup(true);
   $$('[data-provider]', v).forEach((n) => n.onclick = () =>
@@ -2848,7 +2952,12 @@ window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change',
 
 (async function init() {
   applyTheme(preferredTheme());
-  let me = { authed: false };
+  let me = { authed: false, claimed: true };
   try { me = await (await fetch('/api/me')).json(); } catch { /* offline */ }
+  S.auth = {
+    claimed: me.claimed !== false,
+    envPassword: Boolean(me.envPassword),
+    minPassword: me.minPassword || 8,
+  };
   if (me.authed) { showApp(); await boot(); } else { showLogin(); }
 })();

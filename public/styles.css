@@ -241,6 +241,7 @@ a { color: var(--accent); }
 .login-card button[type="submit"]:active:not(:disabled) { transform: translateY(1px); }
 .login-card button[type="submit"]:disabled { opacity: .6; cursor: not-allowed; }
 .login-error { color: var(--alert); font-size: var(--fs-md); min-height: 18px; font-weight: 500; }
+.login-hint { margin: -4px 0 0; font-size: 11.5px; color: var(--muted-2); line-height: 1.55; }
 .login-seal {
   margin-top: var(--sp-1); font-size: var(--fs-xs); color: var(--muted-2);
   letter-spacing: .18em; text-transform: uppercase;

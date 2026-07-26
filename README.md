@@ -74,51 +74,30 @@ Tu n'as **pas** besoin d'Hermes : AgentHub fonctionne avec n'importe lequel de c
 services. Hermes apporte simplement en plus sa continuité de session, ses outils et
 sa mémoire persistante.
 
-### En trois commandes
+### En deux commandes
 
 ```bash
 git clone https://github.com/yhanottv/agenthub.git
 cd agenthub
-cp .env.example .env
-```
-
-Ouvre `.env` et renseigne les deux seules variables obligatoires :
-
-```bash
-AGENTHUB_PASSWORD=le-mot-de-passe-pour-entrer
-AGENTHUB_SECRET=<colle ici le résultat de la commande ci-dessous>
-```
-
-Génère le secret, ne l'invente pas — il signe tes cookies de session :
-
-```bash
-openssl rand -hex 32
-```
-
-<details>
-<summary>Sous Windows, sans openssl</summary>
-
-```powershell
--join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) })
-```
-</details>
-
-Puis lance :
-
-```bash
 docker compose up -d --build
 ```
 
-Ouvre **http://localhost:8090**. Un assistant t'accueille pour brancher un service.
+C'est tout. **Aucun fichier de configuration à créer.**
 
-> Le conteneur refuse de démarrer si `AGENTHUB_PASSWORD` ou `AGENTHUB_SECRET`
-> manquent. C'est volontaire : une valeur par défaut serait une porte ouverte.
+Ouvre **http://localhost:8090** : le site te demande de choisir ton mot de passe, puis
+un assistant te fait brancher un service de modèles. Le secret de session est généré
+tout seul au premier démarrage et conservé dans la base.
+
+> ⚠️ **Prends la main tout de suite.** Tant que personne n'a choisi de mot de passe,
+> le premier visiteur peut le faire. Ouvre l'application depuis ta machine avant
+> d'exposer le port sur Internet. Une fois le mot de passe défini, toute nouvelle
+> tentative est refusée.
 
 ### Sans Docker
 
 ```bash
 npm install
-AGENTHUB_PASSWORD=... AGENTHUB_SECRET=... DATA_DIR=./data node server.js
+DATA_DIR=./data node server.js
 ```
 
 `better-sqlite3` se compile à l'installation ; il te faut Python 3 et un compilateur
@@ -147,7 +126,14 @@ Puis décommente les blocs `networks:` dans `docker-compose.yml` en y mettant ce
 
 ## Premier démarrage
 
-L'assistant s'ouvre tout seul et déroule quatre étapes :
+Tout se passe sur le site, rien en ligne de commande.
+
+**Ton mot de passe d'abord.** Le premier écran te le fait choisir et confirmer — huit
+caractères minimum. Il est haché avant d'être stocké : il n'apparaît en clair nulle
+part, ni dans un fichier, ni dans la base. Il n'y a donc **aucune récupération
+possible**, note-le. Tu pourras le changer plus tard depuis Réglages.
+
+**Puis l'assistant**, en quatre étapes :
 
 1. **Bienvenue** — ce qui va être configuré.
 2. **Hermes** — il sonde réellement le gateway et affiche le verdict, avec l'erreur
@@ -171,19 +157,32 @@ cinq workers, trois pôles et un salon Hermes. Tout est modifiable, rien n'est f
 
 ## Configuration
 
-Tout se règle depuis l'interface, dans **Réglages → Fournisseurs**. Les variables
-d'environnement ne servent qu'à amorcer la base au tout premier démarrage ; ensuite
-c'est la base de données qui fait foi.
+Tout se règle depuis l'interface : mot de passe, services, modèles, identité de
+l'organisation. La base de données fait foi.
+
+### Variables d'environnement (toutes facultatives)
+
+Tu n'en as besoin **que** si tu veux scripter une installation sans passer par les
+écrans. Copie alors `.env.example` en `.env` et remplis ce qui t'intéresse.
 
 | Variable | Rôle |
 |---|---|
-| `AGENTHUB_PASSWORD` | Mot de passe d'accès à l'interface. **Obligatoire.** |
-| `AGENTHUB_SECRET` | Clé de signature des sessions. **Obligatoire.** |
-| `HERMES_API_URL` / `HERMES_API_KEY` | Amorce le fournisseur Hermes. |
-| `AGENTROUTER_API_URL` / `AGENTROUTER_API_KEY` | Amorce le fournisseur AgentRouter. |
+| `AGENTHUB_PASSWORD` | Fige le mot de passe. **Le rend non modifiable depuis l'interface.** |
+| `AGENTHUB_SECRET` | Fige la clé de signature des sessions. Sinon générée et conservée en base. |
+| `HERMES_API_URL` / `HERMES_API_KEY` | Pré-remplit le fournisseur Hermes. |
+| `AGENTROUTER_API_URL` / `AGENTROUTER_API_KEY` | Pré-remplit le fournisseur AgentRouter. |
 | `AGENTHUB_DEFAULT_PROVIDER` | Fournisseur des agents qui n'en précisent pas. |
 | `DATA_DIR` | Emplacement de la base SQLite. Défaut : `/data`. |
 | `TRAEFIK_HOST` | Domaine servi, si tu utilises les labels Traefik. |
+
+Elles ne servent qu'au **tout premier démarrage** : ensuite les réglages vivent en
+base et l'interface prend le dessus.
+
+### Changer de mot de passe
+
+**Réglages → Mot de passe.** L'ancien est demandé. Si `AGENTHUB_PASSWORD` est défini
+dans l'environnement, cette section explique qu'il faut retirer la variable pour
+reprendre la main.
 
 ### Changer de modèle en cours de conversation
 
