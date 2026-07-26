@@ -168,10 +168,11 @@ ok('a keyless install seeds Hermes only', seededIds.length === 1 && seededIds[0]
 ok('no provider points at the author private proxy',
   !seeded.providers.some((p) => /agentrouter-proxy/.test(p.base)),
   JSON.stringify(seeded.providers.map((p) => p.base)));
-// What matters is that a fresh install never phones home to anything the
-// author runs — not the exact shape of the URL.
-ok('the seeded Hermes points at nothing public',
-  !/hstgr|\.cloud|agentrouter\.org|147\.93\./i.test(seeded.providers[0].base),
+// What matters is that a fresh install only ever points at something the
+// operator controls: a container name, localhost, or a private address.
+// Anything with a public TLD would mean the app phones somewhere on its own.
+ok('the seeded Hermes stays on infrastructure the operator controls',
+  !/^https?:\/\/[^/]*\.[a-z]{2,}/i.test(seeded.providers[0].base),
   seeded.providers[0].base);
 
 const provList = seeded;
