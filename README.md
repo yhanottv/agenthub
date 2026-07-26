@@ -12,7 +12,7 @@ Aucune étape de build : Node, du JavaScript vanilla, et SQLite.
 
 ![Node](https://img.shields.io/badge/node-%E2%89%A520-3e5faf)
 ![Docker](https://img.shields.io/badge/docker-compose-3e5faf)
-![License](https://img.shields.io/badge/license-%C3%A0%20d%C3%A9finir-lightgrey)
+![License](https://img.shields.io/badge/license-MIT-3e5faf)
 
 ---
 
@@ -184,24 +184,54 @@ l'organisation. La base de données fait foi.
 Tu n'en as besoin **que** si tu veux scripter une installation sans passer par les
 écrans. Copie alors `.env.example` en `.env` et remplis ce qui t'intéresse.
 
-| Variable | Rôle |
-|---|---|
-| `AGENTHUB_PASSWORD` | Fige le mot de passe. **Le rend non modifiable depuis l'interface.** |
-| `AGENTHUB_SECRET` | Fige la clé de signature des sessions. Sinon générée et conservée en base. |
-| `HERMES_API_URL` / `HERMES_API_KEY` | Pré-remplit le fournisseur Hermes. |
-| `AGENTROUTER_API_URL` / `AGENTROUTER_API_KEY` | Pré-remplit le fournisseur AgentRouter. |
-| `AGENTHUB_DEFAULT_PROVIDER` | Fournisseur des agents qui n'en précisent pas. |
-| `DATA_DIR` | Emplacement de la base SQLite. Défaut : `/data`. |
-| `TRAEFIK_HOST` | Domaine servi, si tu utilises les labels Traefik. |
+| Variable (`.env`) | Lue par le serveur sous le nom | Rôle |
+|---|---|---|
+| `AGENTHUB_PASSWORD` | `APP_PASSWORD` | Fige le mot de passe. **Le rend non modifiable depuis l'interface.** |
+| `AGENTHUB_SECRET` | `APP_SECRET` | Fige la clé de signature des sessions. Sinon générée et conservée en base. |
+| `HERMES_API_URL` / `HERMES_API_KEY` / `HERMES_MODEL` | identiques | Pré-remplit le fournisseur Hermes. |
+| `AGENTROUTER_API_URL` / `AGENTROUTER_API_KEY` / `AGENTROUTER_MODEL` | identiques | Pré-remplit le fournisseur AgentRouter. |
+| `OWNER_NAME` / `ORG_NAME` | identiques | Ton nom et celui de l'organisation, au tout premier démarrage. |
+| `TRUST_PROXY` | identique | À mettre à `1` **uniquement** derrière un reverse proxy. Voir plus bas. |
+| `DATA_DIR` | identique | Emplacement de la base SQLite. Défaut : `/data` en Docker, `./data` sinon. |
+| `PORT` | identique | Port d'écoute. Défaut : `8090`. |
+| `TRAEFIK_HOST` | — | Domaine servi, utilisé par les labels Traefik du compose. |
+
+Les noms `AGENTHUB_*` sont ceux de ton `.env` : c'est `docker-compose.yml` qui les
+traduit. **Si tu lances `node server.js` à la main, exporte directement
+`APP_PASSWORD` et `APP_SECRET`** — sinon tes variables ne servent à rien et
+l'instance reste ouverte au premier visiteur.
+
+Il n'existe pas de variable pour choisir le fournisseur par défaut : quand celui d'un
+agent n'est pas utilisable, AgentHub retombe sur le premier fournisseur configuré et
+actif.
 
 Elles ne servent qu'au **tout premier démarrage** : ensuite les réglages vivent en
 base et l'interface prend le dessus.
 
+### `TRUST_PROXY`
+
+Par défaut AgentHub ne fait **pas** confiance à l'en-tête `X-Forwarded-For`. C'est
+volontaire : cet en-tête est la seule clé du verrouillage après huit tentatives, et
+tant que rien ne filtre devant, n'importe qui peut le forger pour deviner ton mot de
+passe sans jamais être bloqué.
+
+Si — et seulement si — un reverse proxy est réellement devant, mets `TRUST_PROXY=1`
+pour que les journaux et le verrouillage voient la vraie adresse du client. Le
+drapeau `Secure` du cookie ne dépend pas de ce réglage : il est posé dès que la
+requête arrive en HTTPS, proxy ou pas.
+
 ### Changer de mot de passe
 
-**Réglages → Mot de passe.** L'ancien est demandé. Si `AGENTHUB_PASSWORD` est défini
-dans l'environnement, cette section explique qu'il faut retirer la variable pour
-reprendre la main.
+**Réglages → Mot de passe.** L'ancien est demandé. Si `APP_PASSWORD` est défini dans
+l'environnement du serveur (via `AGENTHUB_PASSWORD` dans ton `.env` si tu passes par
+Compose), cette section explique qu'il faut retirer la variable pour reprendre la
+main.
+
+> ⚠️ Retire-la **avant** d'avoir choisi un mot de passe dans l'interface, jamais
+> après coup sur une instance en service : AgentHub garde une trace durable du fait
+> qu'elle a été revendiquée, et refusera de rouvrir la porte. Si tu te retrouves
+> verrouillé, remets la variable, connecte-toi, puis définis ton mot de passe depuis
+> Réglages pour qu'il soit stocké en base — tu pourras retirer la variable ensuite.
 
 ### Changer de modèle en cours de conversation
 
@@ -239,7 +269,7 @@ docker run --rm -v agenthub_agenthub-data:/data -v "$PWD":/backup alpine \
 
 | Symptôme | Piste |
 |---|---|
-| Le conteneur redémarre en boucle | `docker logs agenthub` — souvent `.env` incomplet |
+| Le conteneur redémarre en boucle | `docker logs agenthub` — en général le volume `/data` n'est pas inscriptible, ou la compilation de `better-sqlite3` a échoué |
 | « Aucun fournisseur configuré » | Réglages → Fournisseurs, ou relance l'assistant |
 | Les agents répondent « clé refusée » | La clé est invalide ou expirée côté service |
 | L'interface semble figée après une mise à jour | Recharge de force (`Ctrl+Shift+R`) |

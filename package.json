@@ -4,7 +4,7 @@
   "description": "Interface multi-agents — des employés IA organisés en pôles, qui se délèguent des tâches et travaillent en salons temps réel.",
   "type": "module",
   "main": "server.js",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "MIT",
   "scripts": {
     "start": "node server.js",
     "check": "node --check server.js && node --check db.js && node --check llm.js && node --check orchestrator.js && node --check public/app.js",

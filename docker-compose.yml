@@ -22,7 +22,10 @@ services:
       AGENTROUTER_API_KEY: ${AGENTROUTER_API_KEY:-}
       AGENTROUTER_MODEL: ${AGENTROUTER_MODEL:-}
 
-      DEFAULT_PROVIDER: ${AGENTHUB_DEFAULT_PROVIDER:-hermes}
+      # À définir (TRUST_PROXY=1) uniquement si un reverse proxy est réellement
+      # devant : sans lui, X-Forwarded-For est forgeable et le verrouillage
+      # après huit tentatives ne sert plus à rien.
+      TRUST_PROXY: ${TRUST_PROXY:-}
 
       # Laisse-les vides : le mot de passe se choisit sur le site, et le secret
       # de session est généré au premier démarrage puis conservé en base.
@@ -44,7 +47,8 @@ services:
     #   - hermes-net
     #
     # Derrière Traefik ? Retire la section `ports:` ci-dessus — sinon le
-    # service reste joignable en HTTP clair — et décommente :
+    # service reste joignable en HTTP clair — mets TRUST_PROXY=1 dans ton
+    # .env, et décommente :
     #
     # labels:
     #   - traefik.enable=true
