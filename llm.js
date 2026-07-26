@@ -72,17 +72,25 @@ export const providerCatalog = () => Providers.publicAll();
 
 const usable = (p) => Boolean(p && p.enabled && p.base_url && (!p.needs_key || p.api_key));
 
-/** Pick the provider + model actually used for an agent, with sane fallbacks. */
-export function resolveForAgent(agent = {}) {
-  let provider = Providers.get(agent.provider);
+/**
+ * Pick the provider + model actually used for an agent, with sane fallbacks.
+ * `override` comes from the conversation ({provider, model}) and wins over the
+ * agent's own setting when it points at a usable provider.
+ */
+export function resolveForAgent(agent = {}, override = null) {
+  const wantedId = override && override.provider ? override.provider : agent.provider;
+  const wantedModel = override && override.provider ? override.model : agent.model;
+
+  let provider = Providers.get(wantedId);
   let fellBack = null;
   if (!usable(provider)) {
     const alt = Providers.all().find(usable);
-    if (alt) { fellBack = provider ? provider.id : agent.provider; provider = alt; }
+    if (alt) { fellBack = provider ? provider.id : wantedId; provider = alt; }
   }
-  if (!provider) return { provider: null, model: '', fellBack: agent.provider || null };
-  const model = agent.model && provider.models.includes(agent.model)
-    ? agent.model
+  if (!provider) return { provider: null, model: '', fellBack: wantedId || null };
+
+  const model = wantedModel && provider.models.includes(wantedModel)
+    ? wantedModel
     : (provider.default_model || provider.models[0] || '');
   return { provider, model, fellBack };
 }
@@ -189,11 +197,11 @@ export async function probeProvider(cfg) {
  */
 export async function streamChat(opts) {
   const {
-    agent = {}, sessionKey, messages,
+    agent = {}, override = null, effort = '', sessionKey, messages,
     onDelta = () => {}, onReasoning = () => {}, signal,
   } = opts;
 
-  const { provider, model } = resolveForAgent(agent);
+  const { provider, model } = resolveForAgent(agent, override);
   if (!provider) {
     return { text: '', error: "Aucun fournisseur de modèles n'est configuré. Ouvre Réglages → Fournisseurs." };
   }
@@ -202,7 +210,11 @@ export async function streamChat(opts) {
   if (provider.api_key) headers.Authorization = `Bearer ${provider.api_key}`;
   if (provider.session_header && sessionKey) headers[provider.session_header] = sessionKey;
 
-  const body = JSON.stringify({ model, stream: true, messages });
+  const payload = { model, stream: true, messages };
+  // Only sent when explicitly chosen: providers that do not know the field can
+  // reject the whole request, so we never add it behind the user's back.
+  if (effort) payload.reasoning_effort = effort;
+  const body = JSON.stringify(payload);
 
   const ctrl = new AbortController();
   const abortByCaller = () => ctrl.abort('caller');
@@ -341,6 +353,9 @@ function describeHttpError(provider, status, detail) {
   if (status === 402) return `Crédit épuisé chez ${provider.label} (402).${tail}`;
   if (status === 404) return `${provider.label} ne connaît pas le modèle « ${provider.default_model} » (404).${tail}`;
   if (status === 429) return `${provider.label} est saturé (429). Réessaie dans un instant.`;
+  if (status === 400 && /reasoning_effort|unknown|unsupported|unrecognized/i.test(detail || '')) {
+    return `${provider.label} n'accepte pas le réglage d'effort de raisonnement. Repasse-le sur « automatique » dans le sélecteur de modèle.`;
+  }
   if (status >= 500) return `${provider.label} a renvoyé une erreur ${status}.${tail}`;
   return `${provider.label} HTTP ${status}.${tail}`;
 }

@@ -152,6 +152,11 @@ export class Orchestrator {
     try {
       result = await streamChat({
         agent,                       // carries provider + model
+        // Conversation-level settings win over the agent's own.
+        override: channel.provider_override
+          ? { provider: channel.provider_override, model: channel.model_override }
+          : null,
+        effort: channel.effort || '',
         sessionKey: `agenthub:${channel.id}:${agent.id}`,
         messages,
         onDelta,

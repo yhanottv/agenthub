@@ -958,6 +958,97 @@ function openNoteModal(note) {
   });
 }
 
+// ---- Modèle d'une conversation ---------------------------------------------
+const EFFORT_LABEL = { '': 'automatique', low: 'rapide', medium: 'équilibré', high: 'approfondi' };
+
+/** The chip in the composer: what this conversation actually runs on. */
+function modelChip(c) {
+  const p = c.provider_override ? S.providers.find((x) => x.id === c.provider_override) : null;
+  const label = p
+    ? `${p.label} · ${c.model_override || p.defaultModel}`
+    : 'Modèle de chaque agent';
+  const effort = c.effort ? ` · ${EFFORT_LABEL[c.effort]}` : '';
+  return `<button class="model-chip ${c.provider_override ? 'on' : ''}" id="model-chip" type="button"
+    title="Changer le modèle de cette conversation">
+    ${IC.spark}<span>${escapeHtml(label + effort)}</span></button>`;
+}
+
+function openChannelModelModal(c) {
+  openModal(`Modèle · ${c.name}`, (b) => {
+    const usable = S.providers.filter((p) => p.enabled);
+    const curProv = c.provider_override || '';
+
+    b.innerHTML = `
+      <p style="margin:0;color:var(--muted);line-height:1.65">
+        Ce réglage ne vaut que pour <strong>cette conversation</strong>. Il remplace le modèle
+        propre à chaque agent, sans modifier leur fiche.
+      </p>
+      <div class="field">
+        <label for="cm-prov">Service</label>
+        <select id="cm-prov">
+          <option value="">Laisser chaque agent décider</option>
+          ${usable.map((p) => `<option value="${escapeAttr(p.id)}" ${p.id === curProv ? 'selected' : ''}>${escapeHtml(p.label)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field" id="cm-model-wrap" ${curProv ? '' : 'hidden'}>
+        <label for="cm-model">Modèle</label>
+        <select id="cm-model"></select>
+      </div>
+      <div class="field">
+        <label for="cm-effort">Effort de raisonnement</label>
+        <select id="cm-effort">
+          ${['', 'low', 'medium', 'high'].map((e) => `<option value="${e}" ${e === (c.effort || '') ? 'selected' : ''}>${EFFORT_LABEL[e]}${e === '' ? ' (ne rien envoyer)' : ''}</option>`).join('')}
+        </select>
+        <div class="field-hint">
+          Envoyé au service sous le nom <code>reasoning_effort</code>. Tous ne le gèrent pas —
+          si le tien le refuse, tu verras une erreur explicite et il suffira de revenir sur
+          « automatique ».
+        </div>
+      </div>
+      <button class="primary" id="cm-save" type="button">Appliquer</button>
+      ${c.provider_override || c.effort ? '<button class="del-link" id="cm-reset" type="button">Revenir aux réglages des agents</button>' : ''}`;
+
+    const provSel = $('#cm-prov', b);
+    const wrap = $('#cm-model-wrap', b);
+    const modelSel = $('#cm-model', b);
+
+    const syncModels = () => {
+      const p = usable.find((x) => x.id === provSel.value);
+      if (!p) { wrap.setAttribute('hidden', ''); return; }
+      wrap.removeAttribute('hidden');
+      const wanted = c.model_override && p.models.includes(c.model_override) ? c.model_override : p.defaultModel;
+      modelSel.innerHTML = p.models.length
+        ? p.models.map((m) => `<option value="${escapeAttr(m)}" ${m === wanted ? 'selected' : ''}>${escapeHtml(m)}</option>`).join('')
+        : '<option value="">— aucun modèle listé, teste le service dans Réglages —</option>';
+    };
+    provSel.onchange = syncModels;
+    syncModels();
+
+    const apply = async (payload, ev) => {
+      ev.currentTarget.disabled = true;
+      const r = await tryApi(api('PUT', `/api/channels/${c.id}/model`, payload), 'Changement de modèle');
+      ev.currentTarget.disabled = false;
+      if (!r) return;
+      const i = S.channels.findIndex((x) => x.id === c.id);
+      if (i >= 0) S.channels[i] = r;
+      closeModal();
+      renderView();
+      toast(payload.provider
+        ? `Cette conversation tourne sur ${payload.model || payload.provider}.`
+        : 'Retour aux modèles de chaque agent.', { kind: 'success' });
+    };
+
+    $('#cm-save', b).onclick = (ev) => apply({
+      provider: provSel.value,
+      model: provSel.value ? modelSel.value : '',
+      effort: $('#cm-effort', b).value,
+    }, ev);
+
+    const reset = $('#cm-reset', b);
+    if (reset) reset.onclick = (ev) => apply({ provider: '', model: '', effort: '' }, ev);
+  });
+}
+
 // ---- Fournisseurs : éditeur partagé ----------------------------------------
 /**
  * Add or re-key a service. Used by both the first-run wizard and Réglages.
@@ -1702,6 +1793,7 @@ function renderChat(v) {
             <button id="send-btn" type="button" aria-label="Envoyer" disabled>${IC.send}</button>
           </div>
           <div class="composer-hint">
+            ${modelChip(c)}
             <span><kbd>Entrée</kbd> envoie · <kbd>Maj+Entrée</kbd> saute une ligne</span>
             <span id="run-controls"></span>
           </div>
@@ -1727,6 +1819,8 @@ function renderChat(v) {
 
   const ep = $('#edit-pole', v);
   if (ep) ep.onclick = () => openPoleModal(c);
+
+  $('#model-chip', v).onclick = () => openChannelModelModal(c);
 
   $('#clear-chat', v).onclick = () => {
     if (!S.messages.length && !S.tasks.length) { toast('La conversation est déjà vide.', { kind: 'warn' }); return; }

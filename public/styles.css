@@ -926,6 +926,18 @@ button.agent-card:hover { border-color: var(--accent); transform: translateY(-1p
   font-family: inherit; background: var(--line-soft); border: 1px solid var(--line);
   border-radius: 4px; padding: 0 5px; font-size: 10.5px;
 }
+/* Pastille de modèle : ce sur quoi la conversation tourne réellement. */
+.model-chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px;
+  border-radius: var(--r-pill); border: 1px solid var(--line); background: var(--surface);
+  color: var(--muted); font-size: var(--fs-sm); font-weight: 600; max-width: 260px;
+  transition: border-color var(--fast) var(--ease), color var(--fast) var(--ease);
+}
+.model-chip svg { width: 12px; height: 12px; flex: none; }
+.model-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-chip:hover { border-color: var(--accent); color: var(--accent-ink); }
+.model-chip.on { border-color: var(--accent); color: var(--accent-ink); background: var(--accent-soft); }
+
 .stop-btn {
   display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px;
   border-radius: var(--r-pill); border: 1px solid var(--line); background: var(--surface);

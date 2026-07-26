@@ -132,6 +132,10 @@ for (const ddl of [
   "ALTER TABLE agents ADD COLUMN provider TEXT NOT NULL DEFAULT 'hermes'",
   "ALTER TABLE channels ADD COLUMN emoji TEXT NOT NULL DEFAULT '🗂️'",
   "ALTER TABLE channels ADD COLUMN color TEXT NOT NULL DEFAULT '#3e5faf'",
+  // Réglages de modèle propres à une conversation, qui priment sur ceux de l'agent.
+  "ALTER TABLE channels ADD COLUMN provider_override TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE channels ADD COLUMN model_override TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE channels ADD COLUMN effort TEXT NOT NULL DEFAULT ''",
 ]) {
   try { db.exec(ddl); } catch { /* column already exists */ }
 }
@@ -324,8 +328,29 @@ export const Channels = {
     return Channels.get(id);
   }),
 
+  /**
+   * Per-conversation model settings. They take precedence over each agent's own
+   * provider/model for this channel only, so you can try a stronger model on a
+   * hard thread without touching your org.
+   * Passing an empty provider clears the override and gives the agents back.
+   */
+  setModel: (id, patch) => {
+    const cur = db.prepare('SELECT * FROM channels WHERE id=?').get(id);
+    if (!cur) return null;
+    const provider = patch.provider ? slug(patch.provider) : '';
+    db.prepare('UPDATE channels SET provider_override=?, model_override=?, effort=? WHERE id=?').run(
+      provider && Providers.exists(provider) ? provider : '',
+      provider ? clampText(patch.model, 120) : '',
+      validEffort(patch.effort),
+      id);
+    return Channels.get(id);
+  },
+
   remove: (id) => db.prepare('DELETE FROM channels WHERE id=?').run(id).changes > 0,
 };
+
+export const EFFORTS = ['low', 'medium', 'high'];
+export const validEffort = (e) => (EFFORTS.includes(e) ? e : '');
 
 // ---- Messages --------------------------------------------------------------
 export const Messages = {

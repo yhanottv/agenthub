@@ -23,6 +23,7 @@ const sse = (res, chunks) => {
 };
 
 const calls = [];
+let lastPayload = null;      // raw body of the most recent completion request
 const gateway = http.createServer((req, res) => {
   // Model discovery: any OpenAI-compatible service answers GET /v1/models.
   if (req.method === 'GET' && /\/models$/.test(req.url)) {
@@ -34,6 +35,7 @@ const gateway = http.createServer((req, res) => {
   req.on('data', (d) => { body += d; });
   req.on('end', () => {
     const payload = JSON.parse(body);
+    lastPayload = payload;
     const system = payload.messages.find((m) => m.role === 'system')?.content || '';
     const lastUser = [...payload.messages].reverse().find((m) => m.role === 'user')?.content || '';
     // Identify the caller from the FIRST line only: the prompt also quotes the
@@ -383,6 +385,51 @@ const bogusUrl = await probeProvider({ base_url: 'pas-une-url' });
 ok('a malformed URL is rejected before any request', bogusUrl.ok === false && /http/.test(bogusUrl.error));
 const noUrl = await probeProvider({});
 ok('an empty URL is rejected', noUrl.ok === false);
+
+// ============================ 12. per-conversation model ====================
+console.log('\n--- changing the model inside one conversation ---');
+const convo = Channels.create({ name: 'Essai', kind: 'pole', members: [dev.id] });
+
+// Baseline: the agent's own provider is used and no effort is sent.
+lastPayload = null;
+await orch.handleUserMessage(convo, 'Sans surcharge.');
+ok('by default the agent decides the model', lastPayload.model === 'test-model', lastPayload.model);
+ok('and no reasoning_effort is sent', lastPayload.reasoning_effort === undefined,
+  'an unsupported field would be sent behind the user\'s back');
+
+// Now override the conversation.
+Channels.setModel(convo.id, { provider: 'agentrouter', model: 'claude-opus-4-8', effort: 'high' });
+const overridden = Channels.get(convo.id);
+ok('the override is stored', overridden.provider_override === 'agentrouter'
+  && overridden.model_override === 'claude-opus-4-8' && overridden.effort === 'high',
+  JSON.stringify({ p: overridden.provider_override, m: overridden.model_override, e: overridden.effort }));
+
+lastPayload = null;
+await orch.handleUserMessage(overridden, 'Avec surcharge.');
+ok('THE OVERRIDE REACHES THE REQUEST', lastPayload.model === 'claude-opus-4-8', lastPayload.model);
+ok('the reasoning effort is sent too', lastPayload.reasoning_effort === 'high', lastPayload.reasoning_effort);
+
+// The agent itself must be untouched — the override is conversation-scoped.
+ok('the agent fiche is not modified', Agents.get(dev.id).provider === 'hermes',
+  Agents.get(dev.id).provider);
+lastPayload = null;
+await orch.handleUserMessage(autre, 'Autre salon.');
+ok('another conversation keeps its own model', lastPayload.model === 'test-model', lastPayload.model);
+
+// Invalid input must not be able to strand a conversation on a dead provider.
+Channels.setModel(convo.id, { provider: 'nexistepas', model: 'x', effort: 'extreme' });
+const cleaned = Channels.get(convo.id);
+ok('an unknown provider is rejected', cleaned.provider_override === '', cleaned.provider_override);
+ok('an unknown effort is rejected', cleaned.effort === '', cleaned.effort);
+
+Channels.setModel(convo.id, { provider: 'agentrouter', model: 'claude-opus-4-8', effort: 'medium' });
+Channels.setModel(convo.id, { provider: '', model: '', effort: '' });
+const reset = Channels.get(convo.id);
+ok('clearing hands the agents back', reset.provider_override === '' && reset.model_override === '' && reset.effort === '');
+lastPayload = null;
+await orch.handleUserMessage(reset, 'Retour a la normale.');
+ok('and the agent model is used again', lastPayload.model === 'test-model', lastPayload.model);
+ok('with no effort field', lastPayload.reasoning_effort === undefined);
 
 console.log('\n--- a listing without a key must not pass for a connection ---');
 // The mock serves /v1/models to anyone, exactly like OpenRouter does. Without

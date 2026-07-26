@@ -302,6 +302,14 @@ app.put('/api/channels/:id/members', requireAuth, (req, res) => {
   res.json(c);
 });
 
+/** Change the model used inside one conversation, without touching the agents. */
+app.put('/api/channels/:id/model', requireAuth, (req, res) => {
+  const c = Channels.setModel(req.params.id, req.body || {});
+  if (!c) return res.status(404).json({ error: 'not found' });
+  broadcast({ type: 'channel.update', channel: c });
+  res.json(c);
+});
+
 app.delete('/api/channels/:id', requireAuth, (req, res) => {
   if (!Channels.remove(req.params.id)) return res.status(404).json({ error: 'not found' });
   broadcast({ type: 'channel.remove', id: req.params.id });

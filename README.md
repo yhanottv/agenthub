@@ -11,7 +11,20 @@ autre pôle. Chaque tâche déléguée est suivie, chaque réponse arrive en str
 Aucune étape de build : Node, du JavaScript vanilla, et SQLite.
 
 ![Node](https://img.shields.io/badge/node-%E2%89%A520-3e5faf)
+![Docker](https://img.shields.io/badge/docker-compose-3e5faf)
 ![License](https://img.shields.io/badge/license-%C3%A0%20d%C3%A9finir-lightgrey)
+
+---
+
+## Sommaire
+
+- [Ce que ça fait](#ce-que-ça-fait)
+- [Installation](#installation)
+- [Premier démarrage](#premier-démarrage)
+- [Configuration](#configuration)
+- [Mise à jour, sauvegarde, dépannage](#mise-à-jour)
+- [Architecture](#architecture)
+- [Tests](#tests)
 
 ---
 
@@ -28,11 +41,11 @@ contexte de ton activité à chaque conversation.
 
 **Plusieurs fournisseurs, au choix par agent.** Hermes, AgentRouter, OpenRouter,
 OpenAI, Groq, Together, Ollama, ou n'importe quel endpoint compatible OpenAI. Chaque
-agent a son service et son modèle. Les clés sont stockées côté serveur et ne sont
-jamais renvoyées au navigateur.
+agent a son service et son modèle — et tu peux surcharger le tout **pour une seule
+conversation**, effort de raisonnement compris, sans toucher aux fiches.
 
 **Une consommation qui ne ment pas.** Une ligne par appel modèle, tokens entrants et
-sortants, répartition par modèle et par agent, courbe d'évolution. Quand le
+sortants, répartition par modèle et par agent, courbe d'évolution au survol. Quand le
 fournisseur renvoie un décompte réel il est utilisé ; sinon c'est une estimation,
 explicitement étiquetée comme telle.
 
@@ -44,31 +57,62 @@ au clavier, mobile, `prefers-reduced-motion`.
 
 ---
 
-## Démarrer
+## Installation
 
-Il te faut Docker et un service de modèles compatible OpenAI.
+### Ce qu'il te faut
+
+- **Docker** avec Compose (la voie recommandée) — ou Node ≥ 20 en direct
+- **Un service de modèles** compatible OpenAI. Au choix :
+  - une clé [OpenRouter](https://openrouter.ai) — le plus simple pour démarrer,
+    des centaines de modèles derrière une seule clé ;
+  - une clé OpenAI, Groq, Together… ;
+  - [Ollama](https://ollama.com) en local, sans clé ni connexion sortante ;
+  - un gateway [Nous Hermes Agent](https://github.com/NousResearch/hermes-agent)
+    si tu en as déjà un.
+
+Tu n'as **pas** besoin d'Hermes : AgentHub fonctionne avec n'importe lequel de ces
+services. Hermes apporte simplement en plus sa continuité de session, ses outils et
+sa mémoire persistante.
+
+### En trois commandes
 
 ```bash
-git clone https://github.com/<toi>/agenthub.git
+git clone https://github.com/<ton-compte>/agenthub.git
 cd agenthub
 cp .env.example .env
 ```
 
-Ouvre `.env` et renseigne au minimum le mot de passe et le secret de session :
+Ouvre `.env` et renseigne les deux seules variables obligatoires :
 
 ```bash
-# un secret solide, pas un mot choisi à la main
+AGENTHUB_PASSWORD=le-mot-de-passe-pour-entrer
+AGENTHUB_SECRET=<colle ici le résultat de la commande ci-dessous>
+```
+
+Génère le secret, ne l'invente pas — il signe tes cookies de session :
+
+```bash
 openssl rand -hex 32
 ```
 
-Puis :
+<details>
+<summary>Sous Windows, sans openssl</summary>
+
+```powershell
+-join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) })
+```
+</details>
+
+Puis lance :
 
 ```bash
 docker compose up -d --build
 ```
 
-Rends-toi sur **http://localhost:8090**. Au premier accès, un assistant vérifie ton
-installation et te fait connecter un service en quatre étapes.
+Ouvre **http://localhost:8090**. Un assistant t'accueille pour brancher un service.
+
+> Le conteneur refuse de démarrer si `AGENTHUB_PASSWORD` ou `AGENTHUB_SECRET`
+> manquent. C'est volontaire : une valeur par défaut serait une porte ouverte.
 
 ### Sans Docker
 
@@ -76,6 +120,52 @@ installation et te fait connecter un service en quatre étapes.
 npm install
 AGENTHUB_PASSWORD=... AGENTHUB_SECRET=... DATA_DIR=./data node server.js
 ```
+
+`better-sqlite3` se compile à l'installation ; il te faut Python 3 et un compilateur
+C++ si aucun binaire précompilé ne correspond à ta plateforme.
+
+### Derrière un nom de domaine (HTTPS)
+
+Le `docker-compose.yml` publie le port 8090 **en HTTP clair**. Pour un serveur exposé
+sur Internet, mets un reverse proxy devant et **retire la section `ports:`** — sinon
+le mot de passe circule en clair. Le fichier contient les labels
+[Traefik](https://traefik.io) prêts à décommenter ; avec Caddy ou nginx, fais pointer
+le proxy sur le port 8090 du conteneur.
+
+### À côté d'un Hermes existant
+
+Si Hermes tourne déjà en Docker, attache AgentHub à son réseau pour qu'il le joigne
+par son nom de conteneur. Trouve le nom du réseau :
+
+```bash
+docker inspect <conteneur-hermes> --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}'
+```
+
+Puis décommente les blocs `networks:` dans `docker-compose.yml` en y mettant ce nom.
+
+---
+
+## Premier démarrage
+
+L'assistant s'ouvre tout seul et déroule quatre étapes :
+
+1. **Bienvenue** — ce qui va être configuré.
+2. **Hermes** — il sonde réellement le gateway et affiche le verdict, avec l'erreur
+   exacte et des pistes si ça ne répond pas. Tu peux passer cette étape si tu
+   n'utilises pas Hermes.
+3. **Services** — connecte au moins un fournisseur. Tu colles la clé, tu cliques
+   **Tester**, et AgentHub interroge `/v1/models` pour lister ce qui est réellement
+   disponible. Tu choisis dans la liste plutôt que de taper un nom au hasard.
+4. **Modèle par défaut** — appliqué d'un coup à tous tes agents.
+
+L'organisation par défaut est créée au premier lancement : un CEO, deux managers,
+cinq workers, trois pôles et un salon Hermes. Tout est modifiable, rien n'est figé.
+
+> **À propos du test de connexion.** Certains services — OpenRouter par exemple —
+> publient leur catalogue **sans authentification**. Obtenir une liste de modèles ne
+> prouve donc pas que ta clé est valide. AgentHub refuse de tester un service qui
+> exige une clé quand aucune n'est fournie, et quand le catalogue s'avère public il te
+> le dit franchement au lieu d'afficher une coche verte trompeuse.
 
 ---
 
@@ -93,14 +183,49 @@ c'est la base de données qui fait foi.
 | `AGENTROUTER_API_URL` / `AGENTROUTER_API_KEY` | Amorce le fournisseur AgentRouter. |
 | `AGENTHUB_DEFAULT_PROVIDER` | Fournisseur des agents qui n'en précisent pas. |
 | `DATA_DIR` | Emplacement de la base SQLite. Défaut : `/data`. |
+| `TRAEFIK_HOST` | Domaine servi, si tu utilises les labels Traefik. |
 
-### Un mot sur le test de connexion
+### Changer de modèle en cours de conversation
 
-Certains services — OpenRouter par exemple — publient leur catalogue de modèles
-**sans authentification**. Obtenir une liste de modèles ne prouve donc pas que ta clé
-est valide. AgentHub refuse de tester un service qui exige une clé quand aucune n'est
-fournie, et quand le catalogue s'avère public il le dit franchement plutôt que
-d'afficher une coche verte trompeuse.
+La pastille sous le champ de saisie indique sur quoi tourne la conversation. Un clic
+permet de choisir un autre service, un autre modèle, et un **effort de raisonnement**
+(rapide / équilibré / approfondi). Le réglage ne vaut que pour ce salon et ne modifie
+aucune fiche d'agent.
+
+L'effort est envoyé au service sous le nom `reasoning_effort`. Tous ne le gèrent pas :
+si le tien le refuse, tu obtiens une erreur explicite et il suffit de revenir sur
+« automatique ».
+
+---
+
+## Mise à jour
+
+```bash
+git pull
+docker compose up -d --build
+```
+
+Tes données vivent dans un volume Docker, elles survivent aux reconstructions. Le
+schéma se met à jour tout seul au démarrage.
+
+### Sauvegarder
+
+Toute la base tient dans un fichier SQLite :
+
+```bash
+docker run --rm -v agenthub_agenthub-data:/data -v "$PWD":/backup alpine \
+  tar czf /backup/agenthub-$(date +%F).tar.gz -C /data .
+```
+
+### Dépannage
+
+| Symptôme | Piste |
+|---|---|
+| Le conteneur redémarre en boucle | `docker logs agenthub` — souvent `.env` incomplet |
+| « Aucun fournisseur configuré » | Réglages → Fournisseurs, ou relance l'assistant |
+| Les agents répondent « clé refusée » | La clé est invalide ou expirée côté service |
+| L'interface semble figée après une mise à jour | Recharge de force (`Ctrl+Shift+R`) |
+| Hermes injoignable | Vérifie que les deux conteneurs partagent un réseau Docker |
 
 ---
 
@@ -153,7 +278,7 @@ docker run --rm -v "$PWD/tests:/test:ro" agenthub:latest node /test/integration-
 les erreurs qu'une simple vérification de syntaxe ne voit pas. `integration-test`
 monte un faux gateway SSE et fait tourner l'orchestrateur pour de vrai : délégation
 sur trois niveaux, refus des délégations illégales, annulation, mémoire partagée,
-comptabilité des tokens.
+comptabilité des tokens, surcharge de modèle par conversation.
 
 > Lance-les **dans le conteneur**, pas sur ta machine : l'image tourne sur Node 20, et
 > du code accepté par Node 24 peut y échouer.
