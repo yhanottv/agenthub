@@ -37,18 +37,47 @@ const SECRET = resolveSecret();
 const ENV_PASSWORD = process.env.APP_PASSWORD || '';
 
 const storedHash = () => Settings.get('auth_hash');
-/** Has anyone claimed this instance yet? */
-const hasPassword = () => Boolean(ENV_PASSWORD || storedHash());
+
+/**
+ * Whether this instance has ever been secured. Sticky on purpose: an install
+ * protected only by APP_PASSWORD writes no hash, so without a durable marker
+ * dropping that variable — a rotated .env, a redeploy that loses a secret —
+ * would flip the instance back to "unclaimed" and hand a database full of
+ * conversations and provider keys to the first stranger who asks.
+ */
+const isClaimed = () => Settings.get('claimed') === '1';
+const hasPassword = () => Boolean(ENV_PASSWORD || storedHash() || isClaimed());
 
 function setPassword(plain) {
   const salt = crypto.randomBytes(16).toString('hex');
   Settings.set('auth_salt', salt);
   Settings.set('auth_hash', crypto.scryptSync(plain, salt, 64).toString('hex'));
+  Settings.set('claimed', '1');
 }
 
+// An APP_PASSWORD install is claimed too, even though it stores no hash.
+if (ENV_PASSWORD && !isClaimed()) Settings.set('claimed', '1');
+
 const app = express();
-app.set('trust proxy', 1);          // behind Traefik
+
+// Trusting X-Forwarded-For makes req.ip client-controlled, and req.ip is the
+// only key the login lockout has. Trusting it unconditionally let anyone rotate
+// the header to guess passwords forever, so it is now opt-in: set TRUST_PROXY=1
+// (or a CIDR) only when something really does sit in front.
+const TRUST_PROXY = process.env.TRUST_PROXY || '';
+if (TRUST_PROXY) {
+  app.set('trust proxy', /^\d+$/.test(TRUST_PROXY) ? Number(TRUST_PROXY) : TRUST_PROXY);
+}
 app.disable('x-powered-by');
+
+/**
+ * Whether the browser reached us over TLS. Read separately from `req.secure`
+ * so that dropping the proxy trust above cannot silently strip `Secure` from
+ * the session cookie behind a TLS-terminating proxy. A forged header here only
+ * marks the forger's own cookie Secure, which costs them, not us.
+ */
+const isSecureRequest = (req) =>
+  req.secure || String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https';
 
 // ---- security headers -------------------------------------------------------
 // Agent output is rendered through a markdown pipeline that ends in innerHTML,
@@ -149,12 +178,10 @@ function passwordMatches(candidate) {
 }
 
 // Built in one place so login and first-run claim issue identical sessions.
-// `req.secure` reflects x-forwarded-proto because `trust proxy` is set, so the
-// cookie is marked Secure behind a TLS-terminating reverse proxy too.
 function sessionCookie(req) {
   const token = crypto.randomBytes(24).toString('hex');
   activeSessions.add(token);
-  const secure = req.secure ? ' Secure;' : '';
+  const secure = isSecureRequest(req) ? ' Secure;' : '';
   return `ah_session=${encodeURIComponent(sign(token))}; HttpOnly;${secure} SameSite=Lax; Path=/; Max-Age=2592000`;
 }
 
@@ -273,7 +300,7 @@ app.get('/api/state', requireAuth, (req, res) => {
   res.json({
     agents: Agents.all(),
     channels: Channels.all(),
-    settings: Settings.all(),
+    settings: Settings.publicAll(),
     providers: providerCatalog(),
   });
 });
@@ -365,7 +392,7 @@ app.post('/api/setup/reset', requireAuth, (req, res) => {
 });
 
 app.get('/api/stats', requireAuth, (req, res) => res.json(Stats.overview()));
-app.get('/api/settings', requireAuth, (req, res) => res.json(Settings.all()));
+app.get('/api/settings', requireAuth, (req, res) => res.json(Settings.publicAll()));
 
 app.put('/api/settings', requireAuth, (req, res) => {
   const patch = req.body || {};
@@ -375,7 +402,7 @@ app.put('/api/settings', requireAuth, (req, res) => {
     if (k === 'theme' && !['light', 'dark'].includes(v)) continue;
     Settings.set(k, String(v ?? '').slice(0, 80));
   }
-  const settings = Settings.all();
+  const settings = Settings.publicAll();
   broadcast({ type: 'settings.update', settings });
   res.json(settings);
 });
@@ -715,6 +742,13 @@ if (halfWritten) console.log(`Reconciled ${halfWritten} message(s) left mid-stre
 if (!hasPassword()) {
   console.warn('⚠️  Aucun mot de passe défini : la première personne qui ouvrira l\'interface le choisira.');
   console.warn('   Ouvre l\'app maintenant pour prendre la main avant d\'exposer ce port publiquement.');
+} else if (!ENV_PASSWORD && !storedHash()) {
+  // Claimed, but the only credential lived in APP_PASSWORD and that variable is
+  // gone. Refusing to reopen the claim is deliberate — it protects the data —
+  // but it does lock the owner out, so say exactly how to get back in.
+  console.error('⛔ Cette instance est marquée comme revendiquée mais ne contient aucun mot de passe.');
+  console.error('   APP_PASSWORD a probablement disparu de l\'environnement. Remets-la pour te reconnecter,');
+  console.error('   puis change ton mot de passe depuis Réglages afin qu\'il soit stocké en base.');
 }
 
 server.listen(PORT, '0.0.0.0', () => {

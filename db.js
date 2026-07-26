@@ -181,6 +181,11 @@ export const validEmoji = (e, fallback) => {
 const rankToManager = (rank) => (rank === 'ceo' || rank === 'manager' ? 1 : 0);
 
 // ---- Settings --------------------------------------------------------------
+// The settings table doubles as the store for the app's own secrets (session
+// signing key, password salt and hash), so anything that leaves the server goes
+// through an allowlist. A denylist would leak the next secret someone adds.
+export const PUBLIC_SETTINGS = ['owner_name', 'org_name', 'theme', 'setup_done'];
+
 export const Settings = {
   get: (key, def = '') => {
     const r = db.prepare('SELECT value FROM settings WHERE key=?').get(key);
@@ -192,6 +197,12 @@ export const Settings = {
     return value;
   },
   all: () => Object.fromEntries(db.prepare('SELECT key,value FROM settings').all().map((r) => [r.key, r.value])),
+
+  /** The only shape allowed over HTTP or the WebSocket. */
+  publicAll: () => {
+    const all = Settings.all();
+    return Object.fromEntries(PUBLIC_SETTINGS.filter((k) => k in all).map((k) => [k, all[k]]));
+  },
 };
 
 // ---- Agents ----------------------------------------------------------------
