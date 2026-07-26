@@ -77,7 +77,7 @@ sa mémoire persistante.
 ### En trois commandes
 
 ```bash
-git clone https://github.com/<ton-compte>/agenthub.git
+git clone https://github.com/yhanottv/agenthub.git
 cd agenthub
 cp .env.example .env
 ```
@@ -179,7 +179,7 @@ c'est la base de données qui fait foi.
 |---|---|
 | `AGENTHUB_PASSWORD` | Mot de passe d'accès à l'interface. **Obligatoire.** |
 | `AGENTHUB_SECRET` | Clé de signature des sessions. **Obligatoire.** |
-| `HERMES_API_URL` / `HERMES_GATEWAY_API_KEY` | Amorce le fournisseur Hermes. |
+| `HERMES_API_URL` / `HERMES_API_KEY` | Amorce le fournisseur Hermes. |
 | `AGENTROUTER_API_URL` / `AGENTROUTER_API_KEY` | Amorce le fournisseur AgentRouter. |
 | `AGENTHUB_DEFAULT_PROVIDER` | Fournisseur des agents qui n'en précisent pas. |
 | `DATA_DIR` | Emplacement de la base SQLite. Défaut : `/data`. |
@@ -290,13 +290,11 @@ comptabilité des tokens, surcharge de modèle par conversation.
 - Les agents produisent du texte, ils **n'agissent pas** — pas encore d'outils ni de
   function-calling. C'est le plus gros écart avec un véritable espace de travail.
 - Le second cerveau est écrit à la main ; les agents ne s'y ajoutent rien eux-mêmes.
-- Session non révocable sans changer `AGENTHUB_SECRET`.
+- Les sessions sont révocables à la déconnexion (nonce aléatoire par login), mais un cookie volé reste valide jusqu'à la prochaine expiration de 30 jours si l'utilisateur ne se déconnecte pas.
 - Un seul utilisateur, un seul mot de passe. Pas de multi-comptes.
 
 ---
 
 ## Licence
 
-À définir avant publication. Sans fichier `LICENSE`, le dépôt reste « tous droits
-réservés » et personne ne peut légalement le réutiliser — ajoute une licence (MIT ou
-Apache-2.0 sont les choix habituels) si tu veux que les gens s'en servent.
+MIT
