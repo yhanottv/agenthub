@@ -49,9 +49,52 @@ function setPassword(plain) {
 const app = express();
 app.set('trust proxy', 1);          // behind Traefik
 app.disable('x-powered-by');
+
+// ---- security headers -------------------------------------------------------
+// Agent output is rendered through a markdown pipeline that ends in innerHTML,
+// so a strict CSP is the backstop if any escaping there is ever wrong.
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+    "img-src 'self' data:; connect-src 'self' ws: wss:; font-src 'self'; " +
+    "object-src 'none'; base-uri 'self'; frame-ancestors 'none';",
+  );
+  next();
+});
+
+/** Same-origin test shared by the CSRF gate and the WebSocket handshake. */
+function sameOrigin(req) {
+  const origin = req.headers.origin;
+  if (!origin) return true;                 // non-browser callers send no Origin
+  const host = req.headers.host || '';
+  const proto = req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http');
+  return origin === `http://${host}` || origin === `https://${host}` || origin === `${proto}://${host}`;
+}
+
+// ---- CSRF -------------------------------------------------------------------
+// The session lives in a cookie, so a cross-site page could otherwise drive any
+// mutating endpoint. Login and claim are exempt: neither relies on an existing
+// session, so there is nothing to ride.
+app.use((req, res, next) => {
+  if (!['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) return next();
+  if (req.path === '/api/login' || req.path === '/api/claim') return next();
+  if (!sameOrigin(req)) return res.status(403).json({ error: 'cross-origin request rejected' });
+  next();
+});
+
 app.use(express.json({ limit: '512kb' }));
 
 // ---- tiny signed-cookie auth ----------------------------------------------
+// Every login mints a fresh random token held server-side. Signing alone would
+// make one constant cookie valid forever: logout could not revoke it, and
+// changing the password would not evict whoever already had it.
+const activeSessions = new Set();
+
 function sign(val) {
   const h = crypto.createHmac('sha256', SECRET).update(val).digest('hex');
   return `${val}.${h}`;
@@ -59,13 +102,14 @@ function sign(val) {
 function verify(signed) {
   if (!signed || !signed.includes('.')) return false;
   const i = signed.lastIndexOf('.');
-  const val = signed.slice(0, i);
-  const expected = sign(val);
+  const token = signed.slice(0, i);
+  const expected = sign(token);
   // Constant-time: compare fixed-length buffers.
   const a = Buffer.from(expected);
   const b = Buffer.from(signed);
   if (a.length !== b.length) return false;
-  return crypto.timingSafeEqual(a, b) ? val : false;
+  if (!crypto.timingSafeEqual(a, b)) return false;
+  return activeSessions.has(token) ? token : false;
 }
 function parseCookies(req) {
   const out = {};
@@ -79,7 +123,7 @@ function parseCookies(req) {
   }
   return out;
 }
-const isAuthed = (req) => verify(parseCookies(req).ah_session) === 'ok';
+const isAuthed = (req) => Boolean(verify(parseCookies(req).ah_session));
 
 function requireAuth(req, res, next) {
   if (isAuthed(req)) return next();
@@ -105,9 +149,21 @@ function passwordMatches(candidate) {
 }
 
 // Built in one place so login and first-run claim issue identical sessions.
+// `req.secure` reflects x-forwarded-proto because `trust proxy` is set, so the
+// cookie is marked Secure behind a TLS-terminating reverse proxy too.
 function sessionCookie(req) {
+  const token = crypto.randomBytes(24).toString('hex');
+  activeSessions.add(token);
   const secure = req.secure ? ' Secure;' : '';
-  return `ah_session=${encodeURIComponent(sign('ok'))}; HttpOnly;${secure} SameSite=Lax; Path=/; Max-Age=2592000`;
+  return `ah_session=${encodeURIComponent(sign(token))}; HttpOnly;${secure} SameSite=Lax; Path=/; Max-Age=2592000`;
+}
+
+/** Drop the caller's own session, if it carried a valid one. */
+function revokeSession(req) {
+  const signed = parseCookies(req).ah_session;
+  if (!signed) return;
+  const i = signed.lastIndexOf('.');
+  if (i > 0) activeSessions.delete(signed.slice(0, i));
 }
 
 // ---- login throttling ------------------------------------------------------
@@ -190,11 +246,15 @@ app.post('/api/password', requireAuth, (req, res) => {
     return res.status(400).json({ error: `Le nouveau mot de passe doit faire au moins ${MIN_PASSWORD_CHARS} caractères.` });
   }
   setPassword(pw);
+  // Changing the password is the one lever that must evict a stolen cookie, so
+  // every existing session dies and the caller gets a fresh one.
+  activeSessions.clear();
   res.setHeader('Set-Cookie', sessionCookie(req));
   res.json({ ok: true });
 });
 
 app.post('/api/logout', (req, res) => {
+  revokeSession(req);
   res.setHeader('Set-Cookie', 'ah_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0');
   res.json({ ok: true });
 });
@@ -556,6 +616,10 @@ const wss = new WebSocketServer({ server, path: '/ws' });
 const clients = new Set();
 
 wss.on('connection', (ws, req) => {
+  // SameSite=Lax does not stop a cross-origin page from opening a WebSocket
+  // with the session cookie attached, so the handshake is checked explicitly.
+  // Without this, any site the owner visits could read the whole event stream.
+  if (!sameOrigin(req)) { ws.close(4403, 'bad origin'); return; }
   if (!isAuthed(req)) { ws.close(4401, 'unauthorized'); return; }
   clients.add(ws);
   ws.isAlive = true;
