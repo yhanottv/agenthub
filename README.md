@@ -88,10 +88,22 @@ Ouvre **http://localhost:8090** : le site te demande de choisir ton mot de passe
 un assistant te fait brancher ton service de modèles. Le secret de session est généré
 tout seul au premier démarrage et conservé dans la base.
 
-> ⚠️ **Prends la main tout de suite.** Tant que personne n'a choisi de mot de passe,
-> le premier visiteur peut le faire. Ouvre l'application depuis ta machine avant
-> d'exposer le port sur Internet. Une fois le mot de passe défini, toute nouvelle
-> tentative est refusée.
+#### Si tu installes sur un serveur distant
+
+AgentHub n'écoute que sur la boucle locale (`127.0.0.1:8090`). Ce n'est pas une
+limitation à contourner : tant que personne n'a choisi de mot de passe, le premier
+visiteur peut le faire, et un port ouvert sur Internet pendant cette fenêtre laisse
+un inconnu s'emparer de l'instance — avec tes conversations et tes clés API.
+
+Monte donc un tunnel depuis ta machine :
+
+```bash
+ssh -L 8090:localhost:8090 utilisateur@ton-serveur
+```
+
+puis ouvre **http://localhost:8090** dans ton navigateur. Le tunnel n'est nécessaire
+que pour cette première prise en main ; pour un accès permanent, passe par un nom de
+domaine (voir plus bas), ce qui te donne aussi HTTPS.
 
 ### Si Hermes tourne déjà sur ce serveur
 
@@ -128,11 +140,15 @@ C++ si aucun binaire précompilé ne correspond à ta plateforme.
 
 ### Derrière un nom de domaine (HTTPS)
 
-Le `docker-compose.yml` publie le port 8090 **en HTTP clair**. Pour un serveur exposé
-sur Internet, mets un reverse proxy devant et **retire la section `ports:`** — sinon
-le mot de passe circule en clair. Le fichier contient les labels
-[Traefik](https://traefik.io) prêts à décommenter ; avec Caddy ou nginx, fais pointer
-le proxy sur le port 8090 du conteneur.
+C'est la bonne façon d'y accéder au quotidien : tu obtiens HTTPS, donc ton mot de
+passe ne circule plus en clair, et tu n'as plus besoin du tunnel SSH.
+
+Mets un reverse proxy devant, **retire la section `ports:`** (elle ne sert plus à
+rien : le proxy joint le conteneur par le réseau Docker) et ajoute `TRUST_PROXY=1` à
+ton `.env` pour que le verrouillage après huit tentatives voie la vraie adresse des
+visiteurs. Le `docker-compose.yml` contient les labels [Traefik](https://traefik.io)
+prêts à décommenter ; avec Caddy ou nginx, fais pointer le proxy sur le port 8090 du
+conteneur.
 
 ### Où vivent tes données
 

@@ -35,8 +35,22 @@ services:
       APP_SECRET: ${AGENTHUB_SECRET:-}
     volumes:
       - agenthub-data:/data
+    # Publié sur la boucle locale UNIQUEMENT, et c'est délibéré.
+    #
+    # Tant que personne n'a choisi de mot de passe, le premier visiteur peut le
+    # faire. Avec "8090:8090", Docker ouvre ce port sur toutes les interfaces —
+    # en passant devant ufw — et un scanner peut revendiquer ton instance avant
+    # toi, lire tes conversations et repointer un fournisseur pour récupérer ta
+    # clé API. Sur la boucle locale, cette fenêtre n'est pas joignable.
+    #
+    # Pour ouvrir l'interface depuis ta machine, monte un tunnel :
+    #   ssh -L 8090:localhost:8090 utilisateur@ton-serveur
+    # puis va sur http://localhost:8090
+    #
+    # Pour un accès permanent par un nom de domaine, passe par Traefik (bloc
+    # plus bas) : il joint le conteneur par le réseau Docker, pas par ce port.
     ports:
-      - "8090:8090"
+      - "127.0.0.1:8090:8090"
 
     # ───────────────────────────────────────────────────────────────────────
     # Hermes tourne déjà quelque part ? Attache AgentHub à son réseau pour
@@ -46,9 +60,8 @@ services:
     # networks:
     #   - hermes-net
     #
-    # Derrière Traefik ? Retire la section `ports:` ci-dessus — sinon le
-    # service reste joignable en HTTP clair — mets TRUST_PROXY=1 dans ton
-    # .env, et décommente :
+    # Derrière Traefik ? Retire la section `ports:` ci-dessus — elle ne sert
+    # plus à rien — mets TRUST_PROXY=1 dans ton .env, et décommente :
     #
     # labels:
     #   - traefik.enable=true
