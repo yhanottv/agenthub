@@ -92,7 +92,7 @@ export class Orchestrator {
         this.postSystem(fresh, '⏹️ Exécution arrêtée.');
       } else {
         console.error('orchestration error:', err);
-        this.postSystem(fresh, `⚠️ Erreur interne d'orchestration : ${err.message}`);
+        this.postSystem(fresh, "⚠️ Une erreur interne est survenue — consultez les logs du serveur.");
       }
     } finally {
       // Never leave an agent stuck in "thinking" on the client.

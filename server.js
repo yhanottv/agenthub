@@ -12,20 +12,65 @@ import { Orchestrator } from './orchestrator.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 8090);
-const PASSWORD = process.env.APP_PASSWORD || 'hermes';
-const SECRET = process.env.APP_SECRET || 'change-me-secret';
+const PASSWORD = process.env.APP_PASSWORD;
+const SECRET = process.env.APP_SECRET;
 const MAX_MESSAGE_CHARS = 8000;
 
-if (SECRET === 'change-me-secret' || SECRET === 'please-change-this-secret') {
-  console.warn('⚠️  APP_SECRET is still the default value — sessions are forgeable. Set AGENTHUB_SECRET.');
+const _INSECURE_DEFAULTS = new Set([
+  'hermes', 'change-me-secret', 'change-moi', 'change-moi-aussi', 'please-change-this-secret',
+]);
+if (!SECRET || _INSECURE_DEFAULTS.has(SECRET)) {
+  console.error('FATAL: APP_SECRET manquant ou valeur par défaut — définir AGENTHUB_SECRET dans .env (openssl rand -hex 32)');
+  process.exit(1);
+}
+if (!PASSWORD || _INSECURE_DEFAULTS.has(PASSWORD)) {
+  console.error('FATAL: APP_PASSWORD manquant ou valeur par défaut — définir AGENTHUB_PASSWORD dans .env');
+  process.exit(1);
 }
 
 const app = express();
 app.set('trust proxy', 1);          // behind Traefik
 app.disable('x-powered-by');
+
+// ---- security headers -------------------------------------------------------
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+    "img-src 'self' data:; connect-src 'self' ws: wss:; font-src 'self'; " +
+    "object-src 'none'; base-uri 'self'; frame-ancestors 'none';",
+  );
+  next();
+});
+
+// ---- CSRF protection --------------------------------------------------------
+// Mutating requests (POST/PUT/DELETE) from cross-origin pages are blocked.
+// Same-origin fetch() and server-to-server calls (no Origin header) are allowed.
+app.use((req, res, next) => {
+  if (!['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) return next();
+  if (req.path === '/api/login') return next();
+  const origin = req.headers.origin;
+  if (!origin) return next(); // server-side / tool calls have no Origin
+  const host = req.headers.host || '';
+  const proto = req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http');
+  if (!origin.startsWith(`http://${host}`) && !origin.startsWith(`https://${host}`)
+      && !origin.startsWith(`${proto}://${host}`)) {
+    return res.status(403).json({ error: 'cross-origin request rejected' });
+  }
+  next();
+});
+
 app.use(express.json({ limit: '512kb' }));
 
-// ---- tiny signed-cookie auth ----------------------------------------------
+// ---- tiny signed-cookie auth with per-login nonces ------------------------
+// Each login issues a fresh random token stored server-side.
+// Logout removes the token, making stolen cookies non-replayable.
+const activeSessions = new Set();
+
 function sign(val) {
   const h = crypto.createHmac('sha256', SECRET).update(val).digest('hex');
   return `${val}.${h}`;
@@ -33,13 +78,13 @@ function sign(val) {
 function verify(signed) {
   if (!signed || !signed.includes('.')) return false;
   const i = signed.lastIndexOf('.');
-  const val = signed.slice(0, i);
-  const expected = sign(val);
-  // Constant-time: compare fixed-length buffers.
+  const token = signed.slice(0, i);
+  const expected = sign(token);
   const a = Buffer.from(expected);
   const b = Buffer.from(signed);
   if (a.length !== b.length) return false;
-  return crypto.timingSafeEqual(a, b) ? val : false;
+  if (!crypto.timingSafeEqual(a, b)) return false;
+  return activeSessions.has(token) ? token : false;
 }
 function parseCookies(req) {
   const out = {};
@@ -53,7 +98,7 @@ function parseCookies(req) {
   }
   return out;
 }
-const isAuthed = (req) => verify(parseCookies(req).ah_session) === 'ok';
+const isAuthed = (req) => Boolean(verify(parseCookies(req).ah_session));
 
 function requireAuth(req, res, next) {
   if (isAuthed(req)) return next();
@@ -114,13 +159,20 @@ app.post('/api/login', (req, res) => {
     return res.status(401).json({ error: 'bad_password' });
   }
   attempts.delete(req.ip || 'unknown');
+  const token = crypto.randomBytes(24).toString('hex');
+  activeSessions.add(token);
   const secure = req.secure ? ' Secure;' : '';
   res.setHeader('Set-Cookie',
-    `ah_session=${encodeURIComponent(sign('ok'))}; HttpOnly;${secure} SameSite=Lax; Path=/; Max-Age=2592000`);
+    `ah_session=${encodeURIComponent(sign(token))}; HttpOnly;${secure} SameSite=Lax; Path=/; Max-Age=2592000`);
   res.json({ ok: true });
 });
 
 app.post('/api/logout', (req, res) => {
+  const signed = parseCookies(req).ah_session;
+  if (signed) {
+    const i = signed.lastIndexOf('.');
+    if (i > 0) activeSessions.delete(signed.slice(0, i));
+  }
   res.setHeader('Set-Cookie', 'ah_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0');
   res.json({ ok: true });
 });
@@ -476,6 +528,15 @@ const wss = new WebSocketServer({ server, path: '/ws' });
 const clients = new Set();
 
 wss.on('connection', (ws, req) => {
+  const origin = req.headers.origin;
+  if (origin) {
+    const host = req.headers.host || '';
+    const proto = req.headers['x-forwarded-proto'] || 'http';
+    if (!origin.startsWith(`http://${host}`) && !origin.startsWith(`https://${host}`)
+        && !origin.startsWith(`${proto}://${host}`)) {
+      ws.close(4403, 'bad origin'); return;
+    }
+  }
   if (!isAuthed(req)) { ws.close(4401, 'unauthorized'); return; }
   clients.add(ws);
   ws.isAlive = true;
@@ -567,10 +628,6 @@ const orphaned = Tasks.reconcileOrphans();
 if (orphaned) console.log(`Reconciled ${orphaned} task(s) left running by a previous process.`);
 const halfWritten = Messages.reconcileStreaming();
 if (halfWritten) console.log(`Reconciled ${halfWritten} message(s) left mid-stream by a previous process.`);
-
-if (PASSWORD === 'hermes') {
-  console.warn('⚠️  APP_PASSWORD is still the default value — set AGENTHUB_PASSWORD in .env.');
-}
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`AgentHub prêt sur :${PORT}`);
