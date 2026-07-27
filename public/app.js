@@ -2008,6 +2008,17 @@ function renderMessage(m, prev) {
 // Delegated from the message list so it survives re-renders and streaming.
 function wireMessageActions(box) {
   box.addEventListener('click', (e) => {
+    // Fold / unfold a finished code block.
+    const head = e.target.closest('[data-code-toggle]');
+    if (head) {
+      const block = head.closest('.codeblock');
+      const open = block.classList.toggle('open');
+      head.setAttribute('aria-expanded', String(open));
+      const label = head.querySelector('.code-open');
+      if (label) label.textContent = open ? 'Masquer' : 'Afficher';
+      return;
+    }
+
     const btn = e.target.closest('[data-del]');
     if (!btn) return;
     const id = btn.dataset.del;
@@ -2116,19 +2127,37 @@ function renderThinking() {
       </span>
     </div>`).join('');
 
+  // While anything runs, the send button turns into a stop button. Putting it
+  // where your hand already is beats a second control hidden under the field.
+  const anyBusy = c.members.some((id) => (S.status[id] || 'idle') !== 'idle');
+  const sendBtn = $('#send-btn');
+  const input = $('#composer-input');
+  if (sendBtn) {
+    sendBtn.classList.toggle('is-stop', anyBusy);
+    sendBtn.innerHTML = anyBusy ? IC.stop : IC.send;
+    sendBtn.setAttribute('aria-label', anyBusy ? 'Arrêter la réponse' : 'Envoyer');
+    sendBtn.title = anyBusy ? 'Arrêter la réponse' : 'Envoyer';
+    sendBtn.disabled = anyBusy ? false : !(input && input.value.trim());
+  }
+
   const controls = $('#run-controls');
   if (controls) {
-    const anyBusy = c.members.some((id) => (S.status[id] || 'idle') !== 'idle');
     controls.innerHTML = anyBusy
-      ? `<button class="stop-btn" id="stop-run" type="button">${IC.stop} Arrêter</button>` : '';
-    const sb = $('#stop-run');
-    if (sb) sb.onclick = async () => {
-      sb.disabled = true;
-      const r = await tryApi(api('POST', `/api/channels/${S.current}/stop`), 'Arrêt');
-      if (r) toast('Arrêt demandé.', { kind: 'warn' });
-    };
+      ? '<span class="run-note">Une réponse est en cours — <kbd>Échap</kbd> pour l\'arrêter</span>' : '';
   }
 }
+
+async function stopRun() {
+  const channelId = S.current;
+  if (!channelId) return;
+  const r = await tryApi(api('POST', `/api/channels/${channelId}/stop`), 'Arrêt');
+  if (r) toast(r.stopped ? 'Réponse arrêtée.' : 'Plus rien ne tournait.', { kind: 'warn' });
+}
+
+const channelBusy = () => {
+  const c = channelById(S.current);
+  return Boolean(c && c.members.some((id) => (S.status[id] || 'idle') !== 'idle'));
+};
 
 function renderTasks() {
   const list = $('#task-list');
@@ -2182,7 +2211,8 @@ function wireComposer() {
   input.addEventListener('input', () => {
     S.drafts[S.current] = input.value;
     autoGrow(input);
-    btn.disabled = !input.value.trim();
+    // An empty field must not disable the button while it means "stop".
+    btn.disabled = channelBusy() ? false : !input.value.trim();
     updateMentionPop(input, pop);
   });
 
@@ -2202,11 +2232,25 @@ function wireComposer() {
       if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); active?.click(); return; }
       if (e.key === 'Escape') { e.preventDefault(); pop.classList.add('hidden'); return; }
     }
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(input); }
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (channelBusy()) return;      // don't queue a message onto a live run
+      send(input);
+    }
   });
 
   input.addEventListener('blur', () => setTimeout(() => pop.classList.add('hidden'), 140));
-  btn.onclick = () => send(input);
+
+  // Same button, two jobs — never send while a reply is being written.
+  btn.onclick = () => (channelBusy() ? stopRun() : send(input));
+
+  // Escape stops the run without leaving the keyboard.
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && channelBusy() && pop.classList.contains('hidden')) {
+      e.preventDefault();
+      stopRun();
+    }
+  });
 }
 
 function autoGrow(input) {
@@ -2274,6 +2318,78 @@ async function send(input) {
   }
 }
 
+// ============================ blocs de code =================================
+/**
+ * A wall of streaming code is noise: you cannot read it as it arrives, and it
+ * pushes the conversation off screen. So while an agent writes, we show a live
+ * pill — a rotating verb plus the running line count — and only reveal the code
+ * once it is finished, folded behind a one-line summary.
+ */
+const CODING_VERBS = [
+  'En train de coder',
+  'Écrit le code',
+  'Assemble la logique',
+  'Compose la fonction',
+  'Structure le fichier',
+  'Aligne les accolades',
+  "Affine l'implémentation",
+  'Pose les fondations',
+];
+let codingVerb = 0;
+
+// One ticker for the whole page: the markup is re-rendered on every token, so
+// per-element timers would restart constantly and never advance.
+setInterval(() => {
+  const live = $$('.code-verb');
+  if (!live.length) return;
+  codingVerb = (codingVerb + 1) % CODING_VERBS.length;
+  for (const n of live) {
+    n.style.opacity = '0';
+    setTimeout(() => { n.textContent = CODING_VERBS[codingVerb]; n.style.opacity = '1'; }, 180);
+  }
+}, 2600);
+
+/**
+ * Count what changed. A real diff gets real numbers; plain code only ever adds,
+ * so claiming a removal count there would be inventing it.
+ */
+function codeStats(code) {
+  const lines = String(code || '').split('\n');
+  while (lines.length && lines[lines.length - 1].trim() === '') lines.pop();
+  const add = lines.filter((l) => /^\+(?!\+\+)/.test(l)).length;
+  const del = lines.filter((l) => /^-(?!--)/.test(l)).length;
+  if (add + del > 0 && (add + del) >= lines.length * 0.5) return { add, del, diff: true };
+  return { add: lines.length, del: 0, diff: false };
+}
+
+function renderCodeBlock(fence) {
+  if (!fence) return '';
+  const { code = '', lang = '', open = false } = fence;
+  const { add, del, diff } = codeStats(code);
+
+  if (open) {
+    // Still streaming: no code, just a sense of progress.
+    return `<div class="codeblock coding">
+      <span class="code-spark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="code-verb">${escapeHtml(CODING_VERBS[codingVerb])}</span>
+      <span class="code-counts"><span class="code-add">+${add}</span>${del ? `<span class="code-del">−${del}</span>` : ''}</span>
+    </div>`;
+  }
+
+  const label = lang ? lang.toLowerCase() : 'code';
+  return `<div class="codeblock">
+    <button class="code-head" type="button" data-code-toggle aria-expanded="false">
+      <span class="code-caret" aria-hidden="true">${IC.chev}</span>
+      <span class="code-lang">${escapeHtml(label)}</span>
+      <span class="code-counts">
+        <span class="code-add">+${add}</span>${del ? `<span class="code-del">−${del}</span>` : ''}
+      </span>
+      <span class="code-open">Afficher</span>
+    </button>
+    <div class="code-body"><div class="code-inner"><pre><code>${escapeHtml(code)}</code></pre></div></div>
+  </div>`;
+}
+
 // ============================ markdown ======================================
 /**
  * Minimal, safe markdown renderer.
@@ -2294,7 +2410,7 @@ function renderMarkdown(src) {
 
   // 1. fenced code blocks (closed)
   let s = raw.replace(/```[ \t]*([\w+#.-]*)[ \t]*\r?\n?([\s\S]*?)```/g, (_, lang, code) => {
-    fences.push(code.replace(/\n$/, ''));
+    fences.push({ code: code.replace(/\n$/, ''), lang, open: false });
     return `\n\n\u0000F${fences.length - 1}\u0000\n\n`;
   });
 
@@ -2305,8 +2421,9 @@ function renderMarkdown(src) {
     const head = s.slice(0, open);
     const rest = s.slice(open + 3);
     const nl = rest.indexOf('\n');
+    const lang = (nl === -1 ? rest : rest.slice(0, nl)).trim();
     const code = nl === -1 ? '' : rest.slice(nl + 1);
-    fences.push(code);
+    fences.push({ code, lang, open: true });
     s = `${head}\n\n\u0000F${fences.length - 1}\u0000\n\n`;
   }
 
@@ -2366,7 +2483,7 @@ function renderMarkdown(src) {
   s = out.join('');
 
   // 9. restore extracted content, escaped
-  s = s.replace(/\u0000F(\d+)\u0000/g, (_, i) => `<pre><code>${escapeHtml(fences[Number(i)] ?? '')}</code></pre>`);
+  s = s.replace(/\u0000F(\d+)\u0000/g, (_, i) => renderCodeBlock(fences[Number(i)]));
   s = s.replace(/\u0000C(\d+)\u0000/g, (_, i) => `<code>${escapeHtml(inlines[Number(i)] ?? '')}</code>`);
   s = s.replace(/\u0000L(\d+)\u0000/g, (_, i) => {
     const l = links[Number(i)];

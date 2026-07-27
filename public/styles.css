@@ -927,6 +927,79 @@ button.agent-card:hover { border-color: var(--accent); transform: translateY(-1p
   font-family: inherit; background: var(--line-soft); border: 1px solid var(--line);
   border-radius: 4px; padding: 0 5px; font-size: 10.5px;
 }
+/* ---------------------------------------------------------- bloc de code --- */
+/* Pendant l'écriture : une pastille vivante plutôt qu'un mur de code qui
+   défile. Une fois terminé : un résumé d'une ligne, dépliable. */
+.codeblock {
+  margin: var(--sp-2) 0;
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--surface-2); overflow: hidden;
+}
+
+.codeblock.coding {
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: 9px var(--sp-3);
+  border-color: var(--accent-soft); background: var(--accent-soft);
+  color: var(--accent-ink); font-size: var(--fs-md); font-weight: 600;
+}
+/* Trois traits qui « écrivent » : discret, et ça ne bouge pas la mise en page. */
+.code-spark { display: inline-flex; align-items: flex-end; gap: 2px; height: 13px; flex: none; }
+.code-spark i {
+  width: 2.5px; border-radius: 2px; background: currentColor;
+  animation: code-write 1.05s var(--ease) infinite;
+}
+.code-spark i:nth-child(1) { height: 60%; animation-delay: 0s; }
+.code-spark i:nth-child(2) { height: 100%; animation-delay: .16s; }
+.code-spark i:nth-child(3) { height: 45%; animation-delay: .32s; }
+@keyframes code-write {
+  0%, 100% { transform: scaleY(.45); opacity: .5; }
+  50%      { transform: scaleY(1);   opacity: 1; }
+}
+.code-verb { transition: opacity .18s var(--ease); }
+
+.code-counts { display: inline-flex; align-items: center; gap: 7px; margin-left: auto; flex: none;
+  font-variant-numeric: tabular-nums; font-size: var(--fs-sm); font-weight: 700; }
+.code-add { color: var(--ok); }
+.code-del { color: var(--alert); }
+/* Sur l'aplat indigo de la pastille, le vert tombait à 4.12:1 — on garde la
+   couleur du texte, la distinction vert/rouge n'a d'intérêt qu'à la fin. */
+.codeblock.coding .code-add, .codeblock.coding .code-del { color: inherit; }
+
+.code-head {
+  display: flex; align-items: center; gap: var(--sp-2); width: 100%;
+  padding: 9px var(--sp-3); text-align: left;
+  color: var(--text-2); font-size: var(--fs-md);
+  transition: background var(--fast) var(--ease);
+}
+.code-head:hover { background: var(--line-soft); }
+.code-caret { display: grid; place-items: center; color: var(--muted-2); flex: none;
+  transition: transform var(--mid) var(--ease-out); }
+.code-caret svg { width: 15px; height: 15px; }
+.codeblock.open .code-caret { transform: rotate(90deg); }
+.code-lang { font-weight: 650; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--fs-sm); }
+/* --muted-2 tombait à 4.25:1 sur --surface-2 en thème sombre. */
+.code-open { font-size: 11.5px; color: var(--muted); flex: none; }
+
+/* Repli animé : grid-template-rows anime une hauteur inconnue, contrairement
+   à max-height qui oblige à deviner une valeur. */
+.code-body { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--mid) var(--ease-out); }
+.codeblock.open .code-body { grid-template-rows: 1fr; }
+/* Un conteneur intermédiaire est nécessaire : mettre min-height:0 sur le <pre>
+   lui-même laisserait quand même ses 24px de padding et sa bordure, et la piste
+   ne descendrait jamais à zéro. */
+.code-inner { min-height: 0; overflow: hidden; }
+.code-inner > pre { margin: 0; border: none; border-radius: 0;
+  border-top: 1px solid var(--line); overflow: hidden; }
+.codeblock.open .code-inner > pre { overflow-x: auto; }
+
+.run-note { color: var(--muted-2); }
+
+/* Le bouton d'envoi devient bouton d'arrêt pendant une réponse. */
+#send-btn.is-stop { background: var(--alert); }
+#send-btn.is-stop:hover:not(:disabled) { filter: brightness(.92); }
+#send-btn svg { transition: transform var(--fast) var(--ease); }
+
 /* Pastille de modèle : ce sur quoi la conversation tourne réellement. */
 .model-chip {
   display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px;
