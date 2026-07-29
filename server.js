@@ -443,7 +443,7 @@ app.put('/api/settings', requireAuth, (req, res) => {
   const ALLOWED = [
     'owner_name', 'org_name', 'theme', 'daily_budget', 'tools_enabled',
     'notes_auto', 'notes_budget', 'context_budget',
-    'image_provider', 'image_model',
+    'image_provider', 'image_model', 'image_mode',
   ];
   const FLAGS = ['tools_enabled', 'notes_auto'];
   for (const [k, v] of Object.entries(patch)) {

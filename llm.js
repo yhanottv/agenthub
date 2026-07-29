@@ -458,20 +458,38 @@ export function imageProvider() {
 }
 
 /**
- * Génère une image via l'endpoint OpenAI `/v1/images/generations`.
+ * Génère une image.
  *
- * Le format b64 est demandé explicitement : une URL signée expire, et il
- * faudrait la retélécharger avant qu'elle ne meure. Les services qui ignorent
- * ce paramètre et renvoient quand même une URL sont gérés en second recours.
+ * Deux protocoles coexistent dans la nature et aucun ne couvre tout le monde :
  *
- * @returns {Promise<{ok:boolean, buffer?:Buffer, mime?:string, error?:string}>}
+ * - `/v1/images/generations`, la voie OpenAI historique ;
+ * - une complétion de chat avec `modalities: ["image","text"]`, par laquelle
+ *   passent les modèles d'images d'OpenRouter (Gemini Image, GPT Image…), qui
+ *   renvoient l'image en data-URL dans `message.images`.
+ *
+ * Par défaut on essaie le premier, et on bascule sur le second quand le service
+ * répond 404 — c'est exactement ce que fait OpenRouter, qui expose bien
+ * l'endpoint mais n'y connaît aucun modèle. L'utilisateur n'a donc pas à savoir
+ * lequel des deux son fournisseur parle.
+ *
+ * @returns {Promise<{ok:boolean, buffer?:Buffer, mime?:string, error?:string, usage?:object}>}
  */
 export async function generateImage({ prompt, size = '1024x1024', signal } = {}) {
   const { provider, model, reason } = imageProvider();
   if (!provider) {
     return { ok: false, error: `Aucun service d'images configuré (${reason}). Réglages → Images.` };
   }
+  const mode = Settings.get('image_mode', 'auto');
 
+  if (mode !== 'chat') {
+    const r = await imageViaEndpoint({ provider, model, prompt, size, signal });
+    if (r.ok || !r.tryChat || mode === 'images') return r;
+    console.log(`${provider.label} : pas de /images/generations pour « ${model} », essai par complétion de chat.`);
+  }
+  return imageViaChat({ provider, model, prompt, size, signal });
+}
+
+async function imageViaEndpoint({ provider, model, prompt, size, signal }) {
   const headers = { 'Content-Type': 'application/json', Accept: 'application/json' };
   if (provider.api_key) headers.Authorization = `Bearer ${provider.api_key}`;
 
@@ -500,8 +518,13 @@ export async function generateImage({ prompt, size = '1024x1024', signal } = {})
   if (!resp.ok) {
     let detail = '';
     try { detail = (await resp.text()).slice(0, 300); } catch { /* corps illisible */ }
+    // 404 = ni cet endpoint, ni ce modèle ici. C'est le signal qu'il faut
+    // tenter l'autre protocole plutôt que d'abandonner.
     if (resp.status === 404) {
-      return { ok: false, error: `${provider.label} n'expose pas de génération d'images, ou ne connaît pas le modèle « ${model} ».` };
+      return {
+        ok: false, tryChat: true,
+        error: `${provider.label} n'expose pas de génération d'images, ou ne connaît pas le modèle « ${model} ».`,
+      };
     }
     return { ok: false, error: describeHttpError(provider, resp.status, detail) };
   }
@@ -518,7 +541,8 @@ export async function generateImage({ prompt, size = '1024x1024', signal } = {})
     const buffer = Buffer.from(first.b64_json, 'base64');
     if (!buffer.length) return { ok: false, error: 'Image vide.' };
     if (buffer.length > MAX_IMAGE_BYTES) return { ok: false, error: 'Image trop lourde.' };
-    return { ok: true, buffer, mime: sniffImage(buffer) || 'image/png', revised: first.revised_prompt || '' };
+    return { ok: true, buffer, mime: sniffImage(buffer) || 'image/png', revised: first.revised_prompt || '',
+      provider: provider.id, model, usage: usageOf(payload) };
   }
 
   if (first.url) {
@@ -529,7 +553,8 @@ export async function generateImage({ prompt, size = '1024x1024', signal } = {})
       if (buffer.length > MAX_IMAGE_BYTES) return { ok: false, error: 'Image trop lourde.' };
       const mime = sniffImage(buffer);
       if (!mime) return { ok: false, error: "Le fichier renvoyé n'est pas une image reconnue." };
-      return { ok: true, buffer, mime, revised: first.revised_prompt || '' };
+      return { ok: true, buffer, mime, revised: first.revised_prompt || '',
+        provider: provider.id, model, usage: usageOf(payload) };
     } catch (err) {
       return { ok: false, error: `Téléchargement de l'image impossible : ${err.message}` };
     }
@@ -537,6 +562,87 @@ export async function generateImage({ prompt, size = '1024x1024', signal } = {})
 
   return { ok: false, error: "Réponse sans image exploitable." };
 }
+
+/**
+ * Génération par complétion de chat, avec `modalities`.
+ *
+ * L'image revient en data-URL dans `message.images`. Les proportions ne sont
+ * pas un paramètre de l'API ici : elles sont demandées dans le texte, ce qui
+ * est une consigne et non une garantie — autant le savoir.
+ */
+async function imageViaChat({ provider, model, prompt, size, signal }) {
+  const headers = { 'Content-Type': 'application/json', Accept: 'application/json' };
+  if (provider.api_key) headers.Authorization = `Bearer ${provider.api_key}`;
+
+  const ratio = { '1536x1024': 'au format paysage (16:9)', '1024x1536': 'au format portrait (9:16)' }[size]
+    || 'au format carré (1:1)';
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort('timeout'), IMAGE_TIMEOUT_MS);
+  const onAbort = () => ctrl.abort('caller');
+  signal?.addEventListener('abort', onAbort, { once: true });
+
+  let resp;
+  try {
+    resp = await fetch(endpoint(provider.base_url, 'chat/completions'), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model,
+        modalities: ['image', 'text'],
+        messages: [{ role: 'user', content: `${prompt}\n\nProduis une image ${ratio}.` }],
+      }),
+      signal: ctrl.signal,
+    });
+  } catch (err) {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+    if (signal?.aborted) return { ok: false, error: 'Génération interrompue.' };
+    return { ok: false, error: `${provider.label} injoignable : ${err.message}` };
+  }
+  clearTimeout(timer);
+  signal?.removeEventListener('abort', onAbort);
+
+  let payload;
+  try { payload = await resp.json(); } catch { return { ok: false, error: 'Réponse illisible (JSON attendu).' }; }
+  if (!resp.ok) {
+    const msg = payload?.error?.message ? summariseUpstream(payload.error.message) : `HTTP ${resp.status}`;
+    return { ok: false, error: `${provider.label} : ${msg}` };
+  }
+
+  const message = payload?.choices?.[0]?.message || {};
+  const images = Array.isArray(message.images) ? message.images : [];
+  const url = images[0]?.image_url?.url || images[0]?.url || '';
+  if (!url.startsWith('data:image/')) {
+    const said = String(message.content || '').trim().slice(0, 200);
+    return {
+      ok: false,
+      error: said
+        ? `« ${model} » a répondu du texte au lieu d'une image : « ${said} ». Ce modèle ne génère peut-être pas d'images.`
+        : `« ${model} » n'a renvoyé aucune image. Vérifie que ce modèle en produit.`,
+    };
+  }
+
+  const buffer = Buffer.from(url.slice(url.indexOf(',') + 1), 'base64');
+  if (!buffer.length) return { ok: false, error: 'Image vide.' };
+  if (buffer.length > MAX_IMAGE_BYTES) return { ok: false, error: 'Image trop lourde.' };
+  const mime = sniffImage(buffer);
+  if (!mime) return { ok: false, error: "Le contenu renvoyé n'est pas une image reconnue." };
+
+  const u = payload.usage || {};
+  return {
+    ok: true, buffer, mime, revised: '',
+    provider: provider.id, model,
+    usage: { tokensIn: u.prompt_tokens || 0, tokensOut: u.completion_tokens || 0, estimated: !u.total_tokens },
+  };
+}
+
+/** Consommation déclarée par le service, quand il en déclare une. */
+const usageOf = (payload) => {
+  const u = payload?.usage || {};
+  if (!u.prompt_tokens && !u.completion_tokens) return null;
+  return { tokensIn: u.prompt_tokens || 0, tokensOut: u.completion_tokens || 0, estimated: false };
+};
 
 /**
  * Type déduit des octets, jamais de ce que le service annonce.

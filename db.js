@@ -387,6 +387,7 @@ export const PUBLIC_SETTINGS = [
   'context_budget',    // plafond total du prompt, en caractères
   'image_provider',    // service utilisé pour générer les images
   'image_model',       // et son modèle
+  'image_mode',        // auto | images | chat — quel protocole d'image
 ];
 
 export const Settings = {

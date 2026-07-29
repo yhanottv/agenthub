@@ -2950,12 +2950,19 @@ function renderSettings(v) {
           </div>
           <div class="field">
             <label for="img-model">Modèle d'image</label>
-            <input id="img-model" maxlength="120" value="${escapeAttr(S.settings.image_model || '')}"
-                   placeholder="ex : gpt-image-1, dall-e-3">
-            <div class="field-hint">Le nom exact attendu par ce service.</div>
+            <input id="img-model" maxlength="120" list="img-models" value="${escapeAttr(S.settings.image_model || '')}"
+                   placeholder="ex : google/gemini-2.5-flash-image">
+            <datalist id="img-models">${imageModelOptions()}</datalist>
+            <div class="field-hint">Les modèles au nom évocateur de ton service sont proposés.</div>
           </div>
         </div>
         <button class="btn" id="save-image" type="button" style="margin-top:14px">Enregistrer</button>
+        <div class="field-hint" style="margin-top:12px;line-height:1.7">
+          Deux protocoles existent et AgentHub essaie les deux : <code>/v1/images/generations</code>
+          d'abord, puis la complétion de chat avec <code>modalities</code> — par laquelle passent les
+          modèles d'images d'OpenRouter. Tu n'as pas à savoir lequel ton service parle.
+          Chaque image est comptée dans la consommation.
+        </div>
       </div>
 
       <div class="agent-card">
@@ -3049,6 +3056,12 @@ function renderSettings(v) {
 
   $('#open-prices', v).onclick = () => openPricesModal();
 
+  // Changer de service change la liste des modèles proposés.
+  $('#img-provider', v).onchange = () => {
+    const dl = $('#img-models', v);
+    if (dl) dl.innerHTML = imageModelOptions($('#img-provider', v).value);
+  };
+
   $('#save-image', v).onclick = async (e) => {
     e.currentTarget.disabled = true;
     const res = await tryApi(api('PUT', '/api/settings', {
@@ -3104,6 +3117,24 @@ function renderSettings(v) {
 
   $('#add-schedule', v).onclick = () => openScheduleModal(null, () => loadAutomation(v));
   $('#add-webhook', v).onclick = () => openWebhookModal(() => loadAutomation(v));
+}
+
+/**
+ * Les modèles du service dont le nom évoque une image.
+ *
+ * Une heuristique sur le nom, pas une vérité : aucun catalogue OpenAI-compatible
+ * ne déclare quels modèles savent dessiner. C'est une liste de suggestions dans
+ * un champ libre — si le tien manque, tape-le.
+ */
+function imageModelOptions(providerId) {
+  const id = providerId ?? S.settings.image_provider;
+  const p = S.providers.find((x) => x.id === id);
+  if (!p) return '';
+  return p.models
+    .filter((m) => /image|dall|flux|imagen|sd3|stable-diffusion|midjourney|nano-banana/i.test(m))
+    .slice(0, 40)
+    .map((m) => `<option value="${escapeAttr(m)}"></option>`)
+    .join('');
 }
 
 // ---- automatisation : sauvegardes, planificateur, webhooks ------------------

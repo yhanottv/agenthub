@@ -16,7 +16,7 @@ import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { Notes, NoteProposals, Search, Attachments } from './db.js';
+import { Notes, NoteProposals, Search, Attachments, Usage } from './db.js';
 import { generateImage, imageProvider } from './llm.js';
 
 const UPLOAD_DIR = path.join(process.env.DATA_DIR || './data', 'uploads');
@@ -583,6 +583,17 @@ export async function runTool(name, rawArgs, ctx = {}) {
           signal: ctx.signal,
         });
         if (!r.ok) return { ok: false, text: r.error };
+
+        // Une image se paie comme un appel modèle — mesuré à 0,039 € l'unité
+        // sur Gemini Image. La laisser hors du compteur ferait mentir le total.
+        if (r.usage) {
+          Usage.record({
+            agent_id: ctx.agent?.id, channel_id: ctx.channel.id,
+            provider: r.provider, model: r.model,
+            tokens_in: r.usage.tokensIn, tokens_out: r.usage.tokensOut,
+            estimated: r.usage.estimated,
+          });
+        }
 
         // Le fichier est écrit sous un identifiant que nous choisissons, avec
         // l'extension déduite des octets — jamais d'un nom venu du modèle.
