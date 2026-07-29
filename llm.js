@@ -129,6 +129,8 @@ export function resolveForAgent(agent = {}, override = null) {
   return { provider, model, fellBack };
 }
 
+const slugOf = (s) => String(s || '').toLowerCase().trim();
+
 // Providers are configured either with or without the /v1 suffix.
 function endpoint(baseUrl, path) {
   const base = String(baseUrl).replace(/\/+$/, '');
@@ -204,7 +206,30 @@ export async function probeProvider(cfg) {
   }
 
   const authed = await fetchModels(baseUrl, apiKey);
-  if (!authed.ok) return authed;
+  if (!authed.ok) {
+    // « La clé API est refusée » ne dit pas quoi faire. La cause la plus
+    // fréquente est une clé collée dans le mauvais formulaire : les clés ne
+    // sont pas interchangeables d'un service à l'autre, et rien ne le rappelle
+    // au moment où l'on colle.
+    if (authed.unauthorized) {
+      const named = Boolean(cfg.label);
+      const who = cfg.label || 'Ce service';
+      const hermes = cfg.session_header || slugOf(cfg.id) === 'hermes';
+      return {
+        ...authed,
+        // Texte brut : il est échappé à l'affichage, du markdown y ressortirait
+        // tel quel avec ses étoiles et ses accents graves.
+        error: hermes
+          ? `${who} refuse cette clé. Hermes attend sa propre clé — la valeur de `
+            + `API_SERVER_KEY dans sa configuration — et non celle d'un autre service `
+            + `comme AgentRouter ou OpenRouter. Tu peux aussi passer cette étape : `
+            + `AgentHub fonctionne sans Hermes.`
+          : `${who} refuse cette clé. Vérifie qu'elle vient bien ${named ? `de ${who}` : 'de ce service-là'} : `
+            + `une clé d'un autre service ne fonctionnera pas ici.`,
+      };
+    }
+    return authed;
+  }
 
   // Was the key actually what got us in? Repeat the call anonymously.
   let keyVerified = null;

@@ -382,6 +382,12 @@ app.post('/api/providers/:id/test', requireAuth, async (req, res) => {
   const body = req.body || {};
   const preset = PRESETS.find((p) => p.id === id);
   const cfg = {
+    id,
+    // Le libellé et l'en-tête de session servent à formuler une erreur utile
+    // quand la clé est refusée : « ce service refuse cette clé » vaut mieux
+    // que « la clé API est refusée ».
+    label: body.label || stored?.label || preset?.label || id,
+    session_header: stored?.session_header || preset?.session_header || '',
     base_url: body.base_url || stored?.base_url || '',
     api_key: body.api_key || stored?.api_key || '',
     // Whether a key is mandatory decides whether success may be reported at all.

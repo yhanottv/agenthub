@@ -2129,19 +2129,31 @@ function openProviderModal(provider, preset, onSaved) {
       <button class="btn ghost" id="pv-test" type="button">${IC.spark} Tester et lister les modèles</button>
       <div id="pv-result"></div>
 
-      <div class="field" id="pv-model-wrap" ${(p.models && p.models.length) ? '' : 'hidden'}>
+      <!-- Champ libre avec suggestions, et non une liste fermée : quand le test
+           échoue — clé refusée, service momentanément muet — une liste vide
+           bloquait tout, alors qu'on sait très bien quel modèle on veut. -->
+      <div class="field" id="pv-model-wrap">
         <label for="pv-model">Modèle par défaut</label>
-        <select id="pv-model">
-          ${(p.models || []).map((m) => `<option value="${escapeAttr(m)}" ${m === p.defaultModel ? 'selected' : ''}>${escapeHtml(m)}</option>`).join('')}
-        </select>
+        <input id="pv-model" list="pv-models" maxlength="120" autocomplete="off"
+               placeholder="${escapeAttr((pre.id === 'hermes' ? 'hermes-agent' : 'nom du modèle'))}"
+               value="${escapeAttr(p.defaultModel || '')}">
+        <datalist id="pv-models">
+          ${(p.models || []).map((m) => `<option value="${escapeAttr(m)}"></option>`).join('')}
+        </datalist>
+        <div class="field-hint" id="pv-model-hint">
+          ${(p.models && p.models.length)
+            ? `${p.models.length} modèle${p.models.length > 1 ? 's' : ''} connu${p.models.length > 1 ? 's' : ''} — commence à taper pour les voir.`
+            : 'Teste la connexion pour lister les modèles, ou tape directement le nom si tu le connais.'}
+        </div>
       </div>
 
       <button class="primary" id="pv-save" type="button">${isNew ? 'Connecter le service' : 'Enregistrer'}</button>
       ${!isNew ? '<button class="del-link" id="pv-del" type="button">Retirer ce service</button>' : ''}`;
 
     const result = $('#pv-result', b);
-    const modelWrap = $('#pv-model-wrap', b);
-    const modelSel = $('#pv-model', b);
+    const modelInput = $('#pv-model', b);
+    const modelList = $('#pv-models', b);
+    const modelHint = $('#pv-model-hint', b);
 
     const currentId = () => slugify($('#pv-id', b).value || id);
 
@@ -2179,10 +2191,10 @@ function openProviderModal(provider, preset, onSaved) {
       result.innerHTML = `<div class="probe good">✓ Connecté — ${r.models.length} modèle${r.models.length > 1 ? 's' : ''} disponible${r.models.length > 1 ? 's' : ''}${r.keyVerified ? ' · clé validée' : ''}</div>
         ${r.keyNote ? `<div class="probe warn" style="margin-top:6px">⚠ ${escapeHtml(r.keyNote)}</div>` : ''}`;
       if (r.models.length) {
-        modelWrap.removeAttribute('hidden');
-        const keep = modelSel.value;
-        modelSel.innerHTML = r.models
-          .map((m) => `<option value="${escapeAttr(m)}" ${m === keep || m === p.defaultModel ? 'selected' : ''}>${escapeHtml(m)}</option>`).join('');
+        modelList.innerHTML = r.models.map((m) => `<option value="${escapeAttr(m)}"></option>`).join('');
+        modelHint.textContent = `${r.models.length} modèle${r.models.length > 1 ? 's' : ''} disponible${r.models.length > 1 ? 's' : ''} — commence à taper pour les voir.`;
+        // On ne remplace pas un choix déjà fait ; on comble seulement le vide.
+        if (!modelInput.value) modelInput.value = r.models.includes(p.defaultModel) ? p.defaultModel : r.models[0];
       }
     };
 
@@ -2194,7 +2206,7 @@ function openProviderModal(provider, preset, onSaved) {
         label: $('#pv-label', b).value.trim() || currentId(),
         base_url: base,
         api_key: $('#pv-key', b).value,
-        default_model: modelSel && modelSel.value ? modelSel.value : undefined,
+        default_model: modelInput && modelInput.value.trim() ? modelInput.value.trim() : undefined,
         hint: p.hint || pre.hint || '',
         session_header: pre.session_header || undefined,
         needs_key: needsKey,
@@ -2485,8 +2497,12 @@ function wizModel(s, usable) {
             <select id="wz-prov">${usable.map((p) => `<option value="${escapeAttr(p.id)}" ${p.id === chosen ? 'selected' : ''}>${escapeHtml(p.label)}</option>`).join('')}</select>
           </div>
           <div class="field"><label for="wz-model">Modèle</label>
-            <select id="wz-model">${prov.models.map((m) => `<option value="${escapeAttr(m)}" ${m === prov.defaultModel ? 'selected' : ''}>${escapeHtml(m)}</option>`).join('')}
-            ${prov.models.length ? '' : '<option value="">— aucun modèle listé —</option>'}</select>
+            <input id="wz-model" list="wz-models" maxlength="120" autocomplete="off"
+                   placeholder="nom du modèle"
+                   value="${escapeAttr(prov.defaultModel || prov.models[0] || '')}">
+            <datalist id="wz-models">${prov.models.map((m) => `<option value="${escapeAttr(m)}"></option>`).join('')}</datalist>
+            ${prov.models.length ? '' : `<div class="field-hint">Ce service n'a listé aucun modèle —
+              retourne à l'étape précédente pour tester la connexion, ou tape le nom si tu le connais.</div>`}
           </div>
         </div>
         <label class="checklist-item" style="padding:0;margin-top:12px">
@@ -2502,7 +2518,7 @@ function wizModel(s, usable) {
       const mod = $('#wz-model');
       const apply = $('#wz-apply');
       if (!sel || !apply || !apply.checked) return true;
-      const payload = { provider: sel.value, model: mod ? mod.value : undefined };
+      const payload = { provider: sel.value, model: mod && mod.value.trim() ? mod.value.trim() : undefined };
       for (const a of S.agents) {
         await tryApi(api('PUT', `/api/agents/${a.id}`, payload), 'Application du modèle');
       }
