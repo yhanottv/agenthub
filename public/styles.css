@@ -251,7 +251,7 @@ a { color: var(--accent); }
 
 /* ----------------------------------------------------------- app shell --- */
 .app { display: grid; grid-template-columns: var(--sidebar-w) 1fr; height: 100dvh; }
-.content { display: flex; flex-direction: column; min-width: 0; }
+.content { display: flex; flex-direction: column; min-width: 0; flex: 1; min-height: 0; overflow: hidden; height: 100dvh; }
 
 /* ------------------------------------------------------------- sidebar --- */
 .sidebar {
@@ -406,7 +406,8 @@ button.av:hover, .av[role="button"]:hover { transform: translateY(-2px); }
 .burger { display: none; }
 
 /* ---------------------------------------------------------------- view --- */
-.view { flex: 1; overflow-y: auto; scroll-behavior: smooth; }
+.view { flex: 1; overflow-y: auto; scroll-behavior: smooth; min-height: 0; }
+.view:has(> .chat) { overflow: hidden; }
 
 /* Entrée de vue : jouée uniquement quand la destination change réellement.
    Volontairement PAS appliquée à .chat — un transform y créerait un bloc
@@ -883,6 +884,20 @@ button.agent-card:hover { border-color: var(--accent); transform: translateY(-1p
 .thinking-dots i:nth-child(2) { animation-delay: .18s; }
 .thinking-dots i:nth-child(3) { animation-delay: .36s; }
 @keyframes bounce { 0%, 60%, 100% { opacity: .3; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-4px); } }
+
+.search-anim { display: inline-flex; align-items: center; }
+.search-anim svg { width: 18px; height: 18px; color: var(--accent); animation: search-swing 1.8s var(--ease) infinite; }
+.search-pulse { animation: search-pulse 1.8s var(--ease) infinite; transform-origin: center; }
+@keyframes search-swing {
+  0%, 100% { transform: rotate(-12deg) translateX(0); }
+  25%       { transform: rotate(12deg) translateX(1px); }
+  50%       { transform: rotate(-8deg) translateX(-1px); }
+  75%       { transform: rotate(8deg) translateX(1px); }
+}
+@keyframes search-pulse {
+  0%, 100% { opacity: 0; r: 1; }
+  50%       { opacity: .6; r: 3; }
+}
 
 .scroll-down {
   position: absolute; right: var(--sp-5); bottom: 108px; z-index: 6;

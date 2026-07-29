@@ -2122,8 +2122,10 @@ function renderThinking() {
     <div class="thinking-row">
       ${avatarHTML(a, { status: true })}
       <span class="thinking-bubble">
-        <span>${escapeHtml(a.name)} ${S.status[a.id] === 'working' ? 'travaille' : 'réfléchit'}</span>
-        <span class="thinking-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span>${escapeHtml(a.name)} ${S.status[a.id] === 'working' ? 'recherche' : 'réfléchit'}</span>
+        ${S.status[a.id] === 'working'
+          ? `<span class="search-anim" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/><circle cx="11" cy="11" r="3" class="search-pulse"/></svg></span>`
+          : `<span class="thinking-dots" aria-hidden="true"><i></i><i></i><i></i></span>`}
       </span>
     </div>`).join('');
 

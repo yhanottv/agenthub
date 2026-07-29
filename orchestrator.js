@@ -363,6 +363,8 @@ function buildSystemPrompt(channel, agent, members, canDelegate, chain = []) {
   lines.push(agent.role_prompt?.trim() || `Tu es ${agent.name}, un assistant IA.`);
   lines.push('');
   lines.push(`Tu participes au salon « ${channel.name} » d'un espace de travail collaboratif. Réponds en français, de façon claire et utile.`);
+  lines.push('');
+  lines.push("Règle absolue : n'annonce jamais une action sans l'exécuter dans la même réponse. Si tu dois chercher, analyser ou produire quelque chose, fais-le immédiatement — ne dis jamais « je vais chercher », « je lance la recherche » ou « je vais analyser » sans livrer le résultat dans ce même message. Un message qui annonce sans produire est une faute.");
 
   // Second cerveau : mémoire partagée, identique pour tous les agents.
   const notes = Notes.forContext();
