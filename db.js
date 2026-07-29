@@ -310,12 +310,22 @@ try {
 
   // Premier démarrage après la mise à jour : la base contient déjà des
   // messages, l'index non. Les déclencheurs ne rattrapent que le futur.
-  const indexed = db.prepare('SELECT COUNT(*) n FROM messages_fts').get().n;
-  const stored = db.prepare('SELECT COUNT(*) n FROM messages').get().n;
-  if (stored > 0 && indexed === 0) {
+  //
+  // La reconstruction est déclenchée par un marqueur en base, PAS par un
+  // comptage. Sur une table FTS5 à contenu externe, `SELECT COUNT(*) FROM
+  // messages_fts` traverse jusqu'à la table source : il renvoie le nombre de
+  // messages même quand l'index est parfaitement vide. Tester « index à zéro »
+  // ne se déclenchait donc jamais, et la recherche restait muette sur tout
+  // l'historique — visible seulement sur une base déjà remplie, puisqu'une
+  // base neuve se remplit par les déclencheurs.
+  const built = db.prepare("SELECT value FROM settings WHERE key='fts_built'").get();
+  if (built?.value !== '1') {
     db.exec("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')");
     db.exec("INSERT INTO notes_fts(notes_fts) VALUES('rebuild')");
-    console.log(`Index de recherche construit sur ${stored} message(s).`);
+    db.prepare(`INSERT INTO settings (key,value) VALUES ('fts_built','1')
+                ON CONFLICT(key) DO UPDATE SET value='1'`).run();
+    const n = db.prepare('SELECT COUNT(*) n FROM messages').get().n;
+    console.log(`Index de recherche construit sur ${n} message(s).`);
   }
   FTS_OK = true;
 } catch (err) {

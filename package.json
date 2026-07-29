@@ -8,7 +8,7 @@
   "scripts": {
     "start": "node server.js",
     "check": "node --check server.js && node --check db.js && node --check llm.js && node --check orchestrator.js && node --check public/app.js",
-    "test": "docker run --rm -v \"$PWD/tests:/test:ro\" agenthub:latest node /test/boot-test.mjs && docker run --rm -v \"$PWD/tests:/test:ro\" agenthub:latest node /test/integration-test.mjs && docker run --rm -v \"$PWD/tests:/test:ro\" agenthub:latest node /test/password-test.mjs"
+    "test": "docker run --rm -v \"$PWD/tests:/test:ro\" agenthub:latest node /test/boot-test.mjs && docker run --rm -v \"$PWD/tests:/test:ro\" agenthub:latest node /test/integration-test.mjs && docker run --rm -v \"$PWD/tests:/test:ro\" agenthub:latest node /test/password-test.mjs && docker run --rm -v \"$PWD/tests:/test:ro\" agenthub:latest node /test/search-test.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^11.8.1",
