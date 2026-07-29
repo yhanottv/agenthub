@@ -607,6 +607,9 @@ app.post('/api/notes/proposals/:id/reject', requireAuth, (req, res) => {
 app.post('/api/notes', requireAuth, (req, res) => {
   const n = Notes.create(req.body || {});
   broadcast({ type: 'note.change', note: n });
+  // A new note is a new star, and it may satisfy links other notes were
+  // already pointing at — both change the shape of the graph.
+  broadcast({ type: 'graph.dirty' });
   res.json(n);
 });
 

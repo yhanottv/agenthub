@@ -13,6 +13,10 @@ const S = {
   agents: [], channels: [], settings: {}, providers: [],
   stats: null, activity: [],
   notes: [], usage: null, usageRange: '7d',
+  // Second cerveau : trois façons de regarder la même mémoire.
+  brainTab: 'recent',       // recent | notes | graph
+  brainTag: '',             // filtre par tag dans l'onglet Notes
+  noteTags: [], proposals: [], graph: null,
   presets: [], setup: null, wizStep: 0, wizProvider: null,
   auth: { claimed: true, envPassword: false, minPassword: 8 },
   view: 'home',             // home | chat | team | brain | usage | journal | settings
@@ -191,6 +195,9 @@ const IC = {
   journal: svg('<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>'),
   tasks: svg('<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>'),
   edit: svg('<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z"/>'),
+  clock: svg('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
+  graph: svg('<circle cx="6" cy="7" r="2.4"/><circle cx="18" cy="6" r="2.4"/><circle cx="12" cy="17" r="2.4"/><path d="M8 8.4 10.6 15M16.2 8 13.4 15.2M8.3 6.6l7.4-.4"/>'),
+  galaxy: svg('<circle cx="12" cy="12" r="2"/><ellipse cx="12" cy="12" rx="9.5" ry="4" transform="rotate(-22 12 12)"/><circle cx="19" cy="8.6" r=".9" fill="currentColor"/><circle cx="5.2" cy="15.6" r=".9" fill="currentColor"/>'),
   broom: svg('<path d="M3 21h18"/><path d="M8 21v-4a4 4 0 0 1 8 0v4"/><path d="M12 13V3"/><path d="M9 6h6"/>'),
 };
 
@@ -344,7 +351,27 @@ async function loadNotes() {
   const r = await tryApi(api('GET', '/api/notes'), 'Chargement des notes');
   if (!r) return;
   S.notes = r.notes || [];
+  S.noteTags = r.tags || [];
   if (S.view === 'brain') renderView();
+}
+
+async function loadProposals() {
+  const r = await tryApi(api('GET', '/api/notes/proposals'), 'Chargement des propositions');
+  if (!r) return;
+  S.proposals = r.proposals || [];
+  if (S.view === 'brain') renderView();
+}
+
+/**
+ * The graph is fetched separately from the note list: it carries the stub nodes
+ * and every edge, which the notes payload has no reason to duplicate.
+ */
+async function loadGraph(force = false) {
+  if (S.graph && !force) return S.graph;
+  const r = await tryApi(api('GET', '/api/notes/graph'), 'Chargement du graphe');
+  if (!r) return null;
+  S.graph = r;
+  return r;
 }
 
 async function loadUsage() {
@@ -380,7 +407,7 @@ function navigate(view, channelId, opts = {}) {
 // Each destination pulls exactly the data it needs, on arrival.
 function loadForView() {
   if (S.view === 'home' || S.view === 'journal') refreshDashboard();
-  else if (S.view === 'brain') loadNotes();
+  else if (S.view === 'brain') { loadNotes(); loadProposals(); }
   else if (S.view === 'usage') loadUsage();
 }
 function applyRoute(hash, opts = {}) {
@@ -651,6 +678,10 @@ function renderView() {
     v.classList.add('view-enter');
   }
 
+  // The galaxy runs a rAF loop against its own canvas: leaving the brain view
+  // without stopping it would repaint a detached node for the rest of the session.
+  if (S.view !== 'brain') destroyGalaxy();
+
   if (S.loading) return renderSkeleton(v);
   if (S.view === 'chat') return renderChat(v);
   if (S.view === 'team') return renderTeam(v);
@@ -908,16 +939,141 @@ function notesUsedChars() {
   return S.notes.reduce((n, x) => n + (x.content.trim() ? x.title.length + x.content.trim().length + 5 : 0), 0);
 }
 
+const BRAIN_TABS = [
+  ['recent', 'Récent', IC.clock],
+  ['notes', 'Notes', IC.note],
+  ['graph', 'Graph', IC.graph],
+];
+
 function renderBrain(v) {
+  // The galaxy owns a canvas and a rAF loop; leaving one running behind a tab
+  // switch would keep repainting a detached node forever.
+  destroyGalaxy();
+
+  const tab = BRAIN_TABS.some(([id]) => id === S.brainTab) ? S.brainTab : 'recent';
+  S.brainTab = tab;
+
+  v.innerHTML = `<div class="page brain-page">
+    <div class="brain-bar">
+      <div class="brain-tabs" role="tablist" aria-label="Vues de la mémoire">
+        ${BRAIN_TABS.map(([id, label, icon]) => `
+          <button class="brain-tab ${id === tab ? 'on' : ''}" type="button" role="tab"
+                  aria-selected="${id === tab}" aria-label="${escapeAttr(label)}" data-tab="${id}">
+            ${icon}<span>${label}</span>
+            ${id === 'recent' && S.proposals.length ? `<span class="tab-count">${S.proposals.length}</span>` : ''}
+            ${id === 'notes' && S.notes.length ? `<span class="tab-count muted-count">${S.notes.length}</span>` : ''}
+          </button>`).join('')}
+      </div>
+      <button class="btn" id="note-new" type="button">${IC.plus} Nouvelle note</button>
+    </div>
+    <div class="brain-panel" id="brain-panel"></div>
+  </div>`;
+
+  $$('[data-tab]', v).forEach((b) => b.onclick = () => {
+    S.brainTab = b.dataset.tab;
+    renderView();
+  });
+  $('#note-new', v).onclick = () => openNoteModal(null);
+
+  const panel = $('#brain-panel', v);
+  if (tab === 'graph') renderBrainGraph(panel);
+  else if (tab === 'notes') renderBrainNotes(panel);
+  else renderBrainRecent(panel);
+}
+
+/** Wire the shared note-card interactions of a freshly rendered panel. */
+function wireNoteCards(root) {
+  $$('[data-note]', root).forEach((n) => n.onclick = () => {
+    const note = S.notes.find((x) => x.id === n.dataset.note);
+    if (note) openNoteModal(note);
+  });
+  $$('[data-pin]', root).forEach((n) => n.onclick = async (e) => {
+    e.stopPropagation();
+    const note = S.notes.find((x) => x.id === n.dataset.pin);
+    if (note) await tryApi(api('PUT', `/api/notes/${note.id}`, { pinned: note.pinned ? 0 : 1 }), 'Épinglage');
+  });
+}
+
+// ---- onglet Récent ---------------------------------------------------------
+function renderBrainRecent(panel) {
+  const recent = [...S.notes].sort((a, b) =>
+    (b.touched_at || b.updated_at) - (a.touched_at || a.updated_at)).slice(0, 40);
+
+  panel.innerHTML = `
+    ${S.proposals.length ? `
+      <section class="brain-section">
+        <h2 class="brain-h">${S.proposals.length} note${S.proposals.length > 1 ? 's' : ''} proposée${S.proposals.length > 1 ? 's' : ''} par tes agents</h2>
+        <p class="brain-sub">Rien n'entre en mémoire sans ton accord.</p>
+        <div class="prop-list">${S.proposals.map(proposalHTML).join('')}</div>
+      </section>` : ''}
+
+    <section class="brain-section">
+      <h2 class="brain-h">Dernières mémoires</h2>
+      <p class="brain-sub">Du plus récemment utilisé au plus ancien — une note remonte quand tu l'ouvres ou qu'un agent s'en sert.</p>
+      ${recent.length ? `<ol class="recent-list">${recent.map(recentRowHTML).join('')}</ol>` : emptyBrainHTML()}
+    </section>`;
+
+  wireNoteCards(panel);
+  $$('[data-accept]', panel).forEach((b) => b.onclick = async () => {
+    b.disabled = true;
+    const r = await tryApi(api('POST', `/api/notes/proposals/${b.dataset.accept}/accept`), 'Validation');
+    if (r) { toast('Note ajoutée à la mémoire.', { kind: 'success' }); loadProposals(); loadNotes(); S.graph = null; }
+    else b.disabled = false;
+  });
+  $$('[data-reject]', panel).forEach((b) => b.onclick = async () => {
+    b.disabled = true;
+    const r = await tryApi(api('POST', `/api/notes/proposals/${b.dataset.reject}/reject`), 'Refus');
+    if (r) loadProposals(); else b.disabled = false;
+  });
+}
+
+function proposalHTML(p) {
+  return `<article class="prop-card">
+    <header>
+      <strong>${escapeHtml(p.title)}</strong>
+      <span class="muted">proposée par ${escapeHtml(p.agent_name || 'un agent')} · ${agoText(p.created_at)}</span>
+    </header>
+    <p>${escapeHtml((p.content || '').slice(0, 400))}${(p.content || '').length > 400 ? '…' : ''}</p>
+    ${p.tags.length ? `<div class="tag-row">${p.tags.map((t) => `<span class="tag">#${escapeHtml(t)}</span>`).join('')}</div>` : ''}
+    <footer>
+      <button class="primary sm" type="button" data-accept="${escapeAttr(p.id)}">Ajouter à la mémoire</button>
+      <button class="btn sm" type="button" data-reject="${escapeAttr(p.id)}">Refuser</button>
+    </footer>
+  </article>`;
+}
+
+function recentRowHTML(n) {
+  const when = n.touched_at || n.updated_at;
+  return `<li class="recent-row">
+    <button class="recent-open" type="button" data-note="${escapeAttr(n.id)}">
+      <span class="recent-dot" style="--dot:${freshnessColor(when)}" aria-hidden="true"></span>
+      <span class="recent-main">
+        <span class="recent-title">${n.pinned ? '📌 ' : ''}${escapeHtml(n.title)}</span>
+        <span class="recent-prev">${escapeHtml((n.content || '').replace(/\s+/g, ' ').trim().slice(0, 120) || 'Note vide')}</span>
+      </span>
+      <span class="recent-meta">${agoText(when)}${n.uses ? ` · ${n.uses} usage${n.uses > 1 ? 's' : ''}` : ''}</span>
+    </button>
+  </li>`;
+}
+
+const emptyBrainHTML = () => `
+  <div class="empty" style="text-align:left;padding:28px;line-height:1.75">
+    <div class="empty-ic" aria-hidden="true">🧠</div>
+    <strong>Rien en mémoire pour l'instant.</strong><br>
+    Écris ici ce que tes agents doivent toujours savoir : le ton de ta marque, tes
+    clients, tes contraintes, tes décisions déjà prises. Une bonne première note :
+    « Contexte de l'organisation » — qui tu es et ce que tu fais.<br>
+    Relie-les entre elles avec des <code>[[doubles crochets]]</code> : c'est ce qui dessine la galaxie.
+  </div>`;
+
+// ---- onglet Notes ----------------------------------------------------------
+function renderBrainNotes(panel) {
   const used = notesUsedChars();
   const pct = Math.min(100, Math.round((used / NOTES_BUDGET) * 100));
   const over = used > NOTES_BUDGET;
+  const shown = S.brainTag ? S.notes.filter((n) => (n.tags || []).includes(S.brainTag)) : S.notes;
 
-  v.innerHTML = `<div class="page">
-    <div class="page-head">
-      <h1>Second cerveau</h1>
-      <button class="btn" id="note-new" type="button">${IC.plus} Nouvelle note</button>
-    </div>
+  panel.innerHTML = `
     <p class="page-lede">
       La mémoire commune de ton organisation. Tout ce qui est écrit ici est ajouté au
       prompt de <strong>chaque agent</strong>, dans chaque salon — c'est ce qu'ils savent
@@ -933,31 +1089,505 @@ function renderBrain(v) {
       <div class="field-hint" style="margin-top:8px">Les notes épinglées passent en premier et sont donc les dernières à être coupées.</div>
     </div>
 
-    ${S.notes.length ? `<div class="note-grid">${S.notes.map(noteCardHTML).join('')}</div>` : `
-      <div class="empty" style="text-align:left;padding:28px;line-height:1.75">
-        <div class="empty-ic" aria-hidden="true">🧠</div>
-        <strong>Rien en mémoire pour l'instant.</strong><br>
-        Écris ici ce que tes agents doivent toujours savoir : le ton de ta marque, tes
-        clients, tes contraintes, tes décisions déjà prises. Une bonne première note :
-        « Contexte de l'organisation » — qui tu es et ce que tu fais.
-      </div>`}
+    ${S.noteTags.length ? `<div class="tag-filter">
+      <button class="tag ${S.brainTag ? '' : 'on'}" type="button" data-tagf="">tout</button>
+      ${S.noteTags.map((t) => `<button class="tag ${S.brainTag === t.tag ? 'on' : ''}" type="button"
+        data-tagf="${escapeAttr(t.tag)}">#${escapeHtml(t.tag)} <span class="muted">${t.count}</span></button>`).join('')}
+    </div>` : ''}
+
+    ${shown.length ? `<div class="note-grid">${shown.map(noteCardHTML).join('')}</div>`
+      : S.notes.length ? '<div class="empty">Aucune note avec ce tag.</div>' : emptyBrainHTML()}`;
+
+  $$('[data-tagf]', panel).forEach((b) => b.onclick = () => {
+    S.brainTag = b.dataset.tagf;
+    renderView();
+  });
+  wireNoteCards(panel);
+}
+
+// ---- onglet Graph : la Memory Galaxy ---------------------------------------
+// Une note est une étoile, un [[wikilien]] une ligne. Le tout vit dans un
+// espace en trois dimensions aplati en disque, qu'on fait tourner à la souris.
+//
+// Écrit sur un canvas 2D avec projection à la main : le projet n'a ni build ni
+// dépendance, et la politique de sécurité interdit de charger une bibliothèque
+// depuis un CDN. Quelques centaines d'étoiles ne justifient pas WebGL.
+
+const GALAXY_HELP = 'glisser pour orbiter · molette pour zoomer · clic sur une étoile · double-clic pour figer';
+
+/** Âge normalisé entre 0 (à l'instant) et 1 (un mois ou plus). */
+const FRESH_WINDOW_MS = 30 * 86400000;
+function freshness(ts) {
+  if (!ts) return 1;
+  return Math.min(1, Math.max(0, (Date.now() - ts) / FRESH_WINDOW_MS));
+}
+
+/** Blanc quand c'est frais, bleu profond quand ça dort. */
+function freshnessColor(ts, alpha = 1) {
+  const f = freshness(ts);
+  const light = 96 - f * 42;          // 96 % → 54 %
+  const sat = 12 + f * 46;            // presque blanc → coloré
+  const hue = 250 - f * 22;
+  return `hsl(${hue} ${sat}% ${light}% / ${alpha})`;
+}
+
+let galaxy = null;
+function destroyGalaxy() {
+  if (galaxy) { galaxy.destroy(); galaxy = null; }
+}
+
+async function renderBrainGraph(panel) {
+  panel.innerHTML = `<div class="galaxy-wrap">
+    <div class="galaxy-loading">Construction de la carte…</div>
   </div>`;
 
-  $('#note-new', v).onclick = () => openNoteModal(null);
-  $$('[data-note]', v).forEach((n) => n.onclick = () => openNoteModal(S.notes.find((x) => x.id === n.dataset.note)));
-  $$('[data-pin]', v).forEach((n) => n.onclick = async (e) => {
-    e.stopPropagation();
-    const note = S.notes.find((x) => x.id === n.dataset.pin);
-    await tryApi(api('PUT', `/api/notes/${note.id}`, { pinned: note.pinned ? 0 : 1 }), 'Épinglage');
+  const data = await loadGraph();
+  if (!data) { panel.innerHTML = '<div class="empty">Le graphe n\'a pas pu être chargé.</div>'; return; }
+  if (S.brainTab !== 'graph') return;      // l'utilisateur a changé d'onglet entre-temps
+
+  if (!data.nodes.length) {
+    panel.innerHTML = `<div class="empty" style="text-align:left;padding:28px;line-height:1.75">
+      <div class="empty-ic" aria-hidden="true">✦</div>
+      <strong>La galaxie est vide.</strong><br>
+      Chaque note devient une étoile. Écris <code>[[Titre d'une autre note]]</code> dans
+      le corps d'une note pour les relier — c'est ce lien qui trace les lignes entre
+      les étoiles, et une note encore inexistante apparaît en creux jusqu'à ce que tu la crées.
+    </div>`;
+    return;
+  }
+
+  const links = data.links.length;
+  panel.innerHTML = `<div class="galaxy-wrap" id="galaxy-wrap">
+    <canvas id="galaxy-canvas" aria-label="Carte de la mémoire"></canvas>
+    <div class="galaxy-hud">
+      <div class="galaxy-title">${IC.galaxy} MEMORY GALAXY</div>
+      <div class="galaxy-count"><strong>${data.nodes.length}</strong> étoile${data.nodes.length > 1 ? 's' : ''} · <strong>${links}</strong> lien${links > 1 ? 's' : ''}</div>
+      <div class="galaxy-help">${GALAXY_HELP}</div>
+      <div class="galaxy-help">✦ plus c'est clair et blanc, plus c'est récent</div>
+    </div>
+    <div class="galaxy-card hidden" id="galaxy-card" aria-live="polite"></div>
+    <button class="galaxy-reset" id="galaxy-reset" type="button" title="Recentrer">${IC.galaxy} Recentrer</button>
+  </div>`;
+
+  const canvas = $('#galaxy-canvas', panel);
+  const card = $('#galaxy-card', panel);
+
+  galaxy = new Galaxy(canvas, data, {
+    onHover: (node) => {
+      if (!node) { card.classList.add('hidden'); return; }
+      card.classList.remove('hidden');
+      card.innerHTML = `
+        <div class="gc-title">${IC.galaxy}<span>${escapeHtml(node.title)}</span></div>
+        <div class="gc-meta">${node.stub ? 'Note manquante' : kindLabel(node.kind)} · ${node.degree} lien${node.degree > 1 ? 's' : ''}</div>
+        ${node.stub ? '<div class="gc-meta">clic pour la créer</div>'
+          : `<div class="gc-meta">${node.chars.toLocaleString('fr-FR')} caractères · vue ${agoText(node.touched_at || node.updated_at)}</div>`}`;
+    },
+    onPick: (node) => {
+      if (node.stub) {
+        openNoteModal(null, { title: node.title });
+        return;
+      }
+      const note = S.notes.find((n) => n.id === node.id);
+      if (!note) return;
+      // Opening from the map counts as a use, which is what re-lights the star.
+      api('POST', `/api/notes/${note.id}/touch`).catch(() => {});
+      openNoteModal(note);
+    },
   });
+
+  $('#galaxy-reset', panel).onclick = () => galaxy && galaxy.reset();
+}
+
+const kindLabel = (k) => ({ note: 'Note', wiki: 'Wiki', auto: 'Proposée par un agent' })[k] || 'Note';
+
+class Galaxy {
+  constructor(canvas, data, opts = {}) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.opts = opts;
+
+    this.nodes = data.nodes.map((n) => ({ ...n, degree: 0 }));
+    this.index = new Map(this.nodes.map((n, i) => [n.id, i]));
+    this.links = data.links
+      .map((l) => ({ a: this.index.get(l.source), b: this.index.get(l.target) }))
+      .filter((l) => l.a !== undefined && l.b !== undefined && l.a !== l.b);
+    for (const l of this.links) { this.nodes[l.a].degree++; this.nodes[l.b].degree++; }
+
+    this.yaw = 0.5;
+    this.pitch = -0.42;
+    this.zoom = 1;
+    // Le vol automatique est une animation : qui l'a désactivée au niveau du
+    // système ne veut pas d'une galaxie qui tourne toute seule.
+    this.reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches || false;
+    this.spin = !this.reduced;
+    this.hover = null;
+    this.pointer = null;
+    this.dragging = false;
+    this.raf = 0;
+
+    this.layout();
+    this.bind();
+    this.resize();
+    // Une image tout de suite, sans attendre requestAnimationFrame : dans un
+    // onglet en arrière-plan ou en économie d'énergie, rAF ne se déclenche pas
+    // et la carte resterait un rectangle noir.
+    this.draw();
+    this.loop = this.loop.bind(this);
+    this.raf = requestAnimationFrame(this.loop);
+  }
+
+  /**
+   * Placement par ressorts en trois dimensions.
+   *
+   * Les nœuds partent d'une spirale de Fibonacci sur une sphère — répartition
+   * régulière et surtout déterministe : la carte doit se redessiner à
+   * l'identique d'une visite à l'autre, sinon on ne s'y repère jamais.
+   */
+  layout() {
+    const n = this.nodes.length;
+    const R = 120 + Math.sqrt(n) * 26;
+    const golden = Math.PI * (3 - Math.sqrt(5));
+
+    this.nodes.forEach((node, i) => {
+      const y = n === 1 ? 0 : 1 - (i / (n - 1)) * 2;
+      const r = Math.sqrt(Math.max(0, 1 - y * y));
+      const th = golden * i;
+      node.x = Math.cos(th) * r * R;
+      node.y = y * R;
+      node.z = Math.sin(th) * r * R;
+      node.vx = node.vy = node.vz = 0;
+    });
+
+    const REST = 96;
+    const ITER = 320;
+    for (let step = 0; step < ITER; step++) {
+      const cool = 1 - step / ITER;
+
+      // Répulsion de tous contre tous. En O(n²), mais la mémoire d'une
+      // organisation se compte en centaines de notes, pas en millions.
+      for (let i = 0; i < n; i++) {
+        const a = this.nodes[i];
+        for (let j = i + 1; j < n; j++) {
+          const b = this.nodes[j];
+          let dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+          let d2 = dx * dx + dy * dy + dz * dz;
+          if (d2 < 1) { dx = (i - j) || 1; dy = 1; dz = -1; d2 = 3; }
+          const inv = 1 / Math.sqrt(d2);
+          const f = (26000 / d2) * cool;
+          const fx = dx * inv * f, fy = dy * inv * f, fz = dz * inv * f;
+          a.vx += fx; a.vy += fy; a.vz += fz;
+          b.vx -= fx; b.vy -= fy; b.vz -= fz;
+        }
+      }
+
+      // Attraction le long des liens.
+      for (const l of this.links) {
+        const a = this.nodes[l.a], b = this.nodes[l.b];
+        const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+        const d = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+        const f = ((d - REST) / d) * 0.06 * cool;
+        const fx = dx * f, fy = dy * f, fz = dz * f;
+        a.vx += fx; a.vy += fy; a.vz += fz;
+        b.vx -= fx; b.vy -= fy; b.vz -= fz;
+      }
+
+      for (const node of this.nodes) {
+        // Rappel vers le centre : sans lui les composantes isolées partent à
+        // l'infini, poussées par la répulsion et retenues par rien.
+        node.vx -= node.x * 0.004;
+        node.vy -= node.y * 0.004;
+        node.vz -= node.z * 0.004;
+
+        node.x += node.vx * 0.45;
+        node.y += node.vy * 0.45;
+        node.z += node.vz * 0.45;
+        node.vx *= 0.82; node.vy *= 0.82; node.vz *= 0.82;
+      }
+    }
+
+    // Aplatissement : une sphère se lit mal en projection, un disque donne la
+    // galaxie — et laisse la profondeur porter l'information.
+    let maxR = 1;
+    for (const node of this.nodes) {
+      node.y *= 0.34;
+      maxR = Math.max(maxR, Math.hypot(node.x, node.y, node.z));
+    }
+    this.radius = maxR;
+
+    // Poussière d'étoiles : purement décoratif, mais c'est ce qui fait lire le
+    // vide comme un ciel plutôt que comme un fond gris.
+    this.dust = [];
+    for (let i = 0; i < 260; i++) {
+      const a = (i * 2.399963) % (Math.PI * 2);
+      const rr = maxR * (1.1 + ((i * 37) % 100) / 62);
+      this.dust.push({
+        x: Math.cos(a) * rr,
+        y: (((i * 53) % 100) / 100 - 0.5) * maxR * 0.5,
+        z: Math.sin(a) * rr,
+        s: 0.4 + ((i * 17) % 10) / 14,
+      });
+    }
+  }
+
+  bind() {
+    const c = this.canvas;
+    this.onResize = () => { this.resize(); this.draw(); };
+    window.addEventListener('resize', this.onResize);
+
+    // Revenir sur l'onglet doit rendre la carte immédiatement, pas à la
+    // prochaine frame que le navigateur voudra bien accorder.
+    this.onVisible = () => { if (!document.hidden) { this.resize(); this.draw(); } };
+    document.addEventListener('visibilitychange', this.onVisible);
+
+    this.onDown = (e) => {
+      this.dragging = true;
+      this.lastX = e.clientX; this.lastY = e.clientY;
+      this.moved = 0;
+      c.setPointerCapture?.(e.pointerId);
+      c.classList.add('grabbing');
+    };
+    this.onMove = (e) => {
+      const r = c.getBoundingClientRect();
+      this.pointer = { x: e.clientX - r.left, y: e.clientY - r.top };
+      if (!this.dragging) return;
+      const dx = e.clientX - this.lastX, dy = e.clientY - this.lastY;
+      this.lastX = e.clientX; this.lastY = e.clientY;
+      this.moved += Math.abs(dx) + Math.abs(dy);
+      this.yaw += dx * 0.006;
+      this.pitch = Math.max(-1.45, Math.min(1.45, this.pitch + dy * 0.006));
+    };
+    this.onUp = (e) => {
+      // Un glissement n'est pas un clic : sans ce seuil, chaque orbite finirait
+      // par ouvrir une note au hasard.
+      if (this.dragging && this.moved < 5 && this.hover) this.opts.onPick?.(this.hover);
+      this.dragging = false;
+      c.releasePointerCapture?.(e.pointerId);
+      c.classList.remove('grabbing');
+    };
+    this.onLeave = () => { this.pointer = null; this.setHover(null); };
+    this.onWheel = (e) => {
+      e.preventDefault();
+      this.zoom = Math.max(0.35, Math.min(4, this.zoom * (e.deltaY > 0 ? 0.9 : 1.1)));
+    };
+    this.onDbl = () => { this.spin = !this.spin; };
+    this.onKey = (e) => {
+      if (e.key === 'Escape') this.setHover(null);
+      if (e.key === ' ') { e.preventDefault(); this.spin = !this.spin; }
+    };
+
+    c.addEventListener('pointerdown', this.onDown);
+    c.addEventListener('pointermove', this.onMove);
+    c.addEventListener('pointerup', this.onUp);
+    c.addEventListener('pointerleave', this.onLeave);
+    c.addEventListener('wheel', this.onWheel, { passive: false });
+    c.addEventListener('dblclick', this.onDbl);
+    c.addEventListener('keydown', this.onKey);
+    c.tabIndex = 0;
+  }
+
+  resize() {
+    const wrap = this.canvas.parentElement;
+    if (!wrap) return;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const w = wrap.clientWidth, h = wrap.clientHeight;
+    this.w = w; this.h = h; this.dpr = dpr;
+    this.canvas.width = Math.round(w * dpr);
+    this.canvas.height = Math.round(h * dpr);
+    this.canvas.style.width = w + 'px';
+    this.canvas.style.height = h + 'px';
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  reset() {
+    this.yaw = 0.5; this.pitch = -0.42; this.zoom = 1; this.spin = true;
+  }
+
+  setHover(node) {
+    if (this.hover === node) return;
+    this.hover = node;
+    this.canvas.style.cursor = node ? 'pointer' : 'grab';
+    this.opts.onHover?.(node);
+  }
+
+  /** Rotation puis perspective. Renvoie null derrière la caméra. */
+  project(p) {
+    const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw);
+    const cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
+    const x1 = p.x * cy - p.z * sy;
+    const z1 = p.x * sy + p.z * cy;
+    const y2 = p.y * cp - z1 * sp;
+    const z2 = p.y * sp + z1 * cp;
+
+    const fov = 900;
+    const depth = fov + z2;
+    if (depth < 60) return null;
+    const k = (fov / depth) * this.zoom * this.fit;
+    return { x: this.w / 2 + x1 * k, y: this.h / 2 + y2 * k, k, z: z2 };
+  }
+
+  loop() {
+    this.raf = requestAnimationFrame(this.loop);
+    if (this.spin && !this.dragging) this.yaw += 0.0016;
+    this.draw();
+  }
+
+  draw() {
+    const ctx = this.ctx;
+    const { w, h } = this;
+    if (!w || !h) return;
+
+    // Le cadrage suit la taille du conteneur : la même carte doit tenir dans un
+    // panneau étroit comme en plein écran.
+    this.fit = Math.min(w, h) / (this.radius * 2.5);
+
+    const dark = document.documentElement.dataset.theme !== 'light';
+    const bg = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, Math.max(w, h) * 0.75);
+    if (dark) {
+      bg.addColorStop(0, '#171a3a');
+      bg.addColorStop(0.55, '#0c0e22');
+      bg.addColorStop(1, '#05060f');
+    } else {
+      bg.addColorStop(0, '#2a2d55');
+      bg.addColorStop(0.55, '#15173a');
+      bg.addColorStop(1, '#0a0b1c');
+    }
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, w, h);
+
+    for (const d of this.dust) {
+      const p = this.project(d);
+      if (!p) continue;
+      ctx.globalAlpha = 0.16 + 0.22 * Math.min(1, p.k * 2);
+      ctx.fillStyle = '#cdd6ff';
+      ctx.fillRect(p.x, p.y, d.s, d.s);
+    }
+    ctx.globalAlpha = 1;
+
+    // Projection unique par image, réutilisée par les liens, les étoiles et le
+    // survol : reprojeter trois fois coûterait trois fois plus cher.
+    const proj = this.nodes.map((n) => this.project(n));
+
+    const hoverIdx = this.hover ? this.index.get(this.hover.id) : -1;
+    const near = new Set();
+    if (hoverIdx >= 0) {
+      for (const l of this.links) {
+        if (l.a === hoverIdx) near.add(l.b);
+        if (l.b === hoverIdx) near.add(l.a);
+      }
+    }
+
+    ctx.lineWidth = 1;
+    for (const l of this.links) {
+      const pa = proj[l.a], pb = proj[l.b];
+      if (!pa || !pb) continue;
+      const lit = hoverIdx >= 0 && (l.a === hoverIdx || l.b === hoverIdx);
+      const dim = hoverIdx >= 0 && !lit;
+      ctx.strokeStyle = lit ? 'rgba(180,200,255,.75)' : `rgba(150,165,240,${dim ? 0.05 : 0.17})`;
+      ctx.beginPath();
+      ctx.moveTo(pa.x, pa.y);
+      ctx.lineTo(pb.x, pb.y);
+      ctx.stroke();
+    }
+
+    // Du plus lointain au plus proche, pour que les étoiles de devant couvrent
+    // celles de derrière.
+    const order = this.nodes.map((_, i) => i).filter((i) => proj[i])
+      .sort((a, b) => proj[b].z - proj[a].z);
+
+    let best = null, bestD = 22;
+    for (const i of order) {
+      const node = this.nodes[i];
+      const p = proj[i];
+      const f = freshness(node.touched_at || node.updated_at);
+      const base = 2.1 + Math.min(3.4, Math.sqrt(node.degree) * 1.15)
+        + Math.min(1.8, node.chars / 2200);
+      const r = Math.max(1, base * p.k * 1.25);
+
+      if (this.pointer) {
+        const d = Math.hypot(this.pointer.x - p.x, this.pointer.y - p.y);
+        if (d < Math.max(bestD, r + 8) && d < bestD + r) { best = node; bestD = d; }
+      }
+
+      const dim = hoverIdx >= 0 && i !== hoverIdx && !near.has(i);
+      const alpha = (dim ? 0.28 : 1) * (0.55 + 0.45 * Math.min(1, p.k * 1.6));
+
+      if (node.stub) {
+        // Une note qui n'existe pas encore : un contour, pas une étoile.
+        ctx.globalAlpha = alpha * 0.75;
+        ctx.strokeStyle = 'rgba(190,200,255,.65)';
+        ctx.lineWidth = 1.2;
+        ctx.setLineDash([2, 2]);
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 1;
+        continue;
+      }
+
+      const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r * 5);
+      glow.addColorStop(0, freshnessColor(node.touched_at || node.updated_at, alpha * 0.9));
+      glow.addColorStop(0.35, freshnessColor(node.touched_at || node.updated_at, alpha * 0.22));
+      glow.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r * 5, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = node.pinned ? '#fff6d8' : freshnessColor(node.touched_at || node.updated_at, 1);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+      ctx.fill();
+
+      if (node.pinned) {
+        ctx.strokeStyle = `rgba(255,214,120,${alpha * 0.8})`;
+        ctx.lineWidth = 1.1;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r + 2.6, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+
+      // Les titres n'apparaissent que sur les étoiles proches et notables,
+      // sinon le centre de la galaxie devient un mur de texte.
+      const label = i === hoverIdx || (!dim && f < 0.5 && node.degree >= 2 && p.k > 0.55);
+      if (label) {
+        ctx.globalAlpha = i === hoverIdx ? 1 : Math.min(0.75, p.k);
+        ctx.font = `${i === hoverIdx ? 600 : 400} ${Math.round(11 + p.k * 2)}px ui-sans-serif, system-ui, sans-serif`;
+        ctx.fillStyle = '#e8ecff';
+        ctx.textAlign = 'center';
+        ctx.fillText(node.title.slice(0, 28), p.x, p.y - r - 7);
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    this.setHover(this.pointer ? best : null);
+  }
+
+  destroy() {
+    cancelAnimationFrame(this.raf);
+    const c = this.canvas;
+    window.removeEventListener('resize', this.onResize);
+    document.removeEventListener('visibilitychange', this.onVisible);
+    c.removeEventListener('pointerdown', this.onDown);
+    c.removeEventListener('pointermove', this.onMove);
+    c.removeEventListener('pointerup', this.onUp);
+    c.removeEventListener('pointerleave', this.onLeave);
+    c.removeEventListener('wheel', this.onWheel);
+    c.removeEventListener('dblclick', this.onDbl);
+    c.removeEventListener('keydown', this.onKey);
+  }
 }
 
 function noteCardHTML(n) {
   const preview = (n.content || '').replace(/\s+/g, ' ').trim();
+  const tags = n.tags || [];
   return `<div class="note-card ${n.pinned ? 'pinned' : ''}">
     <button class="note-open" type="button" data-note="${escapeAttr(n.id)}">
       <span class="note-title">${escapeHtml(n.title)}</span>
       <span class="note-preview">${escapeHtml(preview || 'Note vide')}</span>
+      ${tags.length ? `<span class="tag-row">${tags.map((t) => `<span class="tag sm">#${escapeHtml(t)}</span>`).join('')}</span>` : ''}
       <span class="note-meta">${(n.content || '').length.toLocaleString('fr-FR')} caractères · modifiée ${agoText(n.updated_at)}</span>
     </button>
     <button class="note-pin ${n.pinned ? 'on' : ''}" type="button" data-pin="${escapeAttr(n.id)}"
@@ -965,20 +1595,33 @@ function noteCardHTML(n) {
   </div>`;
 }
 
-function openNoteModal(note) {
+function openNoteModal(note, prefill = {}) {
   const isEdit = !!note;
+  const title0 = isEdit ? note.title : (prefill.title || '');
+  const tags0 = (isEdit ? note.tags : prefill.tags) || [];
+
   openModal(isEdit ? 'Modifier la note' : 'Nouvelle note', (b) => {
     b.innerHTML = `
       <div class="field">
         <label for="n-title">Titre</label>
-        <input id="n-title" maxlength="120" value="${isEdit ? escapeAttr(note.title) : ''}"
+        <input id="n-title" maxlength="120" value="${escapeAttr(title0)}"
                placeholder="ex: Contexte de l'organisation">
       </div>
       <div class="field">
         <label for="n-content">Contenu</label>
         <textarea id="n-content" rows="12" maxlength="8000"
                   placeholder="Ce que tous tes agents doivent savoir…">${isEdit ? escapeHtml(note.content) : ''}</textarea>
-        <div class="field-hint"><span id="n-count">0</span> / 8000 caractères</div>
+        <div class="field-hint">
+          <span id="n-count">0</span> / 8000 caractères ·
+          écris <code>[[Titre d'une note]]</code> pour la relier dans la galaxie
+        </div>
+        <div class="link-preview" id="n-links"></div>
+      </div>
+      <div class="field">
+        <label for="n-tags">Tags</label>
+        <input id="n-tags" maxlength="200" value="${escapeAttr(tags0.join(', '))}"
+               placeholder="client, ton, process">
+        <div class="field-hint">Séparés par des virgules. Servent à filtrer, pas au contexte des agents.</div>
       </div>
       <label class="checklist-item" style="padding:0">
         <input type="checkbox" id="n-pin" ${isEdit && note.pinned ? 'checked' : ''}>
@@ -989,7 +1632,25 @@ function openNoteModal(note) {
 
     const content = $('#n-content', b);
     const count = $('#n-count', b);
-    const sync = () => { count.textContent = content.value.length.toLocaleString('fr-FR'); };
+    const linkBox = $('#n-links', b);
+
+    // Montre tout de suite ce que la note va relier, et ce qui n'existe pas
+    // encore : sans ça, une faute dans un [[titre]] ne se voit que dans le graphe.
+    const sync = () => {
+      count.textContent = content.value.length.toLocaleString('fr-FR');
+      const wanted = [...content.value.matchAll(/\[\[([^\]|\n]{1,120})(?:\|[^\]\n]*)?\]\]/g)]
+        .map((m) => m[1].trim()).filter(Boolean);
+      const seen = new Set();
+      const uniq = wanted.filter((t) => {
+        const k = t.toLowerCase();
+        return seen.has(k) ? false : (seen.add(k), true);
+      });
+      linkBox.innerHTML = uniq.length ? `Liens : ${uniq.map((t) => {
+        const exists = S.notes.some((n) => n.title.toLowerCase() === t.toLowerCase()
+          && (!isEdit || n.id !== note.id));
+        return `<span class="link-chip ${exists ? '' : 'missing'}">${escapeHtml(t)}${exists ? '' : ' · à créer'}</span>`;
+      }).join('')}` : '';
+    };
     content.addEventListener('input', sync);
     sync();
 
@@ -998,13 +1659,18 @@ function openNoteModal(note) {
         title: $('#n-title', b).value.trim() || 'Sans titre',
         content: content.value,
         pinned: $('#n-pin', b).checked ? 1 : 0,
+        tags: $('#n-tags', b).value.split(',').map((t) => t.trim()).filter(Boolean),
       };
       ev.currentTarget.disabled = true;
       const r = await tryApi(
         isEdit ? api('PUT', `/api/notes/${note.id}`, payload) : api('POST', '/api/notes', payload),
         'Enregistrement');
       ev.currentTarget.disabled = false;
-      if (r) { closeModal(); toast(isEdit ? 'Note mise à jour.' : 'Note ajoutée à la mémoire.', { kind: 'success' }); }
+      if (r) {
+        S.graph = null;                 // les arêtes ont bougé
+        closeModal();
+        toast(isEdit ? 'Note mise à jour.' : 'Note ajoutée à la mémoire.', { kind: 'success' });
+      }
     };
 
     const del = $('#n-del', b);
@@ -1013,7 +1679,7 @@ function openNoteModal(note) {
       'Cette information disparaîtra du contexte de tous tes agents.',
       async () => {
         const r = await tryApi(api('DELETE', `/api/notes/${note.id}`), 'Suppression');
-        if (r) { closeModal(); toast('Note supprimée.', { kind: 'success' }); }
+        if (r) { S.graph = null; closeModal(); toast('Note supprimée.', { kind: 'success' }); }
       });
   });
 }
@@ -1999,10 +2665,71 @@ function renderMessage(m, prev) {
         ${agent && agent.title ? `<span class="msg-title">${escapeHtml(agent.title)}</span>` : ''}
         <span class="msg-time">${fmtTime(m.created_at)}</span>
       </div>`}
+      ${toolTraceHTML(m)}
+      ${reasoningHTML(m)}
       <div class="msg-content ${m.status === 'streaming' ? 'cursor' : ''}">${renderMarkdown(m.content)}</div>
     </div>
     ${m.status === 'streaming' ? '' : deleteBtn(m.id)}`;
   return w;
+}
+
+/**
+ * What the agent actually did before answering.
+ * Kept above the reply and visually distinct: a claim backed by a real web
+ * search must be distinguishable from the same sentence invented outright.
+ */
+function toolTraceHTML(m) {
+  let calls = [];
+  try { calls = JSON.parse(m.tools || '[]'); } catch { calls = []; }
+  if (!Array.isArray(calls) || !calls.length) return '';
+  return `<div class="tool-trace">${calls.map((c) =>
+    `<span class="tool-chip ${c.ok ? '' : 'failed'}">${IC.spark}${escapeHtml(c.label || c.name)}</span>`).join('')}</div>`;
+}
+
+/** Folded away by default — it is working-out, not the answer. */
+function reasoningHTML(m) {
+  const r = m.reasoning || '';
+  if (!r.trim()) return '<div class="reasoning-slot"></div>';
+  return `<details class="reasoning"><summary>Raisonnement<span class="muted"> · ${r.length.toLocaleString('fr-FR')} caractères</span></summary>
+    <div class="reasoning-body">${escapeHtml(r)}</div></details>`;
+}
+
+function applyReasoning(id, delta) {
+  const m = S.messages.find((x) => x.id === id);
+  if (!m) return;
+  m.reasoning = (m.reasoning || '') + delta;
+
+  const row = $('#messages')?.querySelector(`[data-id="${CSS.escape(id)}"]`);
+  if (!row) return;
+  let box = row.querySelector('.reasoning');
+  if (!box) {
+    // First reasoning delta of this message: swap the placeholder for a real
+    // block rather than re-render the row and lose the streaming cursor.
+    const slot = row.querySelector('.reasoning-slot');
+    if (!slot) return;
+    slot.outerHTML = `<details class="reasoning" open><summary>Raisonnement<span class="muted"></span></summary>
+      <div class="reasoning-body"></div></details>`;
+    box = row.querySelector('.reasoning');
+  }
+  const body = box.querySelector('.reasoning-body');
+  const count = box.querySelector('summary .muted');
+  if (body) body.textContent = m.reasoning;
+  if (count) count.textContent = ` · ${m.reasoning.length.toLocaleString('fr-FR')} caractères`;
+}
+
+/** A transient line under the message while a tool runs or a retry is waiting. */
+function showToolActivity(id, label, isNotice = false) {
+  const row = $('#messages')?.querySelector(`[data-id="${CSS.escape(id)}"] .msg-body`);
+  if (!row) return;
+  let zone = row.querySelector('.tool-live');
+  if (!zone) {
+    zone = el('div', 'tool-live');
+    const content = row.querySelector('.msg-content');
+    row.insertBefore(zone, content);
+  }
+  zone.className = 'tool-live' + (isNotice ? ' notice' : '');
+  zone.innerHTML = `<span class="tool-live-dot" aria-hidden="true"></span>${escapeHtml(label)}`;
+  if (isNearBottom()) scrollToBottom();
 }
 
 // Delegated from the message list so it survives re-renders and streaming.
@@ -2578,6 +3305,42 @@ function handleEvent(e) {
       if (inChat(e.channelId)) applyDelta(e.id, e.delta);
       break;
 
+    case 'message.reasoning':
+      if (inChat(e.channelId)) applyReasoning(e.id, e.delta);
+      break;
+
+    case 'message.tools': {
+      const m = S.messages.find((x) => x.id === e.id);
+      if (m) m.tools = JSON.stringify(e.tools);
+      if (inChat(e.channelId)) repaintMessages();
+      break;
+    }
+
+    case 'tool.call':
+      if (inChat(e.channelId)) showToolActivity(e.id, e.label);
+      break;
+
+    case 'message.notice':
+      if (inChat(e.channelId)) showToolActivity(e.id, e.notice, true);
+      break;
+
+    case 'proposal.new':
+      S.proposals = [e.proposal, ...S.proposals.filter((p) => p.id !== e.proposal.id)];
+      if (S.view === 'brain') renderView();
+      else toast(`${e.proposal.agent_name || 'Un agent'} propose une note : « ${e.proposal.title} »`, { kind: 'info' });
+      break;
+
+    case 'proposals.update':
+      loadProposals();
+      break;
+
+    case 'graph.dirty':
+      // The layout is derived from the edges, so a stale graph would draw the
+      // old constellation until the next full reload.
+      S.graph = null;
+      if (S.view === 'brain' && S.brainTab === 'graph') renderView();
+      break;
+
     case 'message.update':
       if (inChat(e.channelId)) {
         const m = S.messages.find((x) => x.id === e.id);
@@ -2662,13 +3425,17 @@ function handleEvent(e) {
       const i = S.notes.findIndex((n) => n.id === e.note.id);
       if (i >= 0) S.notes[i] = e.note; else S.notes.push(e.note);
       S.notes.sort((a, b) => (b.pinned - a.pinned) || (b.updated_at - a.updated_at));
-      if (S.view === 'brain') renderView();
+      S.graph = null;
+      // Re-rendering the graph tab on every note edit would restart the layout
+      // and yank the map from under the cursor; the other tabs are cheap.
+      if (S.view === 'brain' && S.brainTab !== 'graph') renderView();
       break;
     }
 
     case 'note.remove':
       S.notes = S.notes.filter((n) => n.id !== e.id);
-      if (S.view === 'brain') renderView();
+      S.graph = null;
+      if (S.view === 'brain' && S.brainTab !== 'graph') renderView();
       break;
 
     case 'providers.update':
