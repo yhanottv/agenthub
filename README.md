@@ -35,9 +35,21 @@ peut déléguer qu'à des agents strictement moins gradés, jamais à lui-même,
 boucle. La chaîne CEO → manager → worker fonctionne sur trois niveaux, et un manager
 peut emprunter un worker à un autre pôle.
 
-**Un second cerveau.** Des notes que tu écris une fois et qui sont injectées dans le
-prompt de *tous* tes agents, quel que soit leur fournisseur. Tu ne répètes plus le
-contexte de ton activité à chaque conversation.
+**Un second cerveau, et une carte pour s'y retrouver.** Des notes que tu écris une
+fois et qui sont injectées dans le prompt de *tous* tes agents, quel que soit leur
+fournisseur. Relie-les entre elles avec des `[[doubles crochets]]` et la vue **Graph**
+les affiche en galaxie navigable : une note est une étoile, un lien une ligne, et plus
+une étoile est claire plus elle a servi récemment. Une note citée mais pas encore
+écrite apparaît en pointillé — un clic la crée. L'onglet **Récent** montre ce qui a
+bougé en dernier ; tes agents peuvent eux-mêmes proposer des notes, qui attendent ta
+validation avant d'entrer en mémoire.
+
+**Des agents qui agissent.** Recherche web, lecture de pages, fouille de la mémoire et
+de l'historique, calcul exact, lecture des fichiers déposés dans le salon. Chaque appel
+d'outil est affiché au-dessus de la réponse : une affirmation appuyée sur une vraie
+recherche ne se confond pas avec la même phrase inventée. Les appels sortants sont
+restreints à l'Internet public — une adresse interne est refusée, redirections
+comprises.
 
 **Plusieurs fournisseurs, au choix par agent.** Hermes, AgentRouter, OpenRouter,
 OpenAI, Groq, Together, Ollama, ou n'importe quel endpoint compatible OpenAI. Chaque
@@ -45,12 +57,27 @@ agent a son service et son modèle — et tu peux surcharger le tout **pour une 
 conversation**, effort de raisonnement compris, sans toucher aux fiches.
 
 **Une consommation qui ne ment pas.** Une ligne par appel modèle, tokens entrants et
-sortants, répartition par modèle et par agent, courbe d'évolution au survol. Quand le
-fournisseur renvoie un décompte réel il est utilisé ; sinon c'est une estimation,
-explicitement étiquetée comme telle.
+sortants, **coût en euros**, répartition par modèle, par agent et par salon, courbe
+d'évolution au survol. Quand le fournisseur renvoie un décompte réel il est utilisé ;
+sinon c'est une estimation, explicitement étiquetée comme telle. Un modèle dont tu n'as
+pas renseigné le tarif n'est pas compté zéro en silence : il est signalé, et le total
+s'annonce comme un plancher. Tu peux fixer un seuil de dépense quotidien — il prévient,
+il ne coupe rien.
+
+**Retrouver.** Recherche plein texte (SQLite FTS5) sur les conversations et la mémoire,
+depuis la palette `Ctrl K`, avec les termes surlignés dans l'extrait.
+
+**Des fichiers.** Dépôt par bouton ou glisser-déposer dans un salon, jusqu'à 10 Mo. Les
+fichiers texte sont réellement lisibles par les agents. Export d'une conversation en
+Markdown.
+
+**Ça tourne tout seul.** Sauvegardes automatiques de la base, déclenchements programmés
+(« tous les matins à 8 h 30, Chercheur me fait la veille »), webhooks entrants pour
+lancer un agent depuis l'extérieur, notifications navigateur en fin de traitement long.
 
 **Temps réel.** WebSocket avec reconnexion et resynchronisation, streaming
-token-par-token, statut des agents, arrêt d'un run en cours.
+token-par-token, raisonnement du modèle affiché à part et replié, statut des agents,
+arrêt d'un run en cours.
 
 **Soigné.** Thème clair et sombre, contraste WCAG AA vérifié sur les deux, navigation
 au clavier, mobile, `prefers-reduced-motion`.
@@ -238,16 +265,19 @@ requête arrive en HTTPS, proxy ou pas.
 
 ### Changer de mot de passe
 
-**Réglages → Mot de passe.** L'ancien est demandé. Si `APP_PASSWORD` est défini dans
-l'environnement du serveur (via `AGENTHUB_PASSWORD` dans ton `.env` si tu passes par
-Compose), cette section explique qu'il faut retirer la variable pour reprendre la
-main.
+**Réglages → Mot de passe.** L'ancien est demandé.
 
-> ⚠️ Retire-la **avant** d'avoir choisi un mot de passe dans l'interface, jamais
-> après coup sur une instance en service : AgentHub garde une trace durable du fait
-> qu'elle a été revendiquée, et refusera de rouvrir la porte. Si tu te retrouves
-> verrouillé, remets la variable, connecte-toi, puis définis ton mot de passe depuis
-> Réglages pour qu'il soit stocké en base — tu pourras retirer la variable ensuite.
+Si ton mot de passe vient de `APP_PASSWORD` (via `AGENTHUB_PASSWORD` dans ton `.env`
+avec Compose), **fais-le passer en base sans attendre** : donne la valeur de la
+variable comme mot de passe actuel, choisis-en un nouveau, et retire la variable
+ensuite. L'écran te le rappelle tant que ce n'est pas fait.
+
+> ⚠️ Pourquoi c'est important : une instance protégée par la seule variable est
+> marquée comme revendiquée sans stocker aucun hash. Perdre ce `.env` — rotation,
+> redéploiement, machine réinstallée — la verrouillerait **définitivement** : elle se
+> sait revendiquée, refuse de rouvrir la revendication, et n'a plus rien à vérifier.
+> Un mot de passe enregistré en base l'emporte sur la variable, ce qui rend celle-ci
+> retirable sans risque.
 
 ### Changer de modèle en cours de conversation
 
@@ -304,13 +334,12 @@ navigateur ──REST──▶ server.js ──▶ orchestrator.js ──▶ llm
 
 | Fichier | Rôle |
 |---|---|
-| `server.js` | API REST, WebSocket, auth par cookie signé, assets versionnés |
-| `orchestrator.js` | Routage, délégation, tâches, sérialisation et annulation par salon |
-| `llm.js` | Client SSE, registre des fournisseurs, découverte de modèles |
-| `db.js` | Schéma SQLite et dépôts |
+| `server.js` | API REST, WebSocket, auth par cookie signé, planificateur, sauvegardes, assets versionnés |
+| `orchestrator.js` | Routage, délégation, boucle d'outils, tâches, sérialisation et annulation par salon |
+| `llm.js` | Client SSE, retry, registre des fournisseurs, découverte de modèles |
+| `tools.js` | Outils exécutables par les agents, et les garde-fous réseau qui vont avec |
+| `db.js` | Schéma SQLite, dépôts, graphe de la mémoire, index de recherche |
 | `public/` | Le front, sans build ni dépendance |
-
-Environ 3 500 lignes en tout.
 
 ### Choix qui méritent une explication
 
@@ -326,16 +355,28 @@ reste collée à la ligne de base au lieu de plonger dessous.
 Enregistrer un fournisseur sans retaper la clé conserve celle stockée : le formulaire
 n'a jamais besoin de la détenir.
 
+**Le graphe est déterministe.** Le placement des étoiles part d'une spirale de
+Fibonacci puis d'un modèle à ressorts : deux visites donnent la même carte. Une
+disposition aléatoire serait plus jolie une fois et inutilisable ensuite — on ne se
+repère pas dans un espace qui bouge à chaque ouverture.
+
+**Aucune adresse interne n'est joignable par un outil.** `tools.js` résout le nom
+lui-même, refuse boucle locale, RFC 1918, link-local, CGNAT et ULA, et revalide chaque
+redirection. Sans ça, « lis http://agentrouter-proxy:8318 » suffirait à faire recracher
+la configuration des conteneurs voisins, clés comprises.
+
+**`APP_PASSWORD` n'est qu'un mot de passe d'amorçage.** Un hash en base l'emporte
+toujours sur la variable. C'est ce qui rend la variable retirable sans se verrouiller
+dehors.
+
 ---
 
 ## Tests
 
-Deux suites, à lancer contre l'image construite :
+Quatre suites, à lancer contre l'image construite :
 
 ```bash
-docker build -t agenthub:latest .
-docker run --rm -v "$PWD/tests:/test:ro" agenthub:latest node /test/boot-test.mjs
-docker run --rm -v "$PWD/tests:/test:ro" agenthub:latest node /test/integration-test.mjs
+docker build -t agenthub:latest . && npm test
 ```
 
 `boot-test` démarre réellement le serveur et exerce HTTP et WebSocket — il attrape
@@ -344,6 +385,12 @@ monte un faux gateway SSE et fait tourner l'orchestrateur pour de vrai : délég
 sur trois niveaux, refus des délégations illégales, annulation, mémoire partagée,
 comptabilité des tokens, surcharge de modèle par conversation.
 
+`password-test` vérifie qu'un mot de passe posé dans `APP_PASSWORD` peut être
+transféré en base et que l'ancien cesse alors de fonctionner — sans quoi retirer la
+variable ne changerait rien. `search-test` reconstruit l'index de recherche sur une
+base déjà remplie : le cas où le défaut se cache, puisqu'une base neuve remplit son
+index toute seule au fil des insertions.
+
 > Lance-les **dans le conteneur**, pas sur ta machine : l'image tourne sur Node 20, et
 > du code accepté par Node 24 peut y échouer.
 
@@ -351,11 +398,16 @@ comptabilité des tokens, surcharge de modèle par conversation.
 
 ## Ce qui manque encore
 
-- Les agents produisent du texte, ils **n'agissent pas** — pas encore d'outils ni de
-  function-calling. C'est le plus gros écart avec un véritable espace de travail.
-- Le second cerveau est écrit à la main ; les agents ne s'y ajoutent rien eux-mêmes.
-- Les sessions sont révocables à la déconnexion (nonce aléatoire par login), mais un cookie volé reste valide jusqu'à la prochaine expiration de 30 jours si l'utilisateur ne se déconnecte pas.
-- Un seul utilisateur, un seul mot de passe. Pas de multi-comptes.
+- **Un seul utilisateur, un seul mot de passe.** Pas de multi-comptes ni de rôles.
+- Un cookie volé reste valide jusqu'à son expiration si personne ne se déconnecte.
+  Les sessions vivent en base, elles expirent au bout de trente jours, et
+  « Déconnecter les autres navigateurs » les révoque toutes d'un coup — mais rien ne
+  détecte un vol.
+- La recherche web passe par le HTML de DuckDuckGo, sans clé : pas de quota, mais un
+  balisage qui peut changer sans prévenir. Quand ça arrive, l'outil renvoie une liste
+  vide et le dit, au lieu d'inventer.
+- Les agents ne s'écrivent pas entre eux hors délégation, et ne planifient pas leur
+  propre travail.
 
 ---
 
