@@ -2600,7 +2600,7 @@ async function runHermesDetection(btn, box) {
       <div class="probe good">✓ Hermes trouvé — <code>${escapeHtml(f.name)}</code>${f.image ? ` (${escapeHtml(f.image)})` : ''}</div>
       <div class="scan-detail">
         ${escapeHtml(f.base_url)}
-        ${f.shared === false ? '<br><strong>Attention :</strong> il ne partage aucun réseau avec AgentHub — le nom ne résoudra pas tant que ce n\'est pas corrigé.' : ''}
+        ${f.shared === false ? `<br>Il tourne sur le réseau <code>${escapeHtml(f.networks[0] || '?')}</code>, qu'AgentHub ne partage pas${r.docker.available ? " — il s'y raccordera tout seul." : '. Sans accès au moteur Docker, il faudra les relier à la main.'}` : ''}
         ${f.key ? '<br>Sa clé a été lue directement dans sa configuration : rien à copier.' : '<br>Sa clé n\'est pas lisible d\'ici — il faudra la saisir.'}
       </div>
       <button class="primary" id="scan-adopt" type="button" style="margin-top:10px">
@@ -2618,6 +2618,7 @@ async function runHermesDetection(btn, box) {
       e.currentTarget.disabled = true;
       const a = await tryApi(api('POST', '/api/hermes/adopt', { name: f.name }), 'Enregistrement');
       if (!a) { e.currentTarget.disabled = false; return; }
+      if (a.joined) toast(`AgentHub raccordé au réseau ${a.joined}.`, { kind: 'info' });
       toast(a.reachable ? `Hermes branché — ${a.models.length} modèle(s).` : 'Hermes enregistré, mais il ne répond pas encore.',
         { kind: a.reachable ? 'success' : 'warn' });
       await checkSetupSilently();

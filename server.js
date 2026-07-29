@@ -13,7 +13,7 @@ import {
 } from './db.js';
 import { buildGraph, layerCounts, GRAPH_LAYERS, LAYER_META } from './graph.js';
 import { skillsCatalogue, invalidateSkills } from './skills.js';
-import { discover as discoverHermes, installHermes, installPlan, dockerStatus } from './hermes.js';
+import { discover as discoverHermes, installHermes, installPlan, dockerStatus, connectToNetwork } from './hermes.js';
 import { providerCatalog, probeProvider, seedProvidersFromEnv, PRESETS } from './llm.js';
 import { Orchestrator } from './orchestrator.js';
 
@@ -462,6 +462,22 @@ app.post('/api/hermes/adopt', requireAuth, async (req, res) => {
   const r = await discoverHermes();
   const hit = r.found.find((f) => f.name === req.body?.name) || r.found[0];
   if (!hit) return res.status(404).json({ error: 'Aucune passerelle Hermes détectée.' });
+
+  // Hermes existe mais dans un autre projet Compose, donc sur un autre réseau :
+  // son nom ne résoudrait pas. On se raccorde plutôt que d'enregistrer un
+  // fournisseur mort.
+  let joined = null;
+  if (hit.shared === false && hit.networks?.length) {
+    const c = await connectToNetwork(hit.networks[0]);
+    if (!c.ok) {
+      return res.status(409).json({
+        error: `Hermes tourne sur le réseau « ${hit.networks[0] }», qu'AgentHub ne partage pas, `
+             + `et le raccordement a échoué : ${c.error}`,
+        network: hit.networks[0],
+      });
+    }
+    joined = c.already ? null : c.network;
+  }
   if (!hit.key && !req.body?.api_key) {
     return res.status(422).json({
       error: "Hermes a été trouvé, mais sa clé n'est pas lisible d'ici. Saisis-la à la main.",
@@ -483,7 +499,10 @@ app.post('/api/hermes/adopt', requireAuth, async (req, res) => {
   const probe = await probeProvider(Providers.get('hermes'));
   if (probe.ok) Providers.setModels('hermes', probe.models, probe.models[0]);
   broadcast({ type: 'providers.update', providers: providerCatalog() });
-  res.json({ ok: true, provider: provider.id, reachable: probe.ok, error: probe.ok ? null : probe.error, models: probe.models || [] });
+  res.json({
+    ok: true, provider: provider.id, reachable: probe.ok, joined,
+    error: probe.ok ? null : probe.error, models: probe.models || [],
+  });
 });
 
 /**

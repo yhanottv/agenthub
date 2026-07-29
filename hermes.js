@@ -223,6 +223,36 @@ async function selfContainer(containers) {
   try { return await dockerRequest('GET', `/containers/${hit.Id}/json`); } catch { return null; }
 }
 
+/**
+ * Raccorde AgentHub au réseau d'un Hermes existant.
+ *
+ * Le cas est fréquent et invisible sans le socket : Hermes tourne, mais dans un
+ * autre projet Compose, donc sur un autre réseau. Son nom ne résout pas, et
+ * l'enregistrer tel quel donnerait un fournisseur mort. Puisqu'on a le socket,
+ * autant régler le problème au lieu de se contenter de le signaler.
+ */
+export async function connectToNetwork(network) {
+  const status = await dockerStatus();
+  if (!status.available) return { ok: false, error: status.detail };
+
+  const containers = await dockerRequest('GET', '/containers/json?all=1');
+  const mine = await selfContainer(containers);
+  if (!mine) {
+    return { ok: false, error: "AgentHub n'a pas réussi à s'identifier parmi les conteneurs." };
+  }
+  if (Object.keys(mine.NetworkSettings?.Networks || {}).includes(network)) {
+    return { ok: true, already: true, network };
+  }
+  try {
+    await dockerRequest('POST', `/networks/${network}/connect`, { Container: mine.Id });
+  } catch (err) {
+    if (!/already exists|already attached/i.test(err.message)) {
+      return { ok: false, error: `Raccordement impossible : ${err.message}` };
+    }
+  }
+  return { ok: true, already: false, network };
+}
+
 // ---- installation -----------------------------------------------------------
 
 /**
