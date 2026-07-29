@@ -1911,3 +1911,33 @@ a.attach-chip:hover { border-color: var(--accent); color: var(--accent-ink); }
 @media (max-width: 560px) {
   .msg-images { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* ------------------------------------------------ aide a la saisie de cle ---
+   Le formulaire reclamait une cle sans jamais dire ou la trouver. Pour Hermes
+   c'est le pire cas : elle n'est sur aucun site, elle est dans sa propre
+   configuration. */
+.key-help {
+  margin-top: 9px; padding: 10px var(--sp-3);
+  background: var(--surface-2); border-left: 3px solid var(--accent);
+  border-radius: 0 var(--r-xs) var(--r-xs) 0;
+  font-size: var(--fs-md); color: var(--text-2); line-height: 1.65;
+}
+.key-help code { font-size: var(--fs-sm); }
+.key-help a {
+  display: inline-block; margin-top: 7px; color: var(--accent);
+  text-decoration: none; font-weight: 500;
+}
+.key-help a:hover { text-decoration: underline; }
+.key-help a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+
+.key-cmd {
+  display: block; margin-top: 7px; padding: 7px 10px;
+  background: var(--bg-deep); border: 1px solid var(--line);
+  border-radius: var(--r-xs); font-size: var(--fs-sm);
+  overflow-x: auto; white-space: nowrap; user-select: all;
+}
+
+/* Une liste desactivee doit se lire comme « pas encore », pas comme « casse ». */
+select:disabled {
+  color: var(--muted); background: var(--surface-2); cursor: not-allowed;
+}

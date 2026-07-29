@@ -2124,26 +2124,26 @@ function openProviderModal(provider, preset, onSaved) {
         <label for="pv-key">Clé API ${needsKey ? '' : '(facultative)'}</label>
         <input id="pv-key" type="password" autocomplete="off" placeholder="${p.keyConfigured ? `déjà enregistrée (${escapeAttr(p.keyHint || '••••')}) — laisser vide pour la conserver` : 'sk-…'}">
         <div class="field-hint">Stockée sur ton serveur uniquement, jamais renvoyée au navigateur.</div>
+        ${keyHelpHTML(id)}
       </div>
 
       <button class="btn ghost" id="pv-test" type="button">${IC.spark} Tester et lister les modèles</button>
       <div id="pv-result"></div>
 
-      <!-- Champ libre avec suggestions, et non une liste fermée : quand le test
-           échoue — clé refusée, service momentanément muet — une liste vide
-           bloquait tout, alors qu'on sait très bien quel modèle on veut. -->
+      <!-- Une liste, et rien qu'une liste : on choisit parmi ce que le service
+           déclare réellement servir. Un champ libre laissait saisir un modèle
+           inexistant, dont l'erreur ne se découvrait qu'au premier message. -->
       <div class="field" id="pv-model-wrap">
         <label for="pv-model">Modèle par défaut</label>
-        <input id="pv-model" list="pv-models" maxlength="120" autocomplete="off"
-               placeholder="${escapeAttr((pre.id === 'hermes' ? 'hermes-agent' : 'nom du modèle'))}"
-               value="${escapeAttr(p.defaultModel || '')}">
-        <datalist id="pv-models">
-          ${(p.models || []).map((m) => `<option value="${escapeAttr(m)}"></option>`).join('')}
-        </datalist>
+        <select id="pv-model" ${(p.models && p.models.length) ? '' : 'disabled'}>
+          ${(p.models && p.models.length)
+            ? (p.models || []).map((m) => `<option value="${escapeAttr(m)}" ${m === p.defaultModel ? 'selected' : ''}>${escapeHtml(m)}</option>`).join('')
+            : '<option value="">— teste la connexion pour voir les modèles —</option>'}
+        </select>
         <div class="field-hint" id="pv-model-hint">
           ${(p.models && p.models.length)
-            ? `${p.models.length} modèle${p.models.length > 1 ? 's' : ''} connu${p.models.length > 1 ? 's' : ''} — commence à taper pour les voir.`
-            : 'Teste la connexion pour lister les modèles, ou tape directement le nom si tu le connais.'}
+            ? `${p.models.length} modèle${p.models.length > 1 ? 's' : ''} proposé${p.models.length > 1 ? 's' : ''} par ce service.`
+            : 'La liste se remplit quand la connexion aboutit.'}
         </div>
       </div>
 
@@ -2151,8 +2151,7 @@ function openProviderModal(provider, preset, onSaved) {
       ${!isNew ? '<button class="del-link" id="pv-del" type="button">Retirer ce service</button>' : ''}`;
 
     const result = $('#pv-result', b);
-    const modelInput = $('#pv-model', b);
-    const modelList = $('#pv-models', b);
+    const modelSel = $('#pv-model', b);
     const modelHint = $('#pv-model-hint', b);
 
     const currentId = () => slugify($('#pv-id', b).value || id);
@@ -2191,10 +2190,12 @@ function openProviderModal(provider, preset, onSaved) {
       result.innerHTML = `<div class="probe good">✓ Connecté — ${r.models.length} modèle${r.models.length > 1 ? 's' : ''} disponible${r.models.length > 1 ? 's' : ''}${r.keyVerified ? ' · clé validée' : ''}</div>
         ${r.keyNote ? `<div class="probe warn" style="margin-top:6px">⚠ ${escapeHtml(r.keyNote)}</div>` : ''}`;
       if (r.models.length) {
-        modelList.innerHTML = r.models.map((m) => `<option value="${escapeAttr(m)}"></option>`).join('');
-        modelHint.textContent = `${r.models.length} modèle${r.models.length > 1 ? 's' : ''} disponible${r.models.length > 1 ? 's' : ''} — commence à taper pour les voir.`;
-        // On ne remplace pas un choix déjà fait ; on comble seulement le vide.
-        if (!modelInput.value) modelInput.value = r.models.includes(p.defaultModel) ? p.defaultModel : r.models[0];
+        // Le choix déjà fait est conservé s'il figure toujours dans la liste.
+        const keep = modelSel.value || p.defaultModel;
+        modelSel.disabled = false;
+        modelSel.innerHTML = r.models
+          .map((m) => `<option value="${escapeAttr(m)}" ${m === keep ? 'selected' : ''}>${escapeHtml(m)}</option>`).join('');
+        modelHint.textContent = `${r.models.length} modèle${r.models.length > 1 ? 's' : ''} proposé${r.models.length > 1 ? 's' : ''} par ce service.`;
       }
     };
 
@@ -2206,7 +2207,7 @@ function openProviderModal(provider, preset, onSaved) {
         label: $('#pv-label', b).value.trim() || currentId(),
         base_url: base,
         api_key: $('#pv-key', b).value,
-        default_model: modelInput && modelInput.value.trim() ? modelInput.value.trim() : undefined,
+        default_model: modelSel && modelSel.value ? modelSel.value : undefined,
         hint: p.hint || pre.hint || '',
         session_header: pre.session_header || undefined,
         needs_key: needsKey,
@@ -2238,6 +2239,41 @@ function openProviderModal(provider, preset, onSaved) {
 }
 
 const slugify = (s) => String(s || '').toLowerCase().trim().replace(/[^a-z0-9_-]/g, '-').slice(0, 40);
+
+/**
+ * Où trouver la clé de ce service.
+ *
+ * Le formulaire demandait une clé sans jamais dire où la chercher. Pour Hermes
+ * c'est le pire cas : la clé n'est pas sur un site, elle est dans SA propre
+ * configuration, ce qu'on ne devine pas — d'où des clés d'autres services
+ * collées là par dépit.
+ */
+const KEY_HELP = {
+  hermes: {
+    where: 'Ce n\'est pas une clé achetée en ligne : c\'est la valeur de <code>API_SERVER_KEY</code> '
+         + 'dans la configuration de <strong>ton</strong> Hermes — son <code>.env</code> ou son '
+         + '<code>docker-compose.yml</code>. Récupère-la avec :',
+    cmd: 'docker exec <conteneur-hermes> printenv API_SERVER_KEY',
+    link: 'https://github.com/NousResearch/hermes-agent',
+    linkLabel: 'Documentation Hermes Agent',
+  },
+  openrouter: { where: 'Crée une clé sur ton tableau de bord OpenRouter.', link: 'https://openrouter.ai/keys', linkLabel: 'openrouter.ai/keys' },
+  openai: { where: 'Crée une clé dans la console OpenAI.', link: 'https://platform.openai.com/api-keys', linkLabel: 'platform.openai.com/api-keys' },
+  gemini: { where: 'Clé gratuite sur Google AI Studio.', link: 'https://aistudio.google.com/apikey', linkLabel: 'aistudio.google.com/apikey' },
+  groq: { where: 'Crée une clé dans la console Groq.', link: 'https://console.groq.com/keys', linkLabel: 'console.groq.com/keys' },
+  together: { where: 'Crée une clé dans les réglages Together AI.', link: 'https://api.together.xyz/settings/api-keys', linkLabel: 'api.together.xyz' },
+  agentrouter: { where: 'Ta clé AgentRouter, celle que ton proxy transmet à agentrouter.org.' },
+};
+
+function keyHelpHTML(id) {
+  const h = KEY_HELP[id];
+  if (!h) return '';
+  return `<div class="key-help">
+    <div>${h.where}</div>
+    ${h.cmd ? `<code class="key-cmd">${escapeHtml(h.cmd)}</code>` : ''}
+    ${h.link ? `<a href="${escapeAttr(h.link)}" target="_blank" rel="noopener noreferrer">${escapeHtml(h.linkLabel)} ↗</a>` : ''}
+  </div>`;
+}
 
 // ---- Assistant de première configuration -----------------------------------
 const WIZ_STEPS = ['Bienvenue', 'Hermes', 'Services', 'Modèle', 'Images'];
@@ -2389,11 +2425,15 @@ function wizHermes(s) {
         <div class="wiz-help">
           <strong>C'est la seule chose qui manque.</strong>
           <p style="margin:8px 0 0;line-height:1.75">
-            La clé d'Hermes est la valeur de <code>API_SERVER_KEY</code> dans sa
-            configuration — souvent dans son <code>.env</code> ou son
-            <code>docker-compose.yml</code>. Récupère-la et colle-la ci-dessous.
+            Ce n'est pas une clé achetée en ligne : c'est la valeur de
+            <code>API_SERVER_KEY</code> dans la configuration de <strong>ton</strong> Hermes.
+            Récupère-la en une commande&nbsp;:
           </p>
-          <p style="margin:8px 0 0;line-height:1.75">
+          <code class="key-cmd" style="margin-top:8px">docker exec &lt;conteneur-hermes&gt; printenv API_SERVER_KEY</code>
+          <p style="margin:10px 0 0;line-height:1.75">
+            <a href="https://github.com/NousResearch/hermes-agent" target="_blank" rel="noopener noreferrer">Documentation Hermes Agent ↗</a>
+          </p>
+          <p style="margin:10px 0 0;line-height:1.75">
             Tu peux aussi passer cette étape : AgentHub marche très bien sans Hermes,
             avec n'importe quel autre service.
           </p>
@@ -2497,12 +2537,13 @@ function wizModel(s, usable) {
             <select id="wz-prov">${usable.map((p) => `<option value="${escapeAttr(p.id)}" ${p.id === chosen ? 'selected' : ''}>${escapeHtml(p.label)}</option>`).join('')}</select>
           </div>
           <div class="field"><label for="wz-model">Modèle</label>
-            <input id="wz-model" list="wz-models" maxlength="120" autocomplete="off"
-                   placeholder="nom du modèle"
-                   value="${escapeAttr(prov.defaultModel || prov.models[0] || '')}">
-            <datalist id="wz-models">${prov.models.map((m) => `<option value="${escapeAttr(m)}"></option>`).join('')}</datalist>
-            ${prov.models.length ? '' : `<div class="field-hint">Ce service n'a listé aucun modèle —
-              retourne à l'étape précédente pour tester la connexion, ou tape le nom si tu le connais.</div>`}
+            <select id="wz-model" ${prov.models.length ? '' : 'disabled'}>
+              ${prov.models.length
+                ? prov.models.map((m) => `<option value="${escapeAttr(m)}" ${m === prov.defaultModel ? 'selected' : ''}>${escapeHtml(m)}</option>`).join('')
+                : '<option value="">— aucun modèle listé —</option>'}
+            </select>
+            ${prov.models.length ? '' : `<div class="field-hint">Ce service n'a listé aucun modèle.
+              Retourne à l'étape précédente et teste la connexion.</div>`}
           </div>
         </div>
         <label class="checklist-item" style="padding:0;margin-top:12px">
@@ -2518,7 +2559,7 @@ function wizModel(s, usable) {
       const mod = $('#wz-model');
       const apply = $('#wz-apply');
       if (!sel || !apply || !apply.checked) return true;
-      const payload = { provider: sel.value, model: mod && mod.value.trim() ? mod.value.trim() : undefined };
+      const payload = { provider: sel.value, model: mod && mod.value ? mod.value : undefined };
       for (const a of S.agents) {
         await tryApi(api('PUT', `/api/agents/${a.id}`, payload), 'Application du modèle');
       }
@@ -3132,10 +3173,8 @@ function renderSettings(v) {
           </div>
           <div class="field">
             <label for="img-model">Modèle d'image</label>
-            <input id="img-model" maxlength="120" list="img-models" value="${escapeAttr(S.settings.image_model || '')}"
-                   placeholder="ex : google/gemini-2.5-flash-image">
-            <datalist id="img-models">${imageModelOptions()}</datalist>
-            <div class="field-hint">Les modèles au nom évocateur de ton service sont proposés.</div>
+            <select id="img-model">${imageModelOptions()}</select>
+            <div class="field-hint">Les modèles de ce service dont le nom évoque une image.</div>
           </div>
         </div>
         <button class="btn" id="save-image" type="button" style="margin-top:14px">Enregistrer</button>
@@ -3240,8 +3279,8 @@ function renderSettings(v) {
 
   // Changer de service change la liste des modèles proposés.
   $('#img-provider', v).onchange = () => {
-    const dl = $('#img-models', v);
-    if (dl) dl.innerHTML = imageModelOptions($('#img-provider', v).value);
+    const sel = $('#img-model', v);
+    if (sel) sel.innerHTML = imageModelOptions($('#img-provider', v).value);
   };
 
   $('#save-image', v).onclick = async (e) => {
@@ -3304,19 +3343,23 @@ function renderSettings(v) {
 /**
  * Les modèles du service dont le nom évoque une image.
  *
- * Une heuristique sur le nom, pas une vérité : aucun catalogue OpenAI-compatible
- * ne déclare quels modèles savent dessiner. C'est une liste de suggestions dans
- * un champ libre — si le tien manque, tape-le.
+ * Une heuristique sur le nom, pas une vérité : aucun catalogue compatible
+ * OpenAI ne déclare quels modèles savent dessiner. Quand elle ne trouve rien,
+ * on montre tout le catalogue plutôt qu'une liste vide — mieux vaut un choix
+ * large qu'un menu qui ne s'ouvre pas.
  */
 function imageModelOptions(providerId) {
   const id = providerId ?? S.settings.image_provider;
   const p = S.providers.find((x) => x.id === id);
-  if (!p) return '';
-  return p.models
-    .filter((m) => /image|dall|flux|imagen|sd3|stable-diffusion|midjourney|nano-banana/i.test(m))
-    .slice(0, 40)
-    .map((m) => `<option value="${escapeAttr(m)}"></option>`)
-    .join('');
+  if (!p) return '<option value="">— choisis d\'abord un service —</option>';
+
+  const rx = /image|dall|flux|imagen|sd3|stable-diffusion|midjourney|nano-banana/i;
+  const likely = p.models.filter((m) => rx.test(m));
+  const list = likely.length ? likely : p.models;
+  if (!list.length) return '<option value="">— ce service n\'a listé aucun modèle —</option>';
+
+  const opt = (m) => `<option value="${escapeAttr(m)}" ${m === S.settings.image_model ? 'selected' : ''}>${escapeHtml(m)}</option>`;
+  return `<option value="">— aucun —</option>${list.slice(0, 60).map(opt).join('')}`;
 }
 
 // ---- automatisation : sauvegardes, planificateur, webhooks ------------------
