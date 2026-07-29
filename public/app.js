@@ -7,7 +7,7 @@
    ========================================================================== */
 
 // ============================ state =========================================
-const VIEWS = ['home', 'team', 'brain', 'usage', 'journal', 'settings'];
+const VIEWS = ['home', 'team', 'brain', 'skills', 'usage', 'journal', 'settings'];
 
 const S = {
   agents: [], channels: [], settings: {}, providers: [],
@@ -18,6 +18,7 @@ const S = {
   brainTag: '',             // filtre par tag dans l'onglet Notes
   noteTags: [], proposals: [], graph: null, graphKey: '',
   notesBudget: 60000, notesBudgetMax: 400000, notesAuto: true,
+  skills: null, skillQuery: '', skillCat: '', skillOnly: '',
   // Les calques survivent au rechargement : c'est un réglage de lecture, pas
   // un état de session, et le refaire à chaque visite serait pénible.
   graphLayers: (() => {
@@ -438,6 +439,7 @@ function navigate(view, channelId, opts = {}) {
 function loadForView() {
   if (S.view === 'home' || S.view === 'journal') refreshDashboard();
   else if (S.view === 'brain') { loadNotes(); loadProposals(); }
+  else if (S.view === 'skills') loadSkills();
   else if (S.view === 'usage') loadUsage();
 }
 function applyRoute(hash, opts = {}) {
@@ -537,6 +539,7 @@ function renderSidebar() {
       ${navItem('home', IC.home, 'Accueil')}
       ${navItem('team', IC.team, 'Mon équipe')}
       ${navItem('brain', IC.brain, 'Second cerveau')}
+      ${navItem('skills', IC.spark, 'Skills')}
       ${navItem('usage', IC.tokens, 'Consommation')}
       ${navItem('journal', IC.journal, 'Journal')}
       ${navItem('settings', IC.access, 'Réglages')}
@@ -716,6 +719,7 @@ function renderView() {
   if (S.view === 'chat') return renderChat(v);
   if (S.view === 'team') return renderTeam(v);
   if (S.view === 'brain') return renderBrain(v);
+  if (S.view === 'skills') return renderSkills(v);
   if (S.view === 'usage') return renderUsage(v);
   if (S.view === 'journal') return renderJournal(v);
   if (S.view === 'settings') return renderSettings(v);
@@ -962,6 +966,145 @@ function modelBadge(a) {
   </div>`;
 }
 
+// ---- Skills Hermes ---------------------------------------------------------
+async function loadSkills(force = false) {
+  if (S.skills && !force) { if (S.view === 'skills') renderView(); return S.skills; }
+  const r = await tryApi(api('GET', `/api/skills${force ? '?refresh=1' : ''}`), 'Chargement des skills');
+  if (!r) return null;
+  S.skills = r;
+  if (S.view === 'skills') renderView();
+  return r;
+}
+
+function renderSkills(v) {
+  const data = S.skills;
+  if (!data) {
+    v.innerHTML = `<div class="page"><div class="page-head"><h1>Skills</h1></div>
+      <div class="sk sk-stat"></div></div>`;
+    return;
+  }
+
+  if (!data.mounted) {
+    v.innerHTML = `<div class="page">
+      <div class="page-head"><h1>Skills</h1></div>
+      <div class="empty" style="text-align:left;padding:28px;line-height:1.8">
+        <div class="empty-ic" aria-hidden="true">🔌</div>
+        <strong>Les skills d'Hermes ne sont pas visibles d'ici.</strong><br>
+        AgentHub lit le catalogue directement dans les dossiers d'Hermes, montés en
+        lecture seule. Aucun des deux n'est présent dans le conteneur :<br><br>
+        <code>${escapeHtml(data.sources.catalogue.dir)}</code> — catalogue officiel<br>
+        <code>${escapeHtml(data.sources.installed.dir)}</code> — skills actifs<br><br>
+        Ajoute les volumes d'Hermes dans <code>docker-compose.yml</code> (le fichier
+        contient le bloc tout prêt), puis <code>docker compose up -d</code>.
+      </div>
+    </div>`;
+    return;
+  }
+
+  const q = S.skillQuery.toLowerCase().trim();
+  const shown = data.skills.filter((s) => {
+    if (S.skillOnly === 'installed' && !s.installed) return false;
+    if (S.skillOnly === 'available' && s.installed) return false;
+    if (S.skillCat && s.category !== S.skillCat) return false;
+    if (!q) return true;
+    return s.name.toLowerCase().includes(q)
+      || s.description.toLowerCase().includes(q)
+      || s.tags.some((t) => t.toLowerCase().includes(q));
+  });
+
+  v.innerHTML = `<div class="page">
+    <div class="page-head">
+      <h1>Skills</h1>
+      <button class="btn ghost" id="skills-refresh" type="button">Actualiser</button>
+    </div>
+    <p class="page-lede">
+      Ce que ton Hermes sait faire. <strong>${data.counts.installed}</strong> skill${data.counts.installed > 1 ? 's' : ''}
+      actif${data.counts.installed > 1 ? 's' : ''}, <strong>${data.counts.available}</strong> disponible${data.counts.available > 1 ? 's' : ''}
+      dans le catalogue officiel Nous Research, sur ${data.categories.length} catégories.
+      Lu directement dans les fichiers d'Hermes — l'installation, elle, se fait chez lui.
+    </p>
+
+    <div class="skill-toolbar">
+      <input id="skill-q" type="search" placeholder="Chercher un skill…" value="${escapeAttr(S.skillQuery)}"
+             aria-label="Chercher un skill">
+      <div class="seg">
+        <button class="seg-btn ${S.skillOnly === '' ? 'on' : ''}" data-only="" type="button">Tous <small>${data.counts.total}</small></button>
+        <button class="seg-btn ${S.skillOnly === 'installed' ? 'on' : ''}" data-only="installed" type="button">Actifs <small>${data.counts.installed}</small></button>
+        <button class="seg-btn ${S.skillOnly === 'available' ? 'on' : ''}" data-only="available" type="button">À installer <small>${data.counts.available}</small></button>
+      </div>
+    </div>
+
+    <div class="tag-filter">
+      <button class="tag ${S.skillCat ? '' : 'on'}" type="button" data-cat="">toutes</button>
+      ${data.categories.map((c) => `<button class="tag ${S.skillCat === c.category ? 'on' : ''}" type="button"
+        data-cat="${escapeAttr(c.category)}">${escapeHtml(c.category)} <span class="muted">${c.total}</span></button>`).join('')}
+    </div>
+
+    ${shown.length ? `<div class="skill-grid">${shown.map(skillCardHTML).join('')}</div>`
+      : '<div class="empty">Aucun skill ne correspond.</div>'}
+  </div>`;
+
+  const input = $('#skill-q', v);
+  input.oninput = () => {
+    S.skillQuery = input.value;
+    // Re-rendre à chaque frappe ferait perdre le focus : on ne repeint que la grille.
+    const list = $('.skill-grid', v) || $('.empty', v);
+    const qq = S.skillQuery.toLowerCase().trim();
+    const next = data.skills.filter((s) => {
+      if (S.skillOnly === 'installed' && !s.installed) return false;
+      if (S.skillOnly === 'available' && s.installed) return false;
+      if (S.skillCat && s.category !== S.skillCat) return false;
+      if (!qq) return true;
+      return s.name.toLowerCase().includes(qq) || s.description.toLowerCase().includes(qq)
+        || s.tags.some((t) => t.toLowerCase().includes(qq));
+    });
+    if (list) {
+      list.outerHTML = next.length
+        ? `<div class="skill-grid">${next.map(skillCardHTML).join('')}</div>`
+        : '<div class="empty">Aucun skill ne correspond.</div>';
+      wireSkillCards(v, data);
+    }
+  };
+
+  $$('[data-only]', v).forEach((b) => b.onclick = () => { S.skillOnly = b.dataset.only; renderView(); });
+  $$('[data-cat]', v).forEach((b) => b.onclick = () => { S.skillCat = b.dataset.cat; renderView(); });
+  $('#skills-refresh', v).onclick = async (e) => {
+    e.currentTarget.disabled = true;
+    await loadSkills(true);
+    toast('Catalogue relu.', { kind: 'success' });
+  };
+  wireSkillCards(v, data);
+}
+
+function wireSkillCards(root, data) {
+  $$('[data-skill]', root).forEach((c) => c.onclick = () => {
+    const s = data.skills.find((x) => x.id === c.dataset.skill);
+    if (s) openSkillModal(skillToNode(s));
+  });
+}
+
+/** La fiche de skill est partagée avec la carte : même forme des deux côtés. */
+const skillToNode = (s) => ({
+  layer: 'skills', id: s.id, name: s.name, title: s.title,
+  subtitle: s.description, version: s.version, author: s.author,
+  license: s.license, tags: s.tags, installed: s.installed,
+});
+
+function skillCardHTML(s) {
+  return `<button class="skill-card ${s.installed ? 'on' : ''}" type="button" data-skill="${escapeAttr(s.id)}">
+    <span class="skill-top">
+      <span class="skill-name">${escapeHtml(s.title)}</span>
+      <span class="pill ${s.installed ? 'done' : 'pending'}">${s.installed ? 'actif' : 'à installer'}</span>
+    </span>
+    <span class="skill-desc">${escapeHtml(s.description || 'Pas de description.')}</span>
+    <span class="skill-foot">
+      <span class="tag sm">${escapeHtml(s.category)}</span>
+      ${s.version ? `<span class="muted">v${escapeHtml(s.version)}</span>` : ''}
+      ${s.author ? `<span class="muted">${escapeHtml(s.author)}</span>` : ''}
+    </span>
+  </button>`;
+}
+
 // ---- Second cerveau --------------------------------------------------------
 
 function notesUsedChars() {
@@ -1177,12 +1320,19 @@ function renderBrainNotes(panel) {
   wireNoteCards(panel);
 }
 
-// ---- onglet Graph : la carte en bulles -------------------------------------
-// Chaque catégorie est une bulle qui contient ses éléments. Rien ne bouge tout
-// seul, tout est visible d'emblée, et un clic ouvre une bulle pour la lire de
-// près. En SVG plutôt qu'en canvas : les titres restent nets à tous les zooms,
-// chaque cercle est un vrai élément focusable au clavier, et il n'y a aucune
-// boucle d'animation à arrêter en quittant la vue.
+// ---- onglet Graph : la galaxie ---------------------------------------------
+// Une carte en trois dimensions, mais structurée : chaque catégorie forme un
+// amas identifiable, les amas se répartissent sur un disque, et l'ensemble
+// tourne lentement. Ma première version dispersait tout dans un même nuage —
+// c'était joli et illisible. Ici la structure vient d'abord, la profondeur
+// ensuite.
+//
+// Canvas 2D avec projection écrite à la main : le projet n'a pas de build ni de
+// dépendance, et sa politique de sécurité interdit de charger three.js depuis
+// un CDN. Les étoiles sont dessinées à partir d'une image pré-calculée par
+// couleur plutôt que d'un dégradé recréé à chaque image — à deux cents étoiles
+// et soixante images par seconde, la différence est celle entre fluide et
+// saccadé.
 
 const LAYERS = [
   ['notes', 'Mémoire'],
@@ -1192,96 +1342,18 @@ const LAYERS = [
   ['skills', 'Skills'],
 ];
 const LAYER_COLOR = {
-  notes: '#8ea2ff', agents: '#63c8d3', channels: '#63d3a0',
-  tasks: '#e0b464', skills: '#c98ad3',
+  notes: '#9db4ff', agents: '#5fd3e0', channels: '#5fe0ab',
+  tasks: '#f0c274', skills: '#dd9bf0',
 };
+const GALAXY_HELP = 'glisser pour tourner · molette pour zoomer · clic sur une étoile · double-clic met en pause';
 
-/**
- * Empilement de cercles : le premier au centre, chaque suivant collé au couple
- * déjà posé qui le rapproche le plus du centre.
- *
- * Écrit à la main — le projet n'a pas de dépendance et la politique de sécurité
- * interdit d'aller chercher d3 sur un CDN. En O(n³), ce qui est sans importance :
- * un groupe dépasse rarement la trentaine d'éléments, et la disposition est
- * calculée une fois puis figée.
- */
-function packCircles(circles) {
-  const placed = [];
-  const sorted = [...circles].sort((a, b) => b.r - a.r);
-  if (!sorted.length) return { placed, radius: 0 };
-
-  sorted[0].x = 0; sorted[0].y = 0;
-  placed.push(sorted[0]);
-  if (sorted.length > 1) {
-    sorted[1].x = sorted[0].r + sorted[1].r; sorted[1].y = 0;
-    placed.push(sorted[1]);
-  }
-
-  const GAP = 1.5;
-  const fits = (x, y, r) => placed.every((p) => Math.hypot(p.x - x, p.y - y) >= p.r + r - 0.01);
-
-  for (let i = 2; i < sorted.length; i++) {
-    const c = sorted[i];
-    let best = null;
-
-    // Positions candidates : tangentes à deux cercles déjà posés.
-    for (let a = 0; a < placed.length; a++) {
-      for (let b = a + 1; b < placed.length; b++) {
-        const A = placed[a], B = placed[b];
-        const d = Math.hypot(B.x - A.x, B.y - A.y);
-        const ra = A.r + c.r + GAP, rb = B.r + c.r + GAP;
-        if (d > ra + rb || d < Math.abs(ra - rb) || d === 0) continue;
-
-        const t = (d * d - rb * rb + ra * ra) / (2 * d);
-        const h2 = ra * ra - t * t;
-        if (h2 < 0) continue;
-        const h = Math.sqrt(h2);
-        const mx = A.x + (t * (B.x - A.x)) / d, my = A.y + (t * (B.y - A.y)) / d;
-        const ox = (h * (B.y - A.y)) / d, oy = (h * (A.x - B.x)) / d;
-
-        for (const [x, y] of [[mx + ox, my + oy], [mx - ox, my - oy]]) {
-          if (!fits(x, y, c.r + GAP * 0.5)) continue;
-          const dist = Math.hypot(x, y);
-          if (!best || dist < best.dist) best = { x, y, dist };
-        }
-      }
-    }
-
-    if (best) { c.x = best.x; c.y = best.y; }
-    else {
-      // Aucune tangente valable : on pose sur une spirale, qui finit toujours
-      // par sortir de l'amas plutôt que de superposer deux cercles.
-      let k = placed.length;
-      for (;;) {
-        const ang = k * 2.399963;
-        const rad = (c.r + GAP) * 2 * Math.sqrt(k);
-        const x = Math.cos(ang) * rad, y = Math.sin(ang) * rad;
-        if (fits(x, y, c.r + GAP * 0.5)) { c.x = x; c.y = y; break; }
-        k++;
-      }
-    }
-    placed.push(c);
-  }
-
-  // Recentre l'amas et mesure son rayon englobant.
-  let cx = 0, cy = 0;
-  for (const p of placed) { cx += p.x; cy += p.y; }
-  cx /= placed.length; cy /= placed.length;
-  let radius = 0;
-  for (const p of placed) {
-    p.x -= cx; p.y -= cy;
-    radius = Math.max(radius, Math.hypot(p.x, p.y) + p.r);
-  }
-  return { placed, radius };
-}
-
-let bubbleMap = null;
+let galaxy = null;
 function destroyGalaxy() {
-  if (bubbleMap) { bubbleMap.destroy(); bubbleMap = null; }
+  if (galaxy) { galaxy.destroy(); galaxy = null; }
 }
 
 async function renderBrainGraph(panel) {
-  panel.innerHTML = '<div class="bubble-wrap"><div class="galaxy-loading">Construction de la carte…</div></div>';
+  panel.innerHTML = '<div class="galaxy-wrap"><div class="galaxy-loading">Construction de la carte…</div></div>';
 
   const data = await loadGraph();
   if (!data) { panel.innerHTML = '<div class="empty">La carte n\'a pas pu être chargée.</div>'; return; }
@@ -1292,35 +1364,38 @@ async function renderBrainGraph(panel) {
 
   if (!data.nodes.length) {
     panel.innerHTML = `<div class="empty" style="text-align:left;padding:28px;line-height:1.75">
-      <div class="empty-ic" aria-hidden="true">○</div>
+      <div class="empty-ic" aria-hidden="true">✦</div>
       <strong>Rien à cartographier pour l'instant.</strong><br>
-      Écris une note, ou active un autre calque ci-dessous.
+      Écris une note, ou active un autre calque.
     </div>`;
     return;
   }
 
-  panel.innerHTML = `<div class="bubble-wrap" id="bubble-wrap">
-    <div class="bubble-bar">
-      <div class="bubble-layers" role="group" aria-label="Ce qui apparaît sur la carte">
-        ${LAYERS.map(([id, label]) => `
-          <button class="layer-btn ${S.graphLayers.includes(id) ? 'on' : ''}" type="button"
-                  data-layer="${id}" aria-pressed="${S.graphLayers.includes(id)}">
-            <span class="layer-dot" style="--c:${LAYER_COLOR[id]}"></span>${label}
-            <small>${counts[id] ?? 0}</small>
-          </button>`).join('')}
-      </div>
-      <div class="bubble-actions">
-        <span class="bubble-count">${data.nodes.length} élément${data.nodes.length > 1 ? 's' : ''} · ${data.groups.length} groupe${data.groups.length > 1 ? 's' : ''}</span>
-        <button class="btn ghost sm hidden" id="bubble-back" type="button">↩ Tout voir</button>
-      </div>
+  panel.innerHTML = `<div class="galaxy-wrap" id="galaxy-wrap">
+    <canvas id="galaxy-canvas" aria-label="Carte de l'espace de travail"></canvas>
+
+    <div class="galaxy-hud">
+      <div class="galaxy-title">MEMORY GALAXY</div>
+      <div class="galaxy-count"><strong>${data.nodes.length}</strong> étoile${data.nodes.length > 1 ? 's' : ''} · <strong>${data.links.length}</strong> lien${data.links.length > 1 ? 's' : ''} · <strong>${data.groups.length}</strong> amas</div>
+      <div class="galaxy-help">${GALAXY_HELP}</div>
     </div>
-    ${skillsOff ? `<div class="bubble-note">
-      Les skills Hermes ne sont pas visibles : les dossiers <code>${escapeHtml(data.skills.sources.catalogue.dir)}</code>
-      et <code>${escapeHtml(data.skills.sources.installed.dir)}</code> ne sont pas montés dans le conteneur.
-      Ajoute-les en lecture seule dans <code>docker-compose.yml</code>.
-    </div>` : ''}
-    <div class="bubble-stage" id="bubble-stage"></div>
-    <div class="bubble-card hidden" id="bubble-card" aria-live="polite"></div>
+
+    <div class="galaxy-layers" role="group" aria-label="Ce qui apparaît dans la galaxie">
+      ${LAYERS.map(([id, label]) => `
+        <button class="layer-btn ${S.graphLayers.includes(id) ? 'on' : ''}" type="button"
+                data-layer="${id}" aria-pressed="${S.graphLayers.includes(id)}">
+          <span class="layer-dot" style="--c:${LAYER_COLOR[id]}"></span>${label}
+          <small>${counts[id] ?? 0}</small>
+        </button>`).join('')}
+    </div>
+
+    ${skillsOff ? `<div class="galaxy-warn">Skills invisibles : les dossiers d'Hermes ne sont pas montés dans le conteneur.</div>` : ''}
+
+    <div class="galaxy-card hidden" id="galaxy-card" aria-live="polite"></div>
+    <div class="galaxy-tools">
+      <button class="galaxy-btn" id="galaxy-spin" type="button" aria-pressed="true">Pause</button>
+      <button class="galaxy-btn" id="galaxy-reset" type="button">Recentrer</button>
+    </div>
   </div>`;
 
   $$('[data-layer]', panel).forEach((b) => b.onclick = () => {
@@ -1334,29 +1409,77 @@ async function renderBrainGraph(panel) {
     renderView();
   });
 
-  bubbleMap = new BubbleMap($('#bubble-stage', panel), data, {
-    card: $('#bubble-card', panel),
-    back: $('#bubble-back', panel),
+  const card = $('#galaxy-card', panel);
+  galaxy = new Galaxy3D($('#galaxy-canvas', panel), data, {
+    onHover: (node, group) => {
+      if (!node) { card.classList.add('hidden'); return; }
+      card.classList.remove('hidden');
+      card.innerHTML = `
+        <div class="gc-title">
+          <span class="layer-dot" style="--c:${nodeColor(node, group)}"></span>
+          <span>${escapeHtml((node.emoji ? node.emoji + ' ' : '') + node.title)}</span>
+        </div>
+        <div class="gc-meta">${escapeHtml(group ? group.label : '')}</div>
+        <div class="gc-meta">${escapeHtml(node.subtitle || '')}</div>
+        <div class="gc-meta">${escapeHtml(node.meta || '')}</div>`;
+    },
+    onPick: (node) => pickNode(node),
   });
+
+  const spin = $('#galaxy-spin', panel);
+  spin.onclick = () => {
+    const on = galaxy.toggleSpin();
+    spin.textContent = on ? 'Pause' : 'Reprendre';
+    spin.setAttribute('aria-pressed', String(on));
+  };
+  $('#galaxy-reset', panel).onclick = () => galaxy.reset();
 }
 
-class BubbleMap {
-  constructor(host, data, opts) {
-    this.host = host;
+/** Couleur d'une étoile : la sienne s'il en a une, sinon celle de son calque. */
+function nodeColor(node, group) {
+  if (node.color) return safeColor(node.color, LAYER_COLOR[node.layer]);
+  if (node.layer === 'tasks') {
+    return { done: '#77e0a0', failed: '#f0947a', in_progress: '#f0c274' }[node.status] || LAYER_COLOR.tasks;
+  }
+  if (node.layer === 'skills' && !node.installed) return '#9a7fb0';
+  return (group && group.color) || LAYER_COLOR[node.layer] || '#9db4ff';
+}
+
+class Galaxy3D {
+  constructor(canvas, data, opts = {}) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
     this.data = data;
-    this.card = opts.card;
-    this.back = opts.back;
-    this.focus = null;
+    this.opts = opts;
+
+    this.yaw = 0.4;
+    this.pitch = -0.34;
+    this.zoom = 1;
+    this.reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches || false;
+    this.spin = !this.reduced;
+    this.hover = null;
+    this.pointer = null;
+    this.dragging = false;
+    this.sprites = new Map();
 
     this.layout();
-    this.render();
-
-    this.onKey = (e) => { if (e.key === 'Escape' && this.focus) { this.focus = null; this.render(); } };
-    document.addEventListener('keydown', this.onKey);
-    this.back.onclick = () => { this.focus = null; this.render(); };
+    this.bind();
+    this.resize();
+    // Une première image tout de suite : dans un onglet en arrière-plan,
+    // requestAnimationFrame ne se déclenche pas et la carte resterait noire.
+    this.draw();
+    this.loop = this.loop.bind(this);
+    this.raf = requestAnimationFrame(this.loop);
   }
 
-  /** Empile les éléments dans leur groupe, puis les groupes entre eux. */
+  /**
+   * Les amas d'abord, leurs membres ensuite.
+   *
+   * Les centres se répartissent sur un disque par spirale de Fibonacci, les
+   * membres sur une petite sphère autour du leur. Tout est déterministe : la
+   * carte doit se redessiner à l'identique d'une visite à l'autre, sinon on ne
+   * s'y repère jamais.
+   */
   layout() {
     const byGroup = new Map();
     for (const n of this.data.nodes) {
@@ -1364,161 +1487,321 @@ class BubbleMap {
       byGroup.get(n.group).push(n);
     }
 
-    this.groups = [];
-    for (const g of this.data.groups) {
-      const items = (byGroup.get(g.id) || []).map((n) => ({
-        node: n, r: 9 + (n.weight || 1) * 5.5,
-      }));
-      if (!items.length) continue;
-      const { radius } = packCircles(items);
-      // Une marge intérieure pour que le titre du groupe ne chevauche pas ses
-      // éléments, et que la bulle reste lisible quand elle n'en contient qu'un.
-      this.groups.push({ ...g, items, r: Math.max(radius + 20, 42) });
-    }
+    this.groups = this.data.groups.filter((g) => byGroup.has(g.id));
+    const G = this.groups.length;
+    const spread = 210 + Math.sqrt(this.data.nodes.length) * 26;
+    const golden = Math.PI * (3 - Math.sqrt(5));
 
-    const packed = packCircles(this.groups.map((g) => ({ g, r: g.r })));
-    for (const p of packed.placed) { p.g.x = p.x; p.g.y = p.y; }
-    this.radius = packed.radius;
+    this.nodes = [];
+    this.groups.forEach((g, i) => {
+      // Disque plutôt que sphère : les amas restent distincts vus de face, et
+      // la profondeur sert la lisibilité au lieu de tout mélanger.
+      const t = G === 1 ? 0 : i / (G - 1);
+      const rad = spread * Math.sqrt(0.12 + t * 0.88);
+      const ang = i * golden;
+      g.cx = Math.cos(ang) * rad;
+      g.cy = (((i * 41) % 100) / 100 - 0.5) * spread * 0.30;
+      g.cz = Math.sin(ang) * rad;
 
-    // Position absolue de chaque élément : c'est ce qui permet de tracer un
-    // lien d'une bulle à l'autre.
-    this.pos = new Map();
-    for (const g of this.groups) {
-      for (const it of g.items) this.pos.set(it.node.id, { x: g.x + it.x, y: g.y + it.y, r: it.r, group: g });
-    }
-  }
-
-  viewBox() {
-    if (this.focus) {
-      const g = this.groups.find((x) => x.id === this.focus);
-      if (g) { const p = g.r * 1.18; return `${g.x - p} ${g.y - p} ${p * 2} ${p * 2}`; }
-    }
-    const p = this.radius * 1.08;
-    return `${-p} ${-p} ${p * 2} ${p * 2}`;
-  }
-
-  render() {
-    const focused = this.focus ? this.groups.find((g) => g.id === this.focus) : null;
-    this.back.classList.toggle('hidden', !focused);
-
-    // Rapport pixels-écran / unités du dessin. Les tailles de texte sont
-    // divisées par lui : sans ça un titre garderait sa taille en unités et
-    // deviendrait énorme dès qu'on zoome dans une bulle.
-    const span = focused ? focused.r * 2.36 : this.radius * 2.16;
-    const scale = (this.host.clientWidth || 900) / Math.max(1, span);
-
-    const parts = [`<svg viewBox="${this.viewBox()}" preserveAspectRatio="xMidYMid meet"
-        class="bubble-svg" role="group" aria-label="Carte de l'espace de travail">`];
-
-    parts.push('<g id="bubble-links"></g>');
-
-    for (const g of this.groups) {
-      const dim = focused && g.id !== focused.id;
-      parts.push(`<g class="bub-group ${dim ? 'dim' : ''}" data-group="${escapeAttr(g.id)}" style="--c:${g.color}">
-        <circle class="bub-ring" cx="${g.x}" cy="${g.y}" r="${g.r}"></circle>
-        <text class="bub-glabel" x="${g.x}" y="${g.y - g.r + 15}" text-anchor="middle"
-              style="font-size:${(15 / scale).toFixed(2)}px">${escapeHtml(g.label)} · ${g.count}</text>`);
-
-      for (const it of g.items) {
-        const n = it.node;
-        const x = g.x + it.x, y = g.y + it.y;
-        const showLabel = it.r * scale > 24;
-        parts.push(`<g class="bub-item ${n.stub ? 'stub' : ''} ${n.installed ? 'active' : ''}"
-              data-node="${escapeAttr(n.id)}" tabindex="0" role="button"
-              aria-label="${escapeAttr(n.title)}" style="--c:${nodeColor(n, g)}">
-          <circle cx="${x}" cy="${y}" r="${it.r}"></circle>
-          ${showLabel ? `<text class="bub-ilabel" x="${x}" y="${y + 3.2 / scale}" text-anchor="middle"
-              style="font-size:${(11 / scale).toFixed(2)}px">${escapeHtml(shortLabel(n.title, it.r * scale))}</text>` : ''}
-        </g>`);
-      }
-      parts.push('</g>');
-    }
-
-    parts.push('</svg>');
-    this.host.innerHTML = parts.join('');
-    this.svg = $('svg', this.host);
-    this.linkLayer = $('#bubble-links', this.host);
-    this.wire();
-  }
-
-  wire() {
-    $$('[data-group]', this.host).forEach((g) => {
-      g.addEventListener('click', (e) => {
-        // Un clic sur un élément ne doit pas être avalé par sa bulle.
-        if (e.target.closest('[data-node]')) return;
-        this.focus = this.focus === g.dataset.group ? null : g.dataset.group;
-        this.render();
+      const members = byGroup.get(g.id);
+      const blob = 26 + Math.sqrt(members.length) * 15;
+      members.forEach((n, j) => {
+        const m = members.length;
+        const y = m === 1 ? 0 : 1 - (j / (m - 1)) * 2;
+        const rr = Math.sqrt(Math.max(0, 1 - y * y));
+        const th = golden * j;
+        // Rayon variable pour que l'amas ait du volume plutôt qu'une coquille.
+        const shell = 0.45 + 0.55 * (((j * 29) % 100) / 100);
+        this.nodes.push({
+          node: n, group: g,
+          x: g.cx + Math.cos(th) * rr * blob * shell,
+          y: g.cy + y * blob * shell * 0.7,
+          z: g.cz + Math.sin(th) * rr * blob * shell,
+          r: 1.7 + (n.weight || 1) * 1.25,
+          color: nodeColor(n, g),
+        });
       });
     });
 
-    $$('[data-node]', this.host).forEach((el) => {
-      const node = this.data.nodes.find((n) => n.id === el.dataset.node);
-      if (!node) return;
-      const enter = () => this.hover(node, el);
-      const leave = () => this.hover(null);
-      el.addEventListener('mouseenter', enter);
-      el.addEventListener('focus', enter);
-      el.addEventListener('mouseleave', leave);
-      el.addEventListener('blur', leave);
-      el.addEventListener('click', (e) => { e.stopPropagation(); pickNode(node); });
-      el.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pickNode(node); }
-      });
-    });
-  }
-
-  /** Met en avant un élément, sa carte, et les liens qui le relient. */
-  hover(node, el) {
-    this.host.classList.toggle('hovering', Boolean(node));
-    $$('.hot', this.host).forEach((n) => n.classList.remove('hot'));
-    this.linkLayer.innerHTML = '';
-
-    if (!node) { this.card.classList.add('hidden'); return; }
-    el?.classList.add('hot');
-
-    const here = this.pos.get(node.id);
-    const lines = [];
+    this.index = new Map(this.nodes.map((s, i) => [s.node.id, i]));
+    this.degree = new Map();
     for (const l of this.data.links) {
-      const other = l.source === node.id ? l.target : l.target === node.id ? l.source : null;
-      if (!other) continue;
-      const p = this.pos.get(other);
-      if (!p || !here) continue;
-      lines.push(`<line x1="${here.x}" y1="${here.y}" x2="${p.x}" y2="${p.y}"></line>`);
-      const peer = this.host.querySelector(`[data-node="${CSS.escape(other)}"]`);
-      peer?.classList.add('hot');
+      this.degree.set(l.source, (this.degree.get(l.source) || 0) + 1);
+      this.degree.set(l.target, (this.degree.get(l.target) || 0) + 1);
     }
-    this.linkLayer.innerHTML = lines.join('');
+    for (const s of this.nodes) s.r += Math.min(2.2, (this.degree.get(s.node.id) || 0) * 0.5);
 
-    const g = here?.group;
-    this.card.classList.remove('hidden');
-    this.card.innerHTML = `
-      <div class="gc-title">
-        <span class="layer-dot" style="--c:${nodeColor(node, g)}"></span>
-        <span>${escapeHtml((node.emoji ? node.emoji + ' ' : '') + node.title)}</span>
-      </div>
-      <div class="gc-meta">${escapeHtml(node.subtitle || '')}</div>
-      <div class="gc-meta">${escapeHtml(node.meta || '')}${lines.length ? ` · ${lines.length} lien${lines.length > 1 ? 's' : ''}` : ''}</div>`;
+    this.radius = this.nodes.reduce((m, s) => Math.max(m, Math.hypot(s.x, s.y, s.z)), 1);
+
+    // Poussière : purement décoratif, mais c'est ce qui fait lire le vide comme
+    // un ciel et non comme un fond gris.
+    this.dust = [];
+    for (let i = 0; i < 420; i++) {
+      const a = (i * 2.399963) % (Math.PI * 2);
+      const rr = this.radius * (0.25 + ((i * 37) % 100) / 74);
+      this.dust.push({
+        x: Math.cos(a) * rr,
+        y: (((i * 53) % 100) / 100 - 0.5) * this.radius * 0.4,
+        z: Math.sin(a) * rr,
+        s: 0.5 + ((i * 17) % 10) / 12,
+      });
+    }
+  }
+
+  /**
+   * Une étoile pré-dessinée par couleur : halo doux plus cœur clair.
+   * Recréer un dégradé radial par étoile et par image coûterait plus que tout
+   * le reste du rendu réuni.
+   */
+  sprite(color) {
+    if (this.sprites.has(color)) return this.sprites.get(color);
+    const S = 64;
+    const c = document.createElement('canvas');
+    c.width = c.height = S;
+    const g = c.getContext('2d');
+    const grad = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+    grad.addColorStop(0, '#ffffff');
+    grad.addColorStop(0.18, color);
+    grad.addColorStop(0.45, withAlpha(color, 0.35));
+    grad.addColorStop(1, withAlpha(color, 0));
+    g.fillStyle = grad;
+    g.fillRect(0, 0, S, S);
+    this.sprites.set(color, c);
+    return c;
+  }
+
+  bind() {
+    const c = this.canvas;
+    this.onResize = () => { this.resize(); this.draw(); };
+    window.addEventListener('resize', this.onResize);
+    this.onVisible = () => { if (!document.hidden) { this.resize(); this.draw(); } };
+    document.addEventListener('visibilitychange', this.onVisible);
+
+    this.onDown = (e) => {
+      this.dragging = true;
+      this.lastX = e.clientX; this.lastY = e.clientY; this.moved = 0;
+      c.setPointerCapture?.(e.pointerId);
+      c.classList.add('grabbing');
+    };
+    this.onMove = (e) => {
+      const r = c.getBoundingClientRect();
+      this.pointer = { x: e.clientX - r.left, y: e.clientY - r.top };
+      if (!this.dragging) return;
+      const dx = e.clientX - this.lastX, dy = e.clientY - this.lastY;
+      this.lastX = e.clientX; this.lastY = e.clientY;
+      this.moved += Math.abs(dx) + Math.abs(dy);
+      this.yaw += dx * 0.006;
+      this.pitch = Math.max(-1.4, Math.min(1.4, this.pitch + dy * 0.006));
+    };
+    this.onUp = (e) => {
+      // Un glissement n'est pas un clic : sans ce seuil, chaque rotation
+      // finirait par ouvrir une fiche au hasard.
+      if (this.dragging && this.moved < 5 && this.hover) this.opts.onPick?.(this.hover.node);
+      this.dragging = false;
+      c.releasePointerCapture?.(e.pointerId);
+      c.classList.remove('grabbing');
+    };
+    this.onLeave = () => { this.pointer = null; this.setHover(null); };
+    this.onWheel = (e) => {
+      e.preventDefault();
+      this.zoom = Math.max(0.4, Math.min(6, this.zoom * (e.deltaY > 0 ? 0.9 : 1.1)));
+    };
+    this.onDbl = () => this.toggleSpin();
+    this.onKey = (e) => {
+      if (e.key === 'Escape') this.setHover(null);
+      if (e.key === ' ') { e.preventDefault(); this.toggleSpin(); }
+    };
+
+    c.addEventListener('pointerdown', this.onDown);
+    c.addEventListener('pointermove', this.onMove);
+    c.addEventListener('pointerup', this.onUp);
+    c.addEventListener('pointerleave', this.onLeave);
+    c.addEventListener('wheel', this.onWheel, { passive: false });
+    c.addEventListener('dblclick', this.onDbl);
+    c.addEventListener('keydown', this.onKey);
+    c.tabIndex = 0;
+  }
+
+  toggleSpin() { this.spin = !this.spin; return this.spin; }
+  reset() { this.yaw = 0.4; this.pitch = -0.34; this.zoom = 1; }
+
+  resize() {
+    const wrap = this.canvas.parentElement;
+    if (!wrap) return;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    this.w = wrap.clientWidth; this.h = wrap.clientHeight;
+    this.canvas.width = Math.round(this.w * dpr);
+    this.canvas.height = Math.round(this.h * dpr);
+    this.canvas.style.width = this.w + 'px';
+    this.canvas.style.height = this.h + 'px';
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  setHover(s) {
+    if (this.hover === s) return;
+    this.hover = s;
+    this.canvas.style.cursor = s ? 'pointer' : 'grab';
+    this.opts.onHover?.(s ? s.node : null, s ? s.group : null);
+  }
+
+  project(p) {
+    const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw);
+    const cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
+    const x1 = p.x * cy - p.z * sy;
+    const z1 = p.x * sy + p.z * cy;
+    const y2 = p.y * cp - z1 * sp;
+    const z2 = p.y * sp + z1 * cp;
+    const fov = 1100;
+    const depth = fov + z2;
+    if (depth < 80) return null;
+    const k = (fov / depth) * this.zoom * this.fit;
+    return { x: this.w / 2 + x1 * k, y: this.h / 2 + y2 * k, k, z: z2 };
+  }
+
+  loop() {
+    this.raf = requestAnimationFrame(this.loop);
+    if (this.spin && !this.dragging) this.yaw += 0.0013;
+    this.draw();
+  }
+
+  draw() {
+    const ctx = this.ctx;
+    const { w, h } = this;
+    if (!w || !h) return;
+    this.fit = Math.min(w, h) / (this.radius * 2.5);
+
+    // Fond : un dégradé chaud au centre, noir aux bords. C'est lui qui donne
+    // la sensation de profondeur avant même la première étoile.
+    const bg = ctx.createRadialGradient(w / 2, h * 0.48, 0, w / 2, h * 0.48, Math.max(w, h) * 0.8);
+    bg.addColorStop(0, '#1c1f47');
+    bg.addColorStop(0.45, '#0e1029');
+    bg.addColorStop(1, '#05060f');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, w, h);
+
+    ctx.globalCompositeOperation = 'lighter';
+    for (const d of this.dust) {
+      const p = this.project(d);
+      if (!p) continue;
+      ctx.globalAlpha = 0.10 + 0.18 * Math.min(1, p.k * 2);
+      ctx.fillStyle = '#aab6ff';
+      ctx.fillRect(p.x, p.y, d.s, d.s);
+    }
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+
+    const proj = this.nodes.map((s) => this.project(s));
+
+    // Voisins de l'étoile survolée : eux seuls resteront allumés.
+    const hoverId = this.hover ? this.hover.node.id : null;
+    const near = new Set();
+    if (hoverId) {
+      for (const l of this.data.links) {
+        if (l.source === hoverId) near.add(l.target);
+        if (l.target === hoverId) near.add(l.source);
+      }
+    }
+
+    ctx.lineWidth = 1;
+    for (const l of this.data.links) {
+      const a = this.index.get(l.source), b = this.index.get(l.target);
+      if (a === undefined || b === undefined) continue;
+      const pa = proj[a], pb = proj[b];
+      if (!pa || !pb) continue;
+      const lit = hoverId && (l.source === hoverId || l.target === hoverId);
+      if (hoverId && !lit) continue;              // au survol, seuls les liens concernés
+      ctx.strokeStyle = lit ? 'rgba(200,216,255,.85)' : 'rgba(150,168,240,.13)';
+      ctx.beginPath();
+      ctx.moveTo(pa.x, pa.y);
+      ctx.lineTo(pb.x, pb.y);
+      ctx.stroke();
+    }
+
+    // Du plus lointain au plus proche : les étoiles de devant couvrent celles
+    // de derrière, ce qui est tout ce qui donne la profondeur.
+    const order = this.nodes.map((_, i) => i).filter((i) => proj[i])
+      .sort((a, b) => proj[b].z - proj[a].z);
+
+    let best = null, bestD = 20;
+    ctx.globalCompositeOperation = 'lighter';
+    for (const i of order) {
+      const s = this.nodes[i];
+      const p = proj[i];
+      const r = Math.max(0.8, s.r * p.k);
+
+      if (this.pointer) {
+        const d = Math.hypot(this.pointer.x - p.x, this.pointer.y - p.y);
+        if (d < Math.max(bestD, r + 7)) { best = s; bestD = Math.min(bestD, d); }
+      }
+
+      const dim = hoverId && s.node.id !== hoverId && !near.has(s.node.id);
+      // La profondeur assombrit : sans ça tout se vaut et le relief disparaît.
+      const depth = 0.42 + 0.58 * Math.min(1, p.k * 1.5);
+      const alpha = (dim ? 0.16 : 1) * depth;
+
+      const size = r * (s.node.stub ? 5 : 7);
+      ctx.globalAlpha = alpha * (s.node.stub ? 0.45 : 0.95);
+      ctx.drawImage(this.sprite(s.color), p.x - size, p.y - size, size * 2, size * 2);
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+
+    // Nom des amas, posé au centre de chacun : c'est ce qui fait la différence
+    // entre une carte et une nébuleuse.
+    ctx.textAlign = 'center';
+    for (const g of this.groups) {
+      const p = this.project({ x: g.cx, y: g.cy, z: g.cz });
+      if (!p || p.k < 0.25) continue;
+      const dimmed = hoverId && this.hover.group.id !== g.id;
+      ctx.globalAlpha = Math.min(0.92, p.k * 1.3) * (dimmed ? 0.35 : 1);
+      ctx.font = `600 ${Math.round(10 + p.k * 3)}px ui-sans-serif, system-ui, sans-serif`;
+      ctx.fillStyle = g.color;
+      ctx.fillText(`${g.label} · ${g.count}`, p.x, p.y - 6);
+    }
+    ctx.globalAlpha = 1;
+
+    // Le titre de l'étoile survolée, et rien d'autre : afficher deux cents
+    // libellés reviendrait à n'en afficher aucun.
+    if (this.hover) {
+      const i = this.index.get(this.hover.node.id);
+      const p = proj[i];
+      if (p) {
+        const r = Math.max(0.8, this.nodes[i].r * p.k);
+        ctx.font = '600 13px ui-sans-serif, system-ui, sans-serif';
+        const text = this.hover.node.title.slice(0, 40);
+        const wdt = ctx.measureText(text).width;
+        ctx.fillStyle = 'rgba(8,10,26,.82)';
+        ctx.fillRect(p.x - wdt / 2 - 7, p.y - r - 28, wdt + 14, 21);
+        ctx.fillStyle = '#eef1ff';
+        ctx.fillText(text, p.x, p.y - r - 13);
+      }
+    }
+
+    this.setHover(this.pointer ? best : null);
   }
 
   destroy() {
-    document.removeEventListener('keydown', this.onKey);
+    cancelAnimationFrame(this.raf);
+    const c = this.canvas;
+    window.removeEventListener('resize', this.onResize);
+    document.removeEventListener('visibilitychange', this.onVisible);
+    c.removeEventListener('pointerdown', this.onDown);
+    c.removeEventListener('pointermove', this.onMove);
+    c.removeEventListener('pointerup', this.onUp);
+    c.removeEventListener('pointerleave', this.onLeave);
+    c.removeEventListener('wheel', this.onWheel);
+    c.removeEventListener('dblclick', this.onDbl);
+    c.removeEventListener('keydown', this.onKey);
   }
 }
 
-/** Coupe un titre à ce que le cercle peut réellement afficher. */
-function shortLabel(title, px) {
-  const max = Math.max(3, Math.floor(px / 3.4));
-  const t = String(title || '');
-  return t.length > max ? t.slice(0, max - 1) + '…' : t;
-}
-
-/** Couleur d'un élément : la sienne s'il en a une, sinon celle de son groupe. */
-function nodeColor(node, group) {
-  if (node.color) return safeColor(node.color, LAYER_COLOR[node.layer]);
-  if (node.layer === 'tasks') {
-    return { done: '#6fc98d', failed: '#d98a6f', in_progress: '#e0b464' }[node.status] || LAYER_COLOR.tasks;
-  }
-  return (group && group.color) || LAYER_COLOR[node.layer] || '#8ea2ff';
+/** Applique une opacité à une couleur hexadécimale. */
+function withAlpha(color, a) {
+  const hex = String(color || '').replace('#', '');
+  const full = hex.length === 3 ? hex.split('').map((c) => c + c).join('') : hex;
+  if (full.length !== 6) return `rgba(160, 180, 255, ${a})`;
+  const n = parseInt(full, 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
 }
 
 /** Chaque famille s'ouvre là où elle vit réellement. */
@@ -1527,7 +1810,6 @@ function pickNode(node) {
     if (node.stub) { openNoteModal(null, { title: node.title }); return; }
     const note = S.notes.find((n) => n.id === node.id);
     if (!note) return;
-    // Ouvrir depuis la carte compte comme un usage.
     api('POST', `/api/notes/${note.id}/touch`).catch(() => {});
     openNoteModal(note);
     return;
@@ -1552,8 +1834,8 @@ function pickNode(node) {
 /**
  * Fiche d'un skill Hermes.
  *
- * On n'installe rien depuis ici : l'installation écrit dans le système de
- * fichiers d'Hermes et passe par ses propres contrôles — analyse de sécurité,
+ * On n'installe rien depuis ici : l'installation écrit dans les fichiers
+ * d'Hermes et passe par ses propres contrôles — analyse de sécurité,
  * provenance, épinglage. AgentHub montre et donne la commande exacte.
  */
 function openSkillModal(node) {

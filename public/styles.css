@@ -1441,114 +1441,148 @@ button.tag.on { background: var(--accent); color: var(--on-accent); }
   border: 1px dashed var(--line);
 }
 
-/* ------------------------------------------------------- carte en bulles ---
-   Chaque catégorie est un cercle qui contient ses éléments. Rien ne bouge tout
-   seul : la carte est calculée une fois, puis lue. Elle vit sur les surfaces
-   normales de l'application, pas sur un fond spatial — c'est une carte de
-   travail, pas un écran de veille. */
+/* ------------------------------------------------------------- galaxie ---
+   Le canvas peint son propre ciel : il reste sombre dans les deux thèmes, et
+   tout ce qui se pose dessus est calibré pour ce fond-là, pas pour les
+   surfaces de l'application. */
 
-.bubble-wrap { display: flex; flex-direction: column; gap: var(--sp-3); min-height: 0; }
-
-.bubble-bar {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: var(--sp-3); flex-wrap: wrap;
+.galaxy-wrap {
+  position: relative; width: 100%; height: min(74vh, 760px); min-height: 400px;
+  border-radius: var(--r-lg); overflow: hidden;
+  background: #05060f; border: 1px solid var(--line);
 }
-.bubble-layers { display: flex; flex-wrap: wrap; gap: 6px; }
-.bubble-actions { display: flex; align-items: center; gap: var(--sp-3); }
-.bubble-count { color: var(--muted); font-size: var(--fs-sm); }
+.galaxy-wrap canvas {
+  display: block; width: 100%; height: 100%;
+  cursor: grab; touch-action: none;
+}
+.galaxy-wrap canvas.grabbing { cursor: grabbing; }
+.galaxy-wrap canvas:focus-visible { outline: 2px solid #8fa8ff; outline-offset: -3px; }
+.galaxy-loading {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  color: #aab3d8; font-size: var(--fs-md);
+}
 
+.galaxy-hud { position: absolute; top: var(--sp-4); left: var(--sp-4); pointer-events: none; }
+.galaxy-title {
+  font-size: var(--fs-sm); letter-spacing: .16em; text-transform: uppercase;
+  color: #8b96c8; font-weight: 600;
+}
+.galaxy-count { font-size: var(--fs-lg); color: #eef1ff; margin-top: 3px; }
+.galaxy-count strong { font-weight: 650; }
+.galaxy-help { font-size: var(--fs-sm); color: #737ea9; margin-top: 5px; }
+
+.galaxy-warn {
+  position: absolute; top: var(--sp-4); left: 50%; transform: translateX(-50%);
+  padding: 7px 14px; border-radius: var(--r-pill); font-size: var(--fs-sm);
+  background: rgba(60, 46, 20, .9); color: #f0d9a8;
+  border: 1px solid rgba(240, 194, 116, .3);
+}
+
+.galaxy-layers {
+  position: absolute; left: var(--sp-4); bottom: var(--sp-4);
+  display: flex; flex-wrap: wrap; gap: 6px;
+  max-width: min(520px, calc(100% - var(--sp-8)));
+}
 .layer-btn {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 6px 12px; cursor: pointer; font-family: inherit; font-size: var(--fs-sm);
-  background: var(--surface); color: var(--muted);
-  border: 1px solid var(--line); border-radius: var(--r-pill);
+  background: rgba(14, 16, 38, .82); color: #7d88b5;
+  border: 1px solid rgba(150, 165, 240, .18); border-radius: var(--r-pill);
+  backdrop-filter: blur(8px);
   transition: color var(--fast) var(--ease), border-color var(--fast) var(--ease),
               background var(--fast) var(--ease);
 }
-.layer-btn:hover { color: var(--text); border-color: var(--accent); }
-.layer-btn.on { color: var(--text); background: var(--surface-2); border-color: var(--line); }
-.layer-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.layer-btn small { color: var(--muted); font-size: var(--fs-xs); }
+.layer-btn:hover { color: #dfe4ff; border-color: rgba(150, 165, 240, .45); }
+.layer-btn.on { color: #eef1ff; background: rgba(36, 42, 84, .92); border-color: rgba(150, 165, 240, .5); }
+.layer-btn:focus-visible { outline: 2px solid #8fa8ff; outline-offset: 2px; }
+.layer-btn small { color: #6a749f; font-size: var(--fs-xs); }
+.layer-btn.on small { color: #98a2cc; }
 
 .layer-dot {
-  width: 9px; height: 9px; border-radius: 50%; flex: none;
-  background: var(--c, var(--accent)); opacity: .3;
-  transition: opacity var(--fast) var(--ease);
+  width: 8px; height: 8px; border-radius: 50%; flex: none;
+  background: var(--c, #9db4ff); opacity: .4;
+  transition: opacity var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
 }
-.layer-btn.on .layer-dot { opacity: 1; }
-.gc-title .layer-dot { opacity: 1; }
+.layer-btn.on .layer-dot { opacity: 1; box-shadow: 0 0 8px var(--c, #9db4ff); }
+.gc-title .layer-dot { opacity: 1; box-shadow: 0 0 8px var(--c); }
 
-.bubble-note {
-  padding: 10px var(--sp-4); border-radius: var(--r-xs);
-  background: var(--gold-soft); border-left: 3px solid var(--gold);
-  font-size: var(--fs-md); line-height: 1.65;
+.galaxy-tools { position: absolute; top: var(--sp-4); right: var(--sp-4); display: flex; gap: 6px; }
+.galaxy-btn {
+  padding: 6px 13px; cursor: pointer; font-family: inherit; font-size: var(--fs-sm);
+  background: rgba(14, 16, 38, .82); color: #c5cdf0;
+  border: 1px solid rgba(150, 165, 240, .22); border-radius: var(--r-pill);
+  backdrop-filter: blur(8px);
+  transition: background var(--fast) var(--ease);
 }
+.galaxy-btn:hover { background: rgba(40, 46, 92, .92); }
+.galaxy-btn:focus-visible { outline: 2px solid #8fa8ff; outline-offset: 2px; }
 
-.bubble-stage {
-  position: relative; width: 100%; height: min(70vh, 700px); min-height: 360px;
-  border: 1px solid var(--line); border-radius: var(--r-lg);
-  background: var(--surface-2); overflow: hidden;
-}
-.galaxy-loading { position: absolute; inset: 0; display: grid; place-items: center;
-  color: var(--muted); font-size: var(--fs-md); }
-
-.bubble-svg { display: block; width: 100%; height: 100%; }
-
-/* — groupes — */
-.bub-ring {
-  fill: color-mix(in srgb, var(--c) 9%, transparent);
-  stroke: color-mix(in srgb, var(--c) 42%, transparent);
-  stroke-width: 1.2;
-  transition: fill var(--fast) var(--ease), stroke var(--fast) var(--ease);
-}
-.bub-group { cursor: zoom-in; }
-.bub-group:hover .bub-ring { fill: color-mix(in srgb, var(--c) 15%, transparent); }
-.bub-group.dim { opacity: .18; pointer-events: none; }
-.bub-glabel {
-  fill: var(--text-2); font-weight: 600; letter-spacing: .02em;
-  pointer-events: none; user-select: none;
-}
-
-/* — éléments — */
-.bub-item { cursor: pointer; }
-.bub-item circle {
-  fill: var(--c); stroke: transparent; stroke-width: 2;
-  transition: stroke var(--fast) var(--ease);
-}
-.bub-item.stub circle { fill: transparent; stroke: var(--c); stroke-dasharray: 3 3; stroke-width: 1.3; }
-.bub-item.active circle { stroke: var(--text); stroke-width: 1.6; }
-.bub-item:hover circle, .bub-item.hot circle { stroke: var(--text); }
-.bub-item:focus { outline: none; }
-.bub-item:focus-visible circle { stroke: var(--accent); stroke-width: 3; }
-.bub-ilabel {
-  fill: #fff; font-weight: 600; pointer-events: none; user-select: none;
-  paint-order: stroke; stroke: rgba(0, 0, 0, .3); stroke-width: 2px;
-}
-.bub-item.stub .bub-ilabel { fill: var(--text-2); stroke: none; }
-
-/* Le survol éteint tout ce qui n'est pas concerné : c'est ce qui rend un lien
-   lisible au milieu de cent cercles. */
-.bubble-stage.hovering .bub-item { opacity: .28; transition: opacity var(--fast) var(--ease); }
-.bubble-stage.hovering .bub-item.hot { opacity: 1; }
-
-#bubble-links line {
-  stroke: var(--accent); stroke-width: 1.4; opacity: .55; pointer-events: none;
-}
-
-/* — carte de survol — */
-.bubble-card {
+.galaxy-card {
   position: absolute; right: var(--sp-4); bottom: var(--sp-4);
-  min-width: 200px; max-width: 320px; padding: 11px 13px;
-  background: var(--surface); border: 1px solid var(--line);
-  border-radius: var(--r-sm); box-shadow: 0 8px 24px rgba(0, 0, 0, .12);
-  pointer-events: none;
+  min-width: 210px; max-width: 330px; padding: 12px 14px;
+  background: rgba(12, 14, 34, .9); border: 1px solid rgba(150, 165, 240, .25);
+  border-radius: var(--r-sm); color: #e8ecff;
+  backdrop-filter: blur(8px); pointer-events: none;
 }
-.bubble-card.hidden { display: none; }
-.gc-title { display: flex; align-items: center; gap: 7px; font-weight: 600; font-size: var(--fs-base); }
+.galaxy-card.hidden { opacity: 0; }
+.gc-title { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: var(--fs-base); }
 .gc-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.gc-meta { font-size: var(--fs-sm); color: var(--muted); margin-top: 3px; line-height: 1.5; }
+.gc-meta { font-size: var(--fs-sm); color: #9aa4cc; margin-top: 3px; line-height: 1.5; }
 
-/* — fiche d'un skill — */
+@media (max-width: 720px) {
+  .galaxy-wrap { height: 62vh; }
+  .galaxy-card { left: var(--sp-4); right: var(--sp-4); max-width: none; bottom: 62px; }
+  .galaxy-help { display: none; }
+}
+
+/* ===========================================================================
+   Page Skills
+   =========================================================================== */
+
+.skill-toolbar {
+  display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap;
+  margin: var(--sp-4) 0;
+}
+.skill-toolbar input[type="search"] { flex: 1; min-width: 200px; }
+
+.seg {
+  display: inline-flex; padding: 3px; gap: 2px;
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-pill);
+}
+.seg-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 6px 13px; border: 0; background: transparent; cursor: pointer;
+  border-radius: var(--r-pill); color: var(--muted);
+  font-family: inherit; font-size: var(--fs-md); font-weight: 500;
+  transition: color var(--fast) var(--ease), background var(--fast) var(--ease);
+}
+.seg-btn:hover { color: var(--text); }
+.seg-btn.on { background: var(--accent); color: var(--on-accent); }
+.seg-btn small { font-size: var(--fs-xs); opacity: .8; }
+.seg-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.skill-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+  gap: var(--sp-3);
+}
+.skill-card {
+  display: flex; flex-direction: column; gap: 7px; text-align: left;
+  padding: var(--sp-4); cursor: pointer; font-family: inherit; color: inherit;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-sm);
+  transition: border-color var(--fast) var(--ease), transform var(--fast) var(--ease);
+}
+.skill-card:hover { border-color: var(--accent); transform: translateY(-1px); }
+.skill-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.skill-card.on { border-left: 3px solid var(--ok); }
+.skill-top { display: flex; align-items: center; gap: var(--sp-2); justify-content: space-between; }
+.skill-name { font-weight: 600; font-size: var(--fs-base); }
+.skill-desc {
+  color: var(--muted); font-size: var(--fs-md); line-height: 1.6;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.skill-foot { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin-top: auto; }
+.skill-foot .muted { color: var(--muted); font-size: var(--fs-xs); }
+
 .skill-head { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
 .skill-head .muted { font-size: var(--fs-sm); color: var(--muted); }
 .cmd-row {
@@ -1558,15 +1592,8 @@ button.tag.on { background: var(--accent); color: var(--on-accent); }
 }
 .cmd-row code { flex: 1; min-width: 0; font-size: var(--fs-md); overflow-x: auto; }
 
-@media (max-width: 720px) {
-  .bubble-stage { height: 58vh; }
-  .bubble-card { left: var(--sp-4); right: var(--sp-4); max-width: none; }
-}
-
-/* Sans color-mix (navigateurs plus anciens), les bulles de groupe seraient
-   invisibles : un repli neutre vaut mieux qu'un cercle absent. */
-@supports not (color: color-mix(in srgb, red 50%, blue)) {
-  .bub-ring { fill: var(--surface); stroke: var(--line); }
+@media (prefers-reduced-motion: reduce) {
+  .skill-card:hover { transform: none; }
 }
 
 /* ===========================================================================
