@@ -6,7 +6,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 
-import { Agents, Channels, Messages, Tasks, Settings, Stats, Notes, Usage, Providers, slug } from './db.js';
+import {
+  Agents, Channels, Messages, Tasks, Settings, Stats, Notes, NoteProposals, Usage, Providers,
+  Sessions, Prices, Search, Attachments, Schedules, Webhooks, slug, db,
+} from './db.js';
 import { providerCatalog, probeProvider, seedProvidersFromEnv, PRESETS } from './llm.js';
 import { Orchestrator } from './orchestrator.js';
 
@@ -122,7 +125,15 @@ app.use(express.json({ limit: '512kb' }));
 // Every login mints a fresh random token held server-side. Signing alone would
 // make one constant cookie valid forever: logout could not revoke it, and
 // changing the password would not evict whoever already had it.
-const activeSessions = new Set();
+//
+// That token set now lives in SQLite rather than in this process. In memory,
+// every restart — so every deploy — logged everyone out, and nothing ever
+// expired a token that had been issued.
+setInterval(() => {
+  const gone = Sessions.purge();
+  if (gone) console.log(`${gone} session(s) expirée(s) purgée(s).`);
+}, 3600_000).unref();
+Sessions.purge();
 
 function sign(val) {
   const h = crypto.createHmac('sha256', SECRET).update(val).digest('hex');
@@ -138,7 +149,7 @@ function verify(signed) {
   const b = Buffer.from(signed);
   if (a.length !== b.length) return false;
   if (!crypto.timingSafeEqual(a, b)) return false;
-  return activeSessions.has(token) ? token : false;
+  return Sessions.valid(token) ? token : false;
 }
 function parseCookies(req) {
   const out = {};
@@ -180,7 +191,7 @@ function passwordMatches(candidate) {
 // Built in one place so login and first-run claim issue identical sessions.
 function sessionCookie(req) {
   const token = crypto.randomBytes(24).toString('hex');
-  activeSessions.add(token);
+  Sessions.create(token);
   const secure = isSecureRequest(req) ? ' Secure;' : '';
   return `ah_session=${encodeURIComponent(sign(token))}; HttpOnly;${secure} SameSite=Lax; Path=/; Max-Age=2592000`;
 }
@@ -190,7 +201,7 @@ function revokeSession(req) {
   const signed = parseCookies(req).ah_session;
   if (!signed) return;
   const i = signed.lastIndexOf('.');
-  if (i > 0) activeSessions.delete(signed.slice(0, i));
+  if (i > 0) Sessions.remove(signed.slice(0, i));
 }
 
 // ---- login throttling ------------------------------------------------------
@@ -275,9 +286,18 @@ app.post('/api/password', requireAuth, (req, res) => {
   setPassword(pw);
   // Changing the password is the one lever that must evict a stolen cookie, so
   // every existing session dies and the caller gets a fresh one.
-  activeSessions.clear();
+  Sessions.clear();
   res.setHeader('Set-Cookie', sessionCookie(req));
   res.json({ ok: true });
+});
+
+/** Sign every other browser out, without changing the password. */
+app.post('/api/sessions/revoke-others', requireAuth, (req, res) => {
+  const mine = verify(parseCookies(req).ah_session);
+  const before = Sessions.count();
+  Sessions.clear();
+  if (mine) Sessions.create(mine);
+  res.json({ ok: true, revoked: Math.max(0, before - 1) });
 });
 
 app.post('/api/logout', (req, res) => {
@@ -549,7 +569,40 @@ app.delete('/api/channels/:id/messages', requireAuth, (req, res) => {
 app.get('/api/tasks', requireAuth, (req, res) => res.json({ tasks: Tasks.recent() }));
 
 // ---- second cerveau (shared memory) ----------------------------------------
-app.get('/api/notes', requireAuth, (req, res) => res.json({ notes: Notes.all() }));
+// Note: the fixed sub-paths are declared before '/:id', otherwise Express would
+// read "graph" as a note identifier.
+app.get('/api/notes', requireAuth, (req, res) => res.json({
+  notes: Notes.all(),
+  tags: Notes.tags(),
+  pendingProposals: NoteProposals.countPending(),
+}));
+
+/** Nodes and edges for the Memory Galaxy. */
+app.get('/api/notes/graph', requireAuth, (req, res) => res.json(Notes.graph()));
+
+/** Most recently touched first — the "Récent" tab. */
+app.get('/api/notes/recent', requireAuth, (req, res) =>
+  res.json({ notes: Notes.recent(Number(req.query.limit) || 30) }));
+
+app.get('/api/notes/tags', requireAuth, (req, res) => res.json({ tags: Notes.tags() }));
+
+// ---- notes proposed by agents ----------------------------------------------
+app.get('/api/notes/proposals', requireAuth, (req, res) =>
+  res.json({ proposals: NoteProposals.pending() }));
+
+app.post('/api/notes/proposals/:id/accept', requireAuth, (req, res) => {
+  const note = NoteProposals.accept(req.params.id, req.body || {});
+  if (!note) return res.status(404).json({ error: 'not found' });
+  broadcast({ type: 'note.change', note });
+  broadcast({ type: 'proposals.update', pending: NoteProposals.countPending() });
+  res.json(note);
+});
+
+app.post('/api/notes/proposals/:id/reject', requireAuth, (req, res) => {
+  if (!NoteProposals.reject(req.params.id)) return res.status(404).json({ error: 'not found' });
+  broadcast({ type: 'proposals.update', pending: NoteProposals.countPending() });
+  res.json({ ok: true });
+});
 
 app.post('/api/notes', requireAuth, (req, res) => {
   const n = Notes.create(req.body || {});
@@ -557,17 +610,60 @@ app.post('/api/notes', requireAuth, (req, res) => {
   res.json(n);
 });
 
+app.get('/api/notes/:id', requireAuth, (req, res) => {
+  const n = Notes.get(req.params.id);
+  if (!n) return res.status(404).json({ error: 'not found' });
+  res.json(n);
+});
+
+/** Opening a note in the UI counts as using it — that is what lights the star. */
+app.post('/api/notes/:id/touch', requireAuth, (req, res) => {
+  const n = Notes.touch(req.params.id);
+  if (!n) return res.status(404).json({ error: 'not found' });
+  res.json(n);
+});
+
 app.put('/api/notes/:id', requireAuth, (req, res) => {
   const n = Notes.update(req.params.id, req.body || {});
   if (!n) return res.status(404).json({ error: 'not found' });
   broadcast({ type: 'note.change', note: n });
+  // Editing a body rewires the graph, and renaming can resolve other notes'
+  // dangling links — the client cannot derive either from the note alone.
+  broadcast({ type: 'graph.dirty' });
   res.json(n);
 });
 
 app.delete('/api/notes/:id', requireAuth, (req, res) => {
   if (!Notes.remove(req.params.id)) return res.status(404).json({ error: 'not found' });
   broadcast({ type: 'note.remove', id: req.params.id });
+  broadcast({ type: 'graph.dirty' });
   res.json({ ok: true });
+});
+
+// ---- recherche -------------------------------------------------------------
+app.get('/api/search', requireAuth, (req, res) => {
+  const r = Search.run(req.query.q, Number(req.query.limit) || 40);
+  res.json(r);
+});
+
+// ---- prix des modèles ------------------------------------------------------
+app.get('/api/prices', requireAuth, (req, res) => {
+  // Every provider/model pair actually used, so the form can offer the ones
+  // that matter instead of an empty box.
+  const seen = db.prepare(`SELECT DISTINCT provider, model FROM usage_log
+                           WHERE model != '' ORDER BY provider, model`).all();
+  res.json({ prices: Prices.all(), seen });
+});
+
+app.put('/api/prices', requireAuth, (req, res) => {
+  const p = Prices.upsert(req.body || {});
+  if (!p) return res.status(400).json({ error: 'modèle manquant' });
+  res.json({ prices: Prices.all() });
+});
+
+app.delete('/api/prices/:id', requireAuth, (req, res) => {
+  if (!Prices.remove(req.params.id)) return res.status(404).json({ error: 'not found' });
+  res.json({ prices: Prices.all() });
 });
 
 // ---- usage -----------------------------------------------------------------
@@ -598,8 +694,263 @@ app.get('/api/activity', requireAuth, (req, res) => {
   res.json({ feed: [...msgs, ...tasks].sort((a, b) => b.at - a.at).slice(0, 40) });
 });
 
+// ---- pièces jointes --------------------------------------------------------
+// The body arrives raw rather than as multipart: parsing multipart by hand for
+// one field would be more code than it is worth, and this keeps the dependency
+// list at three.
+const DATA_DIR = process.env.DATA_DIR || './data';
+const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+// Extensions whose bytes are also kept as text, so an agent can read the file
+// instead of merely being told one was attached.
+const TEXTUAL = /\.(txt|md|markdown|csv|tsv|json|ya?ml|toml|ini|conf|log|sql|html?|css|jsx?|tsx?|mjs|cjs|py|rb|go|rs|java|kt|c|h|cpp|hpp|cs|php|sh|bash|zsh|ps1|xml|svg)$/i;
+
+const safeName = (n) => String(n || 'fichier')
+  .replace(/\p{Cc}/gu, '')          // un caractère de contrôle casserait l'en-tête
+  .replace(/[/\\]/g, '_')           // affichage seulement, mais autant rester net
+  .trim()
+  .slice(0, 200) || 'fichier';
+
+app.post('/api/channels/:id/attachments',
+  requireAuth,
+  express.raw({ type: '*/*', limit: MAX_UPLOAD_BYTES }),
+  (req, res) => {
+    const channel = Channels.get(req.params.id);
+    if (!channel) return res.status(404).json({ error: 'no channel' });
+    const buf = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    if (!buf.length) return res.status(400).json({ error: 'fichier vide' });
+
+    const name = safeName(req.query.name);
+    const id = 'at_' + crypto.randomBytes(8).toString('hex');
+    // The stored filename is ours, never the client's: a name is untrusted
+    // input and this path is joined straight onto the data directory.
+    const diskPath = path.join(UPLOAD_DIR, id);
+    try {
+      fs.writeFileSync(diskPath, buf);
+    } catch (err) {
+      console.error('upload write failed:', err);
+      return res.status(500).json({ error: "Écriture impossible sur le disque." });
+    }
+
+    const mime = String(req.query.type || 'application/octet-stream').slice(0, 100);
+    const isText = TEXTUAL.test(name) || mime.startsWith('text/') || mime === 'application/json';
+    const a = Attachments.create({
+      id, channel_id: channel.id, name, mime, bytes: buf.length, path: diskPath,
+      text: isText ? buf.toString('utf8') : '',
+    });
+    res.json({ id: a.id, name: a.name, mime: a.mime, bytes: a.bytes, readable: Boolean(a.text) });
+  });
+
+app.get('/api/attachments/:id', requireAuth, (req, res) => {
+  const a = Attachments.get(req.params.id);
+  if (!a || !fs.existsSync(a.path)) return res.status(404).json({ error: 'not found' });
+  // Never inline: this content is user-supplied and an inline SVG or HTML would
+  // execute on our own origin, which is exactly what the CSP exists to prevent.
+  res.setHeader('Content-Type', 'application/octet-stream');
+  res.setHeader('Content-Disposition',
+    `attachment; filename*=UTF-8''${encodeURIComponent(a.name)}`);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  fs.createReadStream(a.path).pipe(res);
+});
+
+app.delete('/api/attachments/:id', requireAuth, (req, res) => {
+  const a = Attachments.get(req.params.id);
+  if (!a) return res.status(404).json({ error: 'not found' });
+  try { fs.unlinkSync(a.path); } catch { /* already gone */ }
+  Attachments.remove(a.id);
+  res.json({ ok: true });
+});
+
+// Uploads that never made it onto a message are abandoned drafts.
+setInterval(() => {
+  for (const a of Attachments.orphans(6 * 3600_000)) {
+    try { fs.unlinkSync(a.path); } catch { /* already gone */ }
+    Attachments.remove(a.id);
+  }
+}, 3600_000).unref();
+
+// ---- export d'une conversation ---------------------------------------------
+app.get('/api/channels/:id/export', requireAuth, (req, res) => {
+  const channel = Channels.get(req.params.id);
+  if (!channel) return res.status(404).json({ error: 'no channel' });
+
+  const messages = Messages.list(channel.id, 500);
+  const tasks = Tasks.list(channel.id);
+  const out = [];
+  out.push(`# ${channel.emoji || ''} ${channel.name}`.trim());
+  if (channel.topic) out.push(`\n_${channel.topic}_`);
+  out.push(`\nExporté le ${new Date().toLocaleString('fr-FR')} — ${messages.length} message(s).`);
+  out.push('\n---\n');
+
+  for (const m of messages) {
+    const when = new Date(m.created_at).toLocaleString('fr-FR');
+    if (m.author_type === 'system') { out.push(`> ${m.content}\n`); continue; }
+    const who = m.author_type === 'user' ? 'Toi' : m.author_name;
+    out.push(`### ${m.author_emoji || ''} ${who}`.trim() + `\n<small>${when}</small>\n`);
+    out.push(m.content + '\n');
+  }
+
+  if (tasks.length) {
+    out.push('\n---\n\n## Tâches\n');
+    for (const t of tasks) {
+      const assignee = Agents.get(t.assignee_id);
+      out.push(`- **${t.title}** — ${t.status}${assignee ? ` (${assignee.name})` : ''}`);
+    }
+  }
+
+  const file = `${slug(channel.name) || 'salon'}-${new Date().toISOString().slice(0, 10)}.md`;
+  res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(file)}`);
+  res.send(out.join('\n'));
+});
+
+// ---- déclenchements programmés ---------------------------------------------
+app.get('/api/schedules', requireAuth, (req, res) => res.json({ schedules: Schedules.all() }));
+
+app.post('/api/schedules', requireAuth, (req, res) => {
+  if (!Channels.get(req.body?.channel_id)) return res.status(400).json({ error: 'salon inconnu' });
+  res.json(Schedules.create(req.body || {}));
+});
+
+app.put('/api/schedules/:id', requireAuth, (req, res) => {
+  const s = Schedules.update(req.params.id, req.body || {});
+  if (!s) return res.status(404).json({ error: 'not found' });
+  res.json(s);
+});
+
+app.delete('/api/schedules/:id', requireAuth, (req, res) => {
+  if (!Schedules.remove(req.params.id)) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
+});
+
+/** Fire one now, to check it does what you meant without waiting for the hour. */
+app.post('/api/schedules/:id/run', requireAuth, (req, res) => {
+  const s = Schedules.get(req.params.id);
+  if (!s) return res.status(404).json({ error: 'not found' });
+  const fired = runSchedule(s, 'manuel');
+  res.json({ ok: fired });
+});
+
+// ---- webhooks entrants -----------------------------------------------------
+app.get('/api/webhooks', requireAuth, (req, res) => res.json({
+  webhooks: Webhooks.all().map((w) => ({ ...w, url: `/hook/${w.token}` })),
+}));
+
+app.post('/api/webhooks', requireAuth, (req, res) => {
+  if (!Channels.get(req.body?.channel_id)) return res.status(400).json({ error: 'salon inconnu' });
+  const w = Webhooks.create(req.body || {});
+  res.json({ ...w, url: `/hook/${w.token}` });
+});
+
+app.put('/api/webhooks/:id', requireAuth, (req, res) => {
+  const w = Webhooks.update(req.params.id, req.body || {});
+  if (!w) return res.status(404).json({ error: 'not found' });
+  res.json({ ...w, url: `/hook/${w.token}` });
+});
+
+app.delete('/api/webhooks/:id', requireAuth, (req, res) => {
+  if (!Webhooks.remove(req.params.id)) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
+});
+
+// ---- sauvegarde ------------------------------------------------------------
+const BACKUP_DIR = path.join(DATA_DIR, 'backups');
+fs.mkdirSync(BACKUP_DIR, { recursive: true });
+const KEEP_BACKUPS = 14;
+
+/**
+ * A consistent snapshot via SQLite's own backup API.
+ *
+ * Copying agenthub.db by hand is not enough: in WAL mode most of the recent
+ * writes live in the -wal file, and on this install the main file was 4 KB
+ * against a 3 MB journal. A naive copy would restore an almost empty database.
+ */
+async function makeBackup(reason = 'manuel') {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const file = path.join(BACKUP_DIR, `agenthub-${stamp}.db`);
+  await db.backup(file);
+
+  const kept = fs.readdirSync(BACKUP_DIR)
+    .filter((f) => f.startsWith('agenthub-') && f.endsWith('.db')).sort().reverse();
+  for (const old of kept.slice(KEEP_BACKUPS)) {
+    try { fs.unlinkSync(path.join(BACKUP_DIR, old)); } catch { /* ignore */ }
+  }
+  console.log(`Sauvegarde (${reason}) : ${path.basename(file)} — ${kept.length} conservée(s).`);
+  return file;
+}
+
+app.get('/api/backups', requireAuth, (req, res) => {
+  const list = fs.readdirSync(BACKUP_DIR)
+    .filter((f) => f.startsWith('agenthub-') && f.endsWith('.db'))
+    .map((f) => {
+      const st = fs.statSync(path.join(BACKUP_DIR, f));
+      return { file: f, bytes: st.size, at: st.mtimeMs };
+    })
+    .sort((a, b) => b.at - a.at);
+  res.json({ backups: list, keep: KEEP_BACKUPS });
+});
+
+app.post('/api/backups', requireAuth, async (req, res) => {
+  try {
+    const file = await makeBackup('manuel');
+    res.json({ ok: true, file: path.basename(file) });
+  } catch (err) {
+    console.error('backup failed:', err);
+    res.status(500).json({ error: `Sauvegarde impossible : ${err.message}` });
+  }
+});
+
+app.get('/api/backups/:file', requireAuth, (req, res) => {
+  // basename() so a crafted name cannot walk out of the backup directory.
+  const name = path.basename(String(req.params.file || ''));
+  const full = path.join(BACKUP_DIR, name);
+  if (!/^agenthub-[\w-]+\.db$/.test(name) || !fs.existsSync(full)) {
+    return res.status(404).json({ error: 'not found' });
+  }
+  res.setHeader('Content-Type', 'application/octet-stream');
+  res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+  fs.createReadStream(full).pipe(res);
+});
+
+// A daily snapshot, plus one at boot so a fresh deploy always leaves a restore
+// point behind before anything new touches the data.
+setInterval(() => { makeBackup('quotidienne').catch((e) => console.error('backup:', e.message)); },
+  24 * 3600_000).unref();
+makeBackup('démarrage').catch((e) => console.error('backup:', e.message));
+
 // Unknown API routes must 404 as JSON, not fall through to the SPA shell.
 app.use('/api', (req, res) => res.status(404).json({ error: 'not found' }));
+
+// ---- déclencheur entrant ---------------------------------------------------
+// Outside /api on purpose: the token in the path is the whole credential, so
+// this route must not sit behind requireAuth, and keeping it separate makes
+// that obvious rather than an oversight.
+app.post('/hook/:token', express.json({ limit: '64kb' }), (req, res) => {
+  const w = Webhooks.byToken(req.params.token);
+  if (!w) return res.status(404).json({ error: 'not found' });
+  const channel = Channels.get(w.channel_id);
+  if (!channel) return res.status(410).json({ error: 'salon supprimé' });
+
+  const text = String(req.body?.text ?? '').trim();
+  if (!text) return res.status(400).json({ error: 'text required' });
+  if (text.length > MAX_MESSAGE_CHARS) return res.status(413).json({ error: 'message trop long' });
+
+  Webhooks.noteCall(w.id);
+  const msg = Messages.create({
+    channel_id: channel.id,
+    author_type: 'user',
+    author_name: w.label || 'Déclencheur',
+    author_emoji: '🔗',
+    author_color: '#8a8f83',
+    content: text,
+    status: 'complete',
+  });
+  broadcast({ type: 'message.new', message: msg });
+  orchestrator.handleUserMessage(channel, text).catch((err) => console.error('webhook run:', err));
+  res.json({ ok: true, channel: channel.name });
+});
 
 // ---- static frontend -------------------------------------------------------
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -676,6 +1027,53 @@ function broadcast(event) {
 }
 
 const orchestrator = new Orchestrator(broadcast);
+
+// ---- planificateur ---------------------------------------------------------
+// A minute tick rather than a timer per schedule: schedules are edited from the
+// UI at any moment, and re-arming timers on every change is where drift and
+// double-fires come from.
+function runSchedule(s, reason) {
+  const channel = Channels.get(s.channel_id);
+  if (!channel) return false;
+  const prompt = String(s.prompt || '').trim();
+  if (!prompt) return false;
+
+  // Addressing the agent by mention reuses the normal routing rules rather than
+  // inventing a second way to pick who answers.
+  const agent = s.agent_id ? Agents.get(s.agent_id) : null;
+  const text = agent ? `@${agent.name.replace(/\s+/g, '')} ${prompt}` : prompt;
+
+  const msg = Messages.create({
+    channel_id: channel.id,
+    author_type: 'user',
+    author_name: s.label || 'Planificateur',
+    author_emoji: '⏰',
+    author_color: '#8a8f83',
+    content: prompt,
+    status: 'complete',
+  });
+  broadcast({ type: 'message.new', message: msg });
+  Schedules.markRun(s.id);
+  console.log(`Planificateur (${reason}) : « ${s.label} » dans #${channel.name}.`);
+  orchestrator.handleUserMessage(channel, text)
+    .catch((err) => console.error('schedule run:', err));
+  return true;
+}
+
+setInterval(() => {
+  const d = new Date();
+  const day = d.getDay();
+  const hour = d.getHours();
+  const minute = d.getMinutes();
+  for (const s of Schedules.enabled()) {
+    if (s.hour !== hour || s.minute !== minute) continue;
+    if (!s.days.includes(day)) continue;
+    // A tick can land twice in the same minute after a clock adjustment; the
+    // last-run stamp is what actually guarantees one firing.
+    if (Date.now() - s.last_run < 90_000) continue;
+    runSchedule(s, 'programmé');
+  }
+}, 30_000).unref();
 
 // ---- first-run seed --------------------------------------------------------
 // Only ever runs on a genuinely empty database. The previous version wiped all

@@ -206,19 +206,37 @@ export async function probeProvider(cfg) {
   };
 }
 
+// How many times a call is retried, and how long we wait between attempts.
+// Only failures that happened before a single token was emitted are retried —
+// replaying a half-written answer would duplicate text in the channel.
+const MAX_ATTEMPTS = Number(process.env.LLM_MAX_ATTEMPTS || 3);
+const RETRY_BASE_MS = Number(process.env.LLM_RETRY_BASE_MS || 800);
+
+const sleep = (ms, signal) => new Promise((resolve) => {
+  const t = setTimeout(resolve, ms);
+  signal?.addEventListener('abort', () => { clearTimeout(t); resolve(); }, { once: true });
+});
+
 /**
- * Stream a chat completion.
- * @returns {Promise<{text:string, error:string|null, aborted?:boolean}>}
+ * Stream a chat completion, retrying transient upstream failures.
+ *
+ * @returns {Promise<{text:string, reasoning:string, toolCalls:Array,
+ *                    error:string|null, aborted?:boolean, usage:object,
+ *                    provider:string, model:string, attempts:number}>}
  */
 export async function streamChat(opts) {
   const {
     agent = {}, override = null, effort = '', sessionKey, messages,
-    onDelta = () => {}, onReasoning = () => {}, signal,
+    tools = null, toolChoice = null,
+    onDelta = () => {}, onReasoning = () => {}, onRetry = () => {}, signal,
   } = opts;
 
   const { provider, model } = resolveForAgent(agent, override);
   if (!provider) {
-    return { text: '', error: "Aucun fournisseur de modèles n'est configuré. Ouvre Réglages → Fournisseurs." };
+    return {
+      text: '', reasoning: '', toolCalls: [], error: "Aucun fournisseur de modèles n'est configuré. Ouvre Réglages → Fournisseurs.",
+      usage: null, provider: null, model: '', attempts: 0,
+    };
   }
 
   const headers = { 'Content-Type': 'application/json', Accept: 'text/event-stream' };
@@ -229,12 +247,47 @@ export async function streamChat(opts) {
   // Only sent when explicitly chosen: providers that do not know the field can
   // reject the whole request, so we never add it behind the user's back.
   if (effort) payload.reasoning_effort = effort;
+  if (tools && tools.length) {
+    payload.tools = tools;
+    payload.tool_choice = toolChoice || 'auto';
+  }
   const body = JSON.stringify(payload);
 
+  let last = null;
+  for (let attempt = 1; attempt <= Math.max(1, MAX_ATTEMPTS); attempt++) {
+    last = await attemptStream({
+      provider, model, headers, body, onDelta, onReasoning, signal,
+      messages, hasTools: Boolean(tools && tools.length),
+    });
+    last.attempts = attempt;
+
+    if (last.aborted || !last.error || !last.retryable) break;
+    // Anything already shown to the user makes a replay worse than the error.
+    if (last.text || last.reasoning) break;
+    if (attempt >= MAX_ATTEMPTS) break;
+    if (signal?.aborted) { last.aborted = true; break; }
+
+    const wait = RETRY_BASE_MS * 2 ** (attempt - 1);
+    onRetry({ attempt, of: MAX_ATTEMPTS, wait, error: last.error });
+    console.warn(`${provider.label}: tentative ${attempt}/${MAX_ATTEMPTS} échouée (${last.error}) — nouvel essai dans ${wait} ms.`);
+    await sleep(wait, signal);
+    if (signal?.aborted) { last.aborted = true; break; }
+  }
+  return last;
+}
+
+async function attemptStream({ provider, model, headers, body, onDelta, onReasoning, signal, messages, hasTools }) {
   const ctrl = new AbortController();
   const abortByCaller = () => ctrl.abort('caller');
+  // Shape shared by every exit below, so a caller never has to guess whether a
+  // field is present on the failure path.
+  const out = (extra) => ({
+    text: '', reasoning: '', toolCalls: [], error: null, aborted: false,
+    retryable: false, usage: null, provider: provider.id, model, ...extra,
+  });
+
   if (signal) {
-    if (signal.aborted) return { text: '', error: null, aborted: true };
+    if (signal.aborted) return out({ aborted: true });
     signal.addEventListener('abort', abortByCaller, { once: true });
   }
 
@@ -257,25 +310,35 @@ export async function streamChat(opts) {
     });
   } catch (err) {
     cleanup();
-    if (signal?.aborted) return { text: '', error: null, aborted: true };
-    if (timedOut) return { text: '', error: `${provider.label} n'a pas répondu en ${Math.round(CONNECT_TIMEOUT_MS / 1000)} s.` };
-    return { text: '', error: `${provider.label} injoignable: ${err.message}` };
+    if (signal?.aborted) return out({ aborted: true });
+    // A connection that never opened is the textbook case worth retrying.
+    if (timedOut) {
+      return out({ error: `${provider.label} n'a pas répondu en ${Math.round(CONNECT_TIMEOUT_MS / 1000)} s.`, retryable: true });
+    }
+    return out({ error: `${provider.label} injoignable: ${err.message}`, retryable: true });
   }
 
   if (!resp.ok) {
     cleanup();
     let detail = '';
     try { detail = await resp.text(); } catch {}
-    return { text: '', error: describeHttpError(provider, resp.status, detail) };
+    // 429 and 5xx are the provider being busy or broken, not us being wrong.
+    // 401/402/404 would fail identically however many times we ask.
+    const retryable = resp.status === 429 || resp.status === 408 || resp.status >= 500;
+    return out({ error: describeHttpError(provider, resp.status, detail), retryable });
   }
-  if (!resp.body) { cleanup(); return { text: '', error: `Réponse de ${provider.label} sans corps.` }; }
+  if (!resp.body) { cleanup(); return out({ error: `Réponse de ${provider.label} sans corps.`, retryable: true }); }
 
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
   let text = '';
+  let reasoning = '';
   let error = null;
   let reportedUsage = null;
+  // Tool calls arrive spread across deltas: an index, then a name, then the
+  // arguments in fragments. They are reassembled by index.
+  const toolAcc = new Map();
 
   const processLine = (line) => {
     line = line.trim();
@@ -306,8 +369,20 @@ export async function streamChat(opts) {
       text += delta.content;
       onDelta(delta.content);
     }
-    if (typeof delta.reasoning_content === 'string' && delta.reasoning_content) {
-      onReasoning(delta.reasoning_content);
+    // Providers disagree on the field name for chain-of-thought; accept both.
+    const think = typeof delta.reasoning_content === 'string' ? delta.reasoning_content
+      : typeof delta.reasoning === 'string' ? delta.reasoning : '';
+    if (think) {
+      reasoning += think;
+      onReasoning(think);
+    }
+    for (const tc of delta.tool_calls || []) {
+      const idx = tc.index ?? toolAcc.size;
+      const cur = toolAcc.get(idx) || { id: '', name: '', args: '' };
+      if (tc.id) cur.id = tc.id;
+      if (tc.function?.name) cur.name = tc.function.name;
+      if (typeof tc.function?.arguments === 'string') cur.args += tc.function.arguments;
+      toolAcc.set(idx, cur);
     }
     if (choice.finish_reason === 'error' && !error) {
       error = 'Le modèle a renvoyé une erreur (finish_reason=error).';
@@ -330,32 +405,48 @@ export async function streamChat(opts) {
     if (buffer) processLine(buffer);
   } catch (err) {
     cleanup();
-    if (signal?.aborted) return { text, error: null, aborted: true };
+    if (signal?.aborted) return out({ text, reasoning, aborted: true });
     if (timedOut) {
-      return { text, error: `Flux interrompu: aucune donnée pendant ${Math.round(IDLE_TIMEOUT_MS / 1000)} s.` };
+      return out({ text, reasoning, retryable: true,
+        error: `Flux interrompu: aucune donnée pendant ${Math.round(IDLE_TIMEOUT_MS / 1000)} s.` });
     }
-    return { text, error: `Flux interrompu: ${err.message}` };
+    return out({ text, reasoning, error: `Flux interrompu: ${err.message}`, retryable: true });
   }
 
   cleanup();
-  return {
-    text, error,
-    usage: reportedUsage || estimateUsage(messages, text),
-    provider: provider.id, model,
-  };
+
+  const toolCalls = [...toolAcc.entries()].sort((a, b) => a[0] - b[0]).map(([, t]) => t)
+    .filter((t) => t.name);
+
+  // A model that answers absolutely nothing usually means the upstream dropped
+  // the stream — worth one more attempt, unless it was busy calling tools.
+  const empty = !text.trim() && !reasoning.trim() && !toolCalls.length && !error;
+
+  return out({
+    text, reasoning, toolCalls,
+    error: empty ? `${provider.label} a renvoyé une réponse vide.` : error,
+    retryable: empty,
+    usage: reportedUsage || estimateUsage(messages, text, reasoning, toolCalls),
+  });
 }
 
 /**
  * Fallback accounting when the provider reports nothing.
  * ~4 characters per token is the usual rough figure for mixed French and code —
  * good enough to see trends, and always flagged as an estimate in the UI.
+ *
+ * Reasoning and tool arguments are billed as output by every provider that
+ * charges for them, so leaving them out would under-report what a thinking
+ * model actually costs.
  */
 const CHARS_PER_TOKEN = 4;
-function estimateUsage(messages, text) {
+function estimateUsage(messages, text, reasoning = '', toolCalls = []) {
   const promptChars = (messages || []).reduce((n, m) => n + String(m.content || '').length, 0);
+  const toolChars = (toolCalls || []).reduce((n, t) => n + t.name.length + t.args.length, 0);
+  const outChars = String(text || '').length + String(reasoning || '').length + toolChars;
   return {
     tokensIn: Math.round(promptChars / CHARS_PER_TOKEN),
-    tokensOut: Math.round(String(text || '').length / CHARS_PER_TOKEN),
+    tokensOut: Math.round(outChars / CHARS_PER_TOKEN),
     estimated: true,
   };
 }

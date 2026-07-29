@@ -5,13 +5,26 @@
 // in turn hand it to a worker. Delegation targets are looked up in the channel
 // first and then across the whole organisation, so a pôle is not a hard wall.
 
-import { Agents, Channels, Messages, Tasks, Notes, Usage } from './db.js';
+import { Agents, Channels, Messages, Tasks, Notes, Usage, Attachments, Settings } from './db.js';
 import { streamChat } from './llm.js';
+import { TOOL_DEFS, runTool, describeCall } from './tools.js';
 
 const MAX_HISTORY = 30;           // messages of context sent to each agent
 const MAX_DELEGATION_DEPTH = 3;   // ceo -> manager -> worker
 const MAX_TURNS_PER_MESSAGE = 12; // hard ceiling on model calls per user message
 const MAX_DELEGATIONS_PER_TURN = 4;
+const MAX_TOOL_ROUNDS = 4;        // tool → answer → tool → … before we stop
+
+/**
+ * Rough ceiling on the prompt, in characters.
+ *
+ * There was no budget at all: thirty messages of history plus up to 4 000
+ * characters per delegated result, and nothing capped the total. On a long
+ * conversation that overflows the model's window, and the provider answers with
+ * a 400 that says nothing useful. Four characters per token is the same
+ * approximation the usage meter uses.
+ */
+const MAX_CONTEXT_CHARS = Number(process.env.MAX_CONTEXT_CHARS || 48000);
 
 const RANK_LEVEL = { ceo: 0, manager: 1, worker: 2 };
 const rankLevel = (a) => RANK_LEVEL[a?.rank] ?? 2;
@@ -148,40 +161,145 @@ export class Orchestrator {
       if (!flushTimer) flushTimer = setTimeout(() => { flushTimer = null; flush(); }, 40);
     };
 
-    let result;
-    try {
-      result = await streamChat({
-        agent,                       // carries provider + model
-        // Conversation-level settings win over the agent's own.
-        override: channel.provider_override
-          ? { provider: channel.provider_override, model: channel.model_override }
-          : null,
-        effort: channel.effort || '',
-        sessionKey: `agenthub:${channel.id}:${agent.id}`,
-        messages,
-        onDelta,
-        signal: ctx.signal,
+    // Reasoning is streamed on its own channel: it belongs beside the answer,
+    // never mixed into it.
+    let reasoning = '';
+    let rbuf = '';
+    let rTimer = null;
+    const rflush = () => {
+      if (!rbuf) return;
+      const delta = rbuf;
+      rbuf = '';
+      this.broadcast({ type: 'message.reasoning', id: msg.id, channelId: channel.id, delta });
+    };
+    const onReasoning = (d) => {
+      reasoning += d;
+      rbuf += d;
+      if (!rTimer) rTimer = setTimeout(() => { rTimer = null; rflush(); }, 120);
+    };
+
+    const onRetry = ({ attempt, of, error }) => {
+      this.broadcast({
+        type: 'message.notice', id: msg.id, channelId: channel.id,
+        notice: `Le service n'a pas répondu (${error}) — nouvelle tentative ${attempt}/${of}…`,
       });
+    };
+
+    const override = channel.provider_override
+      ? { provider: channel.provider_override, model: channel.model_override }
+      : null;
+    const common = {
+      agent,                       // carries provider + model
+      override,                    // conversation-level settings win over the agent's own
+      effort: channel.effort || '',
+      sessionKey: `agenthub:${channel.id}:${agent.id}`,
+      onDelta, onReasoning, onRetry,
+      signal: ctx.signal,
+    };
+
+    const toolsOn = Settings.get('tools_enabled', '1') === '1';
+    const convo = [...messages];
+    const toolTrace = [];
+    let result;
+    let useTools = toolsOn;
+    let rounds = 0;
+
+    try {
+      for (;;) {
+        result = await streamChat({ ...common, messages: convo, tools: useTools ? TOOL_DEFS : null });
+
+        // Book the cost of every round whatever its outcome — a failed call
+        // still burned prompt tokens upstream, and hiding that would make the
+        // meter lie.
+        if (result.usage) {
+          Usage.record({
+            agent_id: agent.id,
+            channel_id: channel.id,
+            provider: result.provider,
+            model: result.model,
+            tokens_in: result.usage.tokensIn,
+            tokens_out: result.usage.tokensOut,
+            estimated: result.usage.estimated,
+          });
+        }
+
+        // Not every provider accepts a `tools` array. Rather than fail the turn,
+        // drop the tools and ask again — the agent answers from what it knows.
+        if (useTools && result.error && !acc && /tool|function/i.test(result.error)) {
+          console.warn(`${result.provider} refuse les outils — nouvel essai sans.`);
+          useTools = false;
+          continue;
+        }
+
+        if (result.aborted || result.error || !result.toolCalls?.length) break;
+
+        if (++rounds > MAX_TOOL_ROUNDS) {
+          convo.push({
+            role: 'user',
+            content: `[système] Limite de ${MAX_TOOL_ROUNDS} séries d'outils atteinte. Réponds maintenant avec ce que tu as.`,
+          });
+          useTools = false;
+          continue;
+        }
+
+        // Echo the model's own tool_calls back before the results, exactly as
+        // the API expects, then one `tool` message per call.
+        convo.push({
+          role: 'assistant',
+          content: result.text || null,
+          tool_calls: result.toolCalls.map((t, i) => ({
+            id: t.id || `call_${rounds}_${i}`,
+            type: 'function',
+            function: { name: t.name, arguments: t.args || '{}' },
+          })),
+        });
+
+        for (const [i, call] of result.toolCalls.entries()) {
+          if (ctx.signal.aborted) throw new Aborted();
+          let args = {};
+          try { args = JSON.parse(call.args || '{}'); } catch { /* reported by runTool */ }
+          const label = describeCall(call.name, args);
+
+          this.broadcast({
+            type: 'tool.call', id: msg.id, channelId: channel.id,
+            agentId: agent.id, name: call.name, label,
+          });
+          this.broadcast({ type: 'agent.status', agentId: agent.id, channelId: channel.id, status: 'working' });
+
+          const r = await runTool(call.name, call.args, {
+            agent,
+            channel,
+            onProposal: (p) => this.broadcast({ type: 'proposal.new', proposal: p }),
+          });
+          toolTrace.push({ name: call.name, label, ok: r.ok });
+
+          convo.push({
+            role: 'tool',
+            tool_call_id: call.id || `call_${rounds}_${i}`,
+            name: call.name,
+            content: String(r.text || '').slice(0, 20000),
+          });
+        }
+
+        this.broadcast({ type: 'agent.status', agentId: agent.id, channelId: channel.id, status: 'thinking' });
+      }
     } finally {
       clearTimeout(flushTimer);
+      clearTimeout(rTimer);
       flush();
+      rflush();
     }
 
-    // Book the cost of the call whatever its outcome — a failed run still burned
-    // prompt tokens upstream, and hiding that would make the meter lie.
-    if (result.usage) {
-      Usage.record({
-        agent_id: agent.id,
-        channel_id: channel.id,
-        provider: result.provider,
-        model: result.model,
-        tokens_in: result.usage.tokensIn,
-        tokens_out: result.usage.tokensOut,
-        estimated: result.usage.estimated,
-      });
+    if (reasoning.trim()) Messages.setReasoning(msg.id, reasoning);
+    if (toolTrace.length) {
+      Messages.setTools(msg.id, toolTrace);
+      this.broadcast({ type: 'message.tools', id: msg.id, channelId: channel.id, tools: toolTrace });
     }
 
-    const { text, error, aborted } = result;
+    const { error, aborted } = result;
+    // With tools, the answer was streamed across several rounds: the running
+    // accumulator is the whole reply, `result.text` only the last leg.
+    const text = acc || result.text;
 
     if (aborted) {
       const shown = (acc.trim() ? `${acc.trim()}\n\n` : '') + '> ⏹️ Arrêté.';
@@ -332,24 +450,58 @@ export class Orchestrator {
     // actually see the current conversation rather than the channel's opening.
     const history = Messages.list(channel.id, MAX_HISTORY);
 
-    const msgs = [{ role: 'system', content: system }];
+    const turns = [];
     for (const m of history) {
       if (!m.content) continue;
       if (m.author_type === 'agent' && m.author_id === agent.id) {
-        msgs.push({ role: 'assistant', content: m.content });
+        turns.push({ role: 'assistant', content: m.content });
       } else if (m.author_type === 'system') {
-        msgs.push({ role: 'user', content: `[système] ${m.content}` });
+        turns.push({ role: 'user', content: `[système] ${m.content}` });
       } else if (m.author_type === 'user') {
-        msgs.push({ role: 'user', content: m.content });
+        turns.push({ role: 'user', content: m.content });
       } else {
-        msgs.push({ role: 'user', content: `[${m.author_name}] ${m.content}` });
+        turns.push({ role: 'user', content: `[${m.author_name}] ${m.content}` });
       }
     }
 
+    // Files dropped in the channel, listed by name so the agent knows what it
+    // can ask to read. The bytes stay out of the prompt on purpose.
+    const files = Attachments.list(channel.id).slice(0, 20);
+    const preamble = [{ role: 'system', content: system }];
+    if (files.length) {
+      preamble.push({
+        role: 'system',
+        content: 'Fichiers disponibles dans ce salon (utilise `lire_piece_jointe` pour en lire un) :\n'
+          + files.map((f) => `- ${f.name} (${Math.round(f.bytes / 1024)} Ko)`).join('\n'),
+      });
+    }
+
+    // Trim from the oldest turn until the whole prompt fits. The system block
+    // and the trigger are never dropped: without them the agent no longer knows
+    // who it is nor what was asked.
+    const triggerMsg = trigger ? { role: 'user', content: trigger } : null;
+    const fixed = preamble.reduce((n, m) => n + m.content.length, 0)
+      + (triggerMsg ? triggerMsg.content.length : 0);
+    let budget = MAX_CONTEXT_CHARS - fixed;
+    const kept = [];
+    for (let i = turns.length - 1; i >= 0; i--) {
+      const cost = turns[i].content.length + 16;   // rough per-message overhead
+      if (cost > budget) break;
+      budget -= cost;
+      kept.unshift(turns[i]);
+    }
+    if (kept.length < turns.length) {
+      preamble.push({
+        role: 'system',
+        content: `[Contexte tronqué : les ${turns.length - kept.length} messages les plus anciens de ce salon ont été retirés pour tenir dans la fenêtre du modèle.]`,
+      });
+    }
+
+    const msgs = [...preamble, ...kept];
     // Append the current trigger unless it is already the last thing said.
-    if (trigger) {
+    if (triggerMsg) {
       const last = msgs[msgs.length - 1];
-      if (!last || last.content !== trigger) msgs.push({ role: 'user', content: trigger });
+      if (!last || last.content !== trigger) msgs.push(triggerMsg);
     }
     return msgs;
   }
@@ -366,12 +518,23 @@ function buildSystemPrompt(channel, agent, members, canDelegate, chain = []) {
   lines.push('');
   lines.push("Règle absolue : n'annonce jamais une action sans l'exécuter dans la même réponse. Si tu dois chercher, analyser ou produire quelque chose, fais-le immédiatement — ne dis jamais « je vais chercher », « je lance la recherche » ou « je vais analyser » sans livrer le résultat dans ce même message. Un message qui annonce sans produire est une faute.");
 
+  if (Settings.get('tools_enabled', '1') === '1') {
+    lines.push('');
+    lines.push('Tu disposes d\'outils réels — sers-t\'en plutôt que de deviner :');
+    lines.push('- `recherche_web` puis `lire_url` dès qu\'une information est récente, chiffrée, ou que tu n\'en es pas sûr. Cite tes sources.');
+    lines.push('- `chercher_memoire` avant de dire que tu ignores quelque chose : c\'est peut-être déjà écrit.');
+    lines.push('- `calculer` pour tout calcul, même simple.');
+    lines.push('- `proposer_note` quand tu apprends un fait durable sur l\'organisation. Jamais pour un détail de la conversation.');
+    lines.push('Ne prétends jamais avoir utilisé un outil que tu n\'as pas appelé.');
+  }
+
   // Second cerveau : mémoire partagée, identique pour tous les agents.
   const notes = Notes.forContext();
   if (notes.length) {
     lines.push('');
     lines.push('## Mémoire partagée de l\'organisation');
     lines.push('Ces informations font autorité. Appuie-toi dessus et ne les contredis pas.');
+    lines.push('Les `[[doubles crochets]]` sont des renvois vers d\'autres notes de cette mémoire.');
     lines.push('');
     lines.push(notes.join('\n\n'));
   }
@@ -430,19 +593,33 @@ export function resolveMentions(text, members) {
   return found;
 }
 
-/** Pull a ```delegate ... ``` block out of the agent text. */
+/**
+ * Pull every ```delegate ... ``` block out of the agent text.
+ *
+ * The regex used to be non-global, so only the first block was read: a model
+ * that emitted two — which happens when it delegates, comments, then delegates
+ * again — had its second batch silently dropped *and* left visible as raw
+ * markup in the channel.
+ */
 export function extractDelegations(text) {
-  const re = /```delegate\s*([\s\S]*?)```/i;
-  const match = String(text || '').match(re);
-  if (!match) return { visible: String(text || ''), delegations: [] };
-
+  const re = /```delegate\s*([\s\S]*?)```/gi;
+  const src = String(text || '');
   const delegations = [];
-  for (const raw of match[1].split('\n')) {
-    const line = raw.trim();
-    if (!line) continue;
-    // "@name | task", "@name: task" or "@name - task"
-    const mm = line.match(/^@?([\p{L}0-9_-]+)\s*(?:\||:|-)?\s*(.+)$/u);
-    if (mm && mm[2] && mm[2].trim()) delegations.push({ name: mm[1], task: mm[2].trim() });
+  let found = false;
+  let match;
+
+  while ((match = re.exec(src)) !== null) {
+    found = true;
+    for (const raw of match[1].split('\n')) {
+      const line = raw.trim();
+      if (!line) continue;
+      // "@name | task", "@name: task" or "@name - task"
+      const mm = line.match(/^@?([\p{L}0-9_-]+)\s*(?:\||:|-)?\s*(.+)$/u);
+      if (mm && mm[2] && mm[2].trim()) delegations.push({ name: mm[1], task: mm[2].trim() });
+    }
   }
-  return { visible: String(text).replace(re, '').trim(), delegations };
+  if (!found) return { visible: src, delegations: [] };
+  // Every block goes, including one that parsed to nothing — leaving raw
+  // markup in the channel would be worse than dropping it.
+  return { visible: src.replace(/```delegate\s*[\s\S]*?```/gi, '').trim(), delegations };
 }
