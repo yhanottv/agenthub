@@ -58,6 +58,25 @@ services:
       # - hermes-webui-yowj_hermes-agent-src:/hermes-src:ro
       # - hermes-webui-yowj_hermes-home:/hermes-home:ro
 
+      # ─── Installer Hermes depuis AgentHub (facultatif) ────────────────────
+      # ⚠️  LIS CECI AVANT DE DÉCOMMENTER.
+      #
+      # Le socket Docker n'est pas « un accès à Docker » : qui peut lui parler
+      # peut démarrer un conteneur privilégié qui monte `/`. Le donner à
+      # AgentHub revient donc à lui donner les droits root sur cette machine.
+      # Si quelqu'un entre un jour dans AgentHub, il entre dans tout le serveur.
+      #
+      # Sans ce montage, AgentHub sait quand même DÉTECTER Hermes sur son
+      # réseau, et te donne les commandes exactes pour l'installer toi-même.
+      # C'est la voie recommandée, et elle ne coûte qu'un copier-coller.
+      #
+      # Avec ce montage, l'assistant installe Hermes en un clic et lit sa clé
+      # d'API tout seul. À réserver à une machine dont tu es seul maître.
+      #
+      # `ro` ne protège de rien ici : le socket est une API, pas un fichier.
+      #
+      # - /var/run/docker.sock:/var/run/docker.sock
+
     # Publié sur la boucle locale UNIQUEMENT, et c'est délibéré.
     #
     # Tant que personne n'a choisi de mot de passe, le premier visiteur peut le

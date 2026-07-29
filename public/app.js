@@ -2452,9 +2452,18 @@ function wizHermes(s) {
             <li>La clé correspond-elle à <code>API_SERVER_KEY</code> côté Hermes&nbsp;?</li>
           </ol>
         </div>`}
-      <button class="btn ghost" id="wiz-h-edit" type="button" style="margin-top:14px">Configurer Hermes</button>
-      <button class="btn ghost" id="wiz-h-retry" type="button" style="margin-top:14px">Revérifier</button>`,
+      <div id="wiz-h-scan"></div>
+
+      <div class="btn-row" style="margin-top:14px">
+        ${h.reachable ? '' : '<button class="btn" id="wiz-h-detect" type="button">Détecter Hermes automatiquement</button>'}
+        <button class="btn ghost" id="wiz-h-edit" type="button">Configurer à la main</button>
+        <button class="btn ghost" id="wiz-h-retry" type="button">Revérifier</button>
+      </div>`,
     wire: (w) => {
+      const scan = $('#wiz-h-scan', w);
+      const detect = $('#wiz-h-detect', w);
+      if (detect) detect.onclick = (e) => runHermesDetection(e.currentTarget, scan);
+
       $('#wiz-h-retry', w).onclick = async (e) => {
         e.currentTarget.disabled = true;
         await checkSetupSilently();
@@ -2567,6 +2576,152 @@ function wizModel(s, usable) {
       return true;
     },
   };
+}
+
+/**
+ * Cherche Hermes sur le serveur, puis propose ce qui a du sens.
+ *
+ * Trois issues : il est là et sa clé est lisible — un clic suffit ; il est là
+ * mais la clé n'est pas accessible d'ici — on demande juste la clé ; il n'y est
+ * pas — on propose de l'installer, automatiquement si AgentHub en a le droit,
+ * à la main sinon.
+ */
+async function runHermesDetection(btn, box) {
+  btn.disabled = true;
+  box.innerHTML = '<div class="probe testing">Recherche d\'Hermes sur ton serveur…</div>';
+
+  const r = await tryApi(api('GET', '/api/hermes/discover'), 'Détection');
+  btn.disabled = false;
+  if (!r) { box.innerHTML = ''; return; }
+
+  if (r.found.length) {
+    const f = r.found[0];
+    box.innerHTML = `
+      <div class="probe good">✓ Hermes trouvé — <code>${escapeHtml(f.name)}</code>${f.image ? ` (${escapeHtml(f.image)})` : ''}</div>
+      <div class="scan-detail">
+        ${escapeHtml(f.base_url)}
+        ${f.shared === false ? '<br><strong>Attention :</strong> il ne partage aucun réseau avec AgentHub — le nom ne résoudra pas tant que ce n\'est pas corrigé.' : ''}
+        ${f.key ? '<br>Sa clé a été lue directement dans sa configuration : rien à copier.' : '<br>Sa clé n\'est pas lisible d\'ici — il faudra la saisir.'}
+      </div>
+      <button class="primary" id="scan-adopt" type="button" style="margin-top:10px">
+        ${f.key ? 'Utiliser cet Hermes' : 'Saisir la clé et l\'utiliser'}</button>`;
+
+    $('#scan-adopt', box).onclick = async (e) => {
+      if (!f.key) {
+        // Pas de clé lisible : on ouvre la fiche, déjà remplie de l'URL trouvée.
+        const prov = (S.providers || []).find((p) => p.id === 'hermes');
+        openProviderModal({ ...(prov || {}), id: 'hermes', label: 'Hermes', base: f.base_url },
+          (S.presets || []).find((k) => k.id === 'hermes'),
+          async () => { await checkSetupSilently(); renderWizard(); });
+        return;
+      }
+      e.currentTarget.disabled = true;
+      const a = await tryApi(api('POST', '/api/hermes/adopt', { name: f.name }), 'Enregistrement');
+      if (!a) { e.currentTarget.disabled = false; return; }
+      toast(a.reachable ? `Hermes branché — ${a.models.length} modèle(s).` : 'Hermes enregistré, mais il ne répond pas encore.',
+        { kind: a.reachable ? 'success' : 'warn' });
+      await checkSetupSilently();
+      renderWizard();
+    };
+    return;
+  }
+
+  // Rien trouvé.
+  box.innerHTML = `
+    <div class="probe warn">⚠ Aucune passerelle Hermes sur ce serveur.</div>
+    ${r.canInstall ? `
+      <div class="scan-detail">AgentHub peut l'installer pour toi : il téléchargera l'image officielle
+        Nous Research, créera le conteneur sur un réseau partagé et se branchera dessus.
+        Compte plusieurs minutes — l'image fait près de 4 Go.</div>
+      <button class="primary" id="scan-install" type="button" style="margin-top:10px">Installer Hermes</button>
+      <div id="scan-log" class="scan-log hidden"></div>`
+    : `
+      <div class="scan-detail">
+        AgentHub ne peut pas l'installer lui-même : cela demanderait de lui donner accès au
+        socket Docker, ce qui revient à lui donner les droits root sur ton serveur.
+        Ce n'est pas activé par défaut, et c'est délibéré.<br><br>
+        Lance plutôt ceci sur ton serveur — c'est exactement ce qu'AgentHub ferait :
+      </div>
+      <div class="cmd-row" style="margin-top:10px">
+        <code id="scan-plan">${escapeHtml((r.plan?.commands || []).join('\n'))}</code>
+        <button class="btn sm" id="scan-copy" type="button">Copier</button>
+      </div>
+      <details class="scan-compose" style="margin-top:10px">
+        <summary>Voir le fichier <code>hermes-agent.yml</code></summary>
+        <pre>${escapeHtml(r.plan?.compose || '')}</pre>
+      </details>`}`;
+
+  const copy = $('#scan-copy', box);
+  if (copy) copy.onclick = async () => {
+    const text = `${r.plan.compose}\n\n# puis :\n${r.plan.commands.join('\n')}`;
+    try { await navigator.clipboard.writeText(text); toast('Fichier et commandes copiés.', { kind: 'success' }); }
+    catch { toast('Copie refusée par le navigateur.', { kind: 'warn' }); }
+  };
+
+  const install = $('#scan-install', box);
+  if (install) install.onclick = () => streamHermesInstall(install, $('#scan-log', box));
+}
+
+/**
+ * Installation, avec la progression en direct.
+ *
+ * Le serveur répond en NDJSON plutôt qu'en une seule fois : télécharger quatre
+ * gigaoctets prend plusieurs minutes, et un écran figé pendant ce temps se lit
+ * comme une panne.
+ */
+async function streamHermesInstall(btn, log) {
+  btn.disabled = true;
+  log.classList.remove('hidden');
+  log.textContent = '';
+  const line = (t) => {
+    log.textContent += (log.textContent ? '\n' : '') + t;
+    log.scrollTop = log.scrollHeight;
+  };
+
+  let resp;
+  try {
+    resp = await fetch('/api/hermes/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  } catch (err) {
+    line(`Échec : ${err.message}`);
+    btn.disabled = false;
+    return;
+  }
+
+  if (!resp.ok && resp.headers.get('content-type')?.includes('json')) {
+    const j = await resp.json().catch(() => ({}));
+    line(j.error || `HTTP ${resp.status}`);
+    btn.disabled = false;
+    return;
+  }
+
+  const reader = resp.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  let done = null;
+  for (;;) {
+    const { done: fin, value } = await reader.read();
+    if (fin) break;
+    buf += dec.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const raw = buf.slice(0, i).trim();
+      buf = buf.slice(i + 1);
+      if (!raw) continue;
+      let ev;
+      try { ev = JSON.parse(raw); } catch { continue; }
+      if (ev.type === 'progress') line(ev.message);
+      else if (ev.type === 'error') { line(`Échec : ${ev.error}`); done = ev; }
+      else if (ev.type === 'done') { done = ev; }
+    }
+  }
+
+  btn.disabled = false;
+  if (done && done.type === 'done') {
+    line(done.reachable ? `Hermes répond — ${done.models.length} modèle(s).` : (done.warning || 'Conteneur démarré.'));
+    toast('Hermes installé et branché.', { kind: 'success' });
+    await checkSetupSilently();
+    renderWizard();
+  }
 }
 
 /**

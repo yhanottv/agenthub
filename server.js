@@ -13,6 +13,7 @@ import {
 } from './db.js';
 import { buildGraph, layerCounts, GRAPH_LAYERS, LAYER_META } from './graph.js';
 import { skillsCatalogue, invalidateSkills } from './skills.js';
+import { discover as discoverHermes, installHermes, installPlan, dockerStatus } from './hermes.js';
 import { providerCatalog, probeProvider, seedProvidersFromEnv, PRESETS } from './llm.js';
 import { Orchestrator } from './orchestrator.js';
 
@@ -429,6 +430,101 @@ app.get('/api/setup', requireAuth, async (req, res) => {
     agents: Agents.count(),
     channels: Channels.count(),
   });
+});
+
+// ---- détection et installation d'Hermes ------------------------------------
+/**
+ * Cherche une passerelle Hermes. Sans privilège si le socket Docker n'est pas
+ * monté, avec bien plus de détail — dont la clé — s'il l'est.
+ */
+app.get('/api/hermes/discover', requireAuth, async (req, res) => {
+  try {
+    const r = await discoverHermes();
+    res.json({
+      ...r,
+      // Le plan manuel est toujours joint : c'est la voie sans privilège, et
+      // certains préféreront la lire plutôt que de laisser l'app agir.
+      plan: r.found.length ? null : installPlan(),
+      canInstall: r.docker.available && r.found.length === 0,
+    });
+  } catch (err) {
+    console.error('hermes discover:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Reprend un Hermes détecté : enregistre son URL et sa clé comme fournisseur.
+ * C'est l'intérêt principal de la détection — la clé est la valeur qu'on passe
+ * sinon un quart d'heure à chercher dans les fichiers d'un autre conteneur.
+ */
+app.post('/api/hermes/adopt', requireAuth, async (req, res) => {
+  const r = await discoverHermes();
+  const hit = r.found.find((f) => f.name === req.body?.name) || r.found[0];
+  if (!hit) return res.status(404).json({ error: 'Aucune passerelle Hermes détectée.' });
+  if (!hit.key && !req.body?.api_key) {
+    return res.status(422).json({
+      error: "Hermes a été trouvé, mais sa clé n'est pas lisible d'ici. Saisis-la à la main.",
+      base_url: hit.base_url,
+    });
+  }
+
+  const provider = Providers.upsert({
+    id: 'hermes',
+    label: 'Hermes',
+    base_url: hit.base_url,
+    api_key: req.body?.api_key || hit.key,
+    session_header: 'X-Hermes-Session-Key',
+    hint: PRESETS.find((p) => p.id === 'hermes')?.hint || '',
+    needs_key: true,
+    enabled: true,
+  });
+
+  const probe = await probeProvider(Providers.get('hermes'));
+  if (probe.ok) Providers.setModels('hermes', probe.models, probe.models[0]);
+  broadcast({ type: 'providers.update', providers: providerCatalog() });
+  res.json({ ok: true, provider: provider.id, reachable: probe.ok, error: probe.ok ? null : probe.error, models: probe.models || [] });
+});
+
+/**
+ * Installe Hermes. La progression est renvoyée en flux : le téléchargement de
+ * l'image dure plusieurs minutes, et une page figée passe pour une panne.
+ */
+app.post('/api/hermes/install', requireAuth, async (req, res) => {
+  const status = await dockerStatus();
+  if (!status.available) {
+    return res.status(409).json({
+      error: status.detail,
+      reason: status.reason,
+      plan: installPlan(),
+    });
+  }
+
+  res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.flushHeaders?.();
+  const send = (o) => { try { res.write(JSON.stringify(o) + '\n'); } catch { /* client parti */ } };
+
+  try {
+    const r = await installHermes({ onProgress: (m) => send({ type: 'progress', message: m }) });
+    if (r.ok) {
+      Providers.upsert({
+        id: 'hermes', label: 'Hermes', base_url: r.base_url, api_key: r.key,
+        session_header: 'X-Hermes-Session-Key', needs_key: true, enabled: true,
+        hint: PRESETS.find((p) => p.id === 'hermes')?.hint || '',
+      });
+      const probe = await probeProvider(Providers.get('hermes'));
+      if (probe.ok) Providers.setModels('hermes', probe.models, probe.models[0]);
+      broadcast({ type: 'providers.update', providers: providerCatalog() });
+      send({ type: 'done', ...r, models: probe.models || [], reachable: probe.ok });
+    } else {
+      send({ type: 'error', ...r });
+    }
+  } catch (err) {
+    console.error('hermes install:', err);
+    send({ type: 'error', error: err.message });
+  }
+  res.end();
 });
 
 app.post('/api/setup/complete', requireAuth, (req, res) => {

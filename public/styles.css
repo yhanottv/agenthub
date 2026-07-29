@@ -1941,3 +1941,33 @@ a.attach-chip:hover { border-color: var(--accent); color: var(--accent-ink); }
 select:disabled {
   color: var(--muted); background: var(--surface-2); cursor: not-allowed;
 }
+
+/* ------------------------------------------- detection / installation Hermes */
+.btn-row { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
+
+.scan-detail {
+  margin-top: 8px; font-size: var(--fs-md); color: var(--text-2); line-height: 1.7;
+}
+.scan-detail code { font-size: var(--fs-sm); }
+
+/* Journal d'installation : une console, pas un paragraphe. Bornee en hauteur,
+   sinon le telechargement de quatre gigaoctets pousse les boutons hors de vue. */
+.scan-log {
+  margin-top: 10px; padding: 10px var(--sp-3); max-height: 190px; overflow-y: auto;
+  background: var(--bg-deep); border: 1px solid var(--line); border-radius: var(--r-xs);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--fs-sm); line-height: 1.6; color: var(--text-2);
+  white-space: pre-wrap; word-break: break-word;
+}
+.scan-log.hidden { display: none; }
+
+.scan-compose summary {
+  cursor: pointer; font-size: var(--fs-md); color: var(--muted);
+  padding: 4px 0;
+}
+.scan-compose summary:hover { color: var(--text); }
+.scan-compose pre {
+  margin: 8px 0 0; padding: var(--sp-3); overflow-x: auto;
+  background: var(--bg-deep); border: 1px solid var(--line); border-radius: var(--r-xs);
+  font-size: var(--fs-sm); line-height: 1.55;
+}
