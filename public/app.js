@@ -19,6 +19,7 @@ const S = {
   noteTags: [], proposals: [], graph: null, graphKey: '',
   notesBudget: 60000, notesBudgetMax: 400000, notesAuto: true,
   skills: null, skillQuery: '', skillCat: '', skillOnly: '',
+  translateTo: 'en', translateIn: '',
   // Les calques survivent au rechargement : c'est un réglage de lecture, pas
   // un état de session, et le refaire à chaque visite serait pénible.
   graphLayers: (() => {
@@ -218,6 +219,11 @@ const IC = {
   tasks: svg('<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>'),
   edit: svg('<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z"/>'),
   clock: svg('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
+  expand: svg('<path d="M9 4H4v5M15 4h5v5M15 20h5v-5M9 20H4v-5"/>'),
+  mic: svg('<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>'),
+  globe: svg('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18a15 15 0 0 1 0-18"/>'),
+  copy: svg('<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>'),
+  swap: svg('<path d="M7 4v13m0 0-3-3m3 3 3-3M17 20V7m0 0-3 3m3-3 3 3"/>'),
   download: svg('<path d="M12 4v10m0 0 4-4m-4 4-4-4"/><path d="M5 18h14"/>'),
   clip: svg('<path d="M20 11.5 12.3 19a4.6 4.6 0 0 1-6.5-6.5l7.9-7.9a3 3 0 0 1 4.3 4.3l-7.9 7.9a1.5 1.5 0 0 1-2.1-2.1l7.2-7.2"/>'),
   trash: svg('<path d="M4 7h16M9 7V5h6v2M6 7l1 12h10l1-12"/>'),
@@ -679,11 +685,15 @@ function renderTopbar() {
       ${IC.search}<span>Rechercher un agent, un pôle…</span><kbd>Ctrl K</kbd>
     </button>
     ${S.view === 'chat' ? `<button class="icon-btn" id="open-rail" type="button" aria-label="Voir les tâches" title="Tâches">${IC.tasks}</button>` : ''}
+    <button class="icon-btn" id="open-translate" type="button"
+            aria-label="Traducteur" title="Traducteur" aria-expanded="false">${IC.globe}</button>
     <button class="icon-btn" id="theme-toggle" type="button"
-            aria-label="${dark ? 'Passer en clair' : 'Passer en sombre'}">${dark ? IC.sun : IC.moon}</button>`;
+            aria-label="${dark ? 'Passer en clair' : 'Passer en sombre'}">${dark ? IC.sun : IC.moon}</button>
+    <div class="translate-pop hidden" id="translate-pop" role="dialog" aria-label="Traducteur"></div>`;
 
   $('#burger', bar).onclick = () => { S.sidebarOpen = !S.sidebarOpen; renderSidebar(); renderTopbar(); renderScrim(); };
   $('#open-search', bar).onclick = openPalette;
+  $('#open-translate', bar).onclick = (e) => toggleTranslator(e.currentTarget, $('#translate-pop', bar));
   const rail = $('#open-rail', bar);
   if (rail) rail.onclick = () => { S.railOpen = !S.railOpen; renderView(); renderScrim(); };
   $('#theme-toggle', bar).onclick = () => {
@@ -3879,6 +3889,8 @@ function renderChat(v) {
             <input type="file" id="file-input" class="sr-only" multiple>
             <button class="icon-btn attach-btn" id="attach-btn" type="button"
                     aria-label="Joindre un fichier" title="Joindre un fichier">${IC.clip}</button>
+            ${SPEECH_OK ? `<button class="icon-btn attach-btn" id="mic-btn" type="button"
+                    aria-label="Dicter" title="Dicter (Ctrl+Maj+D)" aria-pressed="false">${IC.mic}</button>` : ''}
             <div class="composer-box">
               <label for="composer-input" class="sr-only">Message</label>
               <textarea id="composer-input" rows="1" placeholder="Écris un message…  (@ pour appeler un agent)"></textarea>
@@ -3938,6 +3950,159 @@ function renderChat(v) {
   box.addEventListener('scroll', updateScrollButton, { passive: true });
   $('#scroll-down', v).onclick = () => scrollToBottom(true);
   requestAnimationFrame(() => scrollToBottom(true));
+}
+
+// ---- traducteur ------------------------------------------------------------
+// Disponible partout depuis la barre du haut. Il s'appuie sur le fournisseur
+// déjà configuré : pas de service de traduction à obtenir en plus, et le coût
+// entre dans la consommation comme n'importe quel appel.
+
+const TRANSLATE_TO = [['fr', 'Français'], ['en', 'Anglais']];
+
+function toggleTranslator(btn, pop) {
+  const open = !pop.classList.contains('hidden');
+  if (open) { closeTranslator(pop, btn); return; }
+
+  pop.classList.remove('hidden');
+  btn.setAttribute('aria-expanded', 'true');
+  pop.innerHTML = `
+    <div class="tr-head">
+      <span>${IC.globe} Traducteur</span>
+      <div class="seg sm">
+        ${TRANSLATE_TO.map(([id, label]) => `<button class="seg-btn ${id === S.translateTo ? 'on' : ''}"
+          data-to="${id}" type="button">vers ${label}</button>`).join('')}
+      </div>
+      <button class="icon-btn sm" id="tr-close" type="button" aria-label="Fermer">✕</button>
+    </div>
+    <textarea id="tr-in" rows="4" maxlength="6000" placeholder="Colle ou saisis le texte à traduire…">${escapeHtml(S.translateIn)}</textarea>
+    <div class="tr-actions">
+      <button class="btn sm" id="tr-go" type="button">Traduire</button>
+      <span class="muted" id="tr-state"></span>
+    </div>
+    <div class="tr-out hidden" id="tr-out"></div>`;
+
+  const input = $('#tr-in', pop);
+  const state = $('#tr-state', pop);
+  const out = $('#tr-out', pop);
+
+  $$('[data-to]', pop).forEach((b) => b.onclick = () => {
+    S.translateTo = b.dataset.to;
+    $$('[data-to]', pop).forEach((x) => x.classList.toggle('on', x.dataset.to === S.translateTo));
+  });
+
+  const run = async () => {
+    const text = input.value.trim();
+    if (!text) { input.focus(); return; }
+    S.translateIn = input.value;
+    state.textContent = 'Traduction…';
+    out.classList.add('hidden');
+    const r = await tryApi(api('POST', '/api/translate', { text, to: S.translateTo }), 'Traduction');
+    state.textContent = '';
+    if (!r) return;
+    out.classList.remove('hidden');
+    out.innerHTML = `<div class="tr-text">${escapeHtml(r.text)}</div>
+      <div class="tr-foot">
+        <button class="btn sm" id="tr-copy" type="button">${IC.copy} Copier</button>
+        <span class="muted">${escapeHtml(r.model || '')}</span>
+      </div>`;
+    $('#tr-copy', out).onclick = async () => {
+      try { await navigator.clipboard.writeText(r.text); toast('Traduction copiée.', { kind: 'success' }); }
+      catch { toast('Copie refusée par le navigateur.', { kind: 'warn' }); }
+    };
+  };
+
+  $('#tr-go', pop).onclick = run;
+  $('#tr-close', pop).onclick = () => closeTranslator(pop, btn);
+  input.addEventListener('keydown', (e) => {
+    // Entrée traduit, Maj+Entrée saute une ligne — comme le composeur.
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); run(); }
+    if (e.key === 'Escape') { e.preventDefault(); closeTranslator(pop, btn); }
+  });
+  setTimeout(() => input.focus(), 20);
+
+  // Fermeture au clic dehors, retirée avec le panneau.
+  pop._outside = (e) => {
+    if (!pop.contains(e.target) && e.target !== btn && !btn.contains(e.target)) closeTranslator(pop, btn);
+  };
+  setTimeout(() => document.addEventListener('mousedown', pop._outside), 0);
+}
+
+function closeTranslator(pop, btn) {
+  if (!pop) return;
+  S.translateIn = $('#tr-in', pop)?.value ?? S.translateIn;
+  pop.classList.add('hidden');
+  pop.innerHTML = '';
+  btn?.setAttribute('aria-expanded', 'false');
+  if (pop._outside) { document.removeEventListener('mousedown', pop._outside); pop._outside = null; }
+}
+
+// ---- dictée ----------------------------------------------------------------
+// L'API de reconnaissance vocale du navigateur, sans dépendance ni service à
+// configurer. Elle n'existe pas partout : le bouton n'apparaît que si elle est
+// réellement disponible, plutôt que d'échouer au clic.
+const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+const SPEECH_OK = Boolean(SpeechRec);
+
+let dictation = null;
+
+/**
+ * Dicte dans le champ de saisie.
+ *
+ * Le texte provisoire est affiché puis remplacé par la version définitive : sans
+ * ça on écrit dans le vide pendant plusieurs secondes et on croit que rien ne
+ * marche. La base — ce qui était tapé avant — est conservée pour ne jamais
+ * écraser ce que l'utilisateur avait déjà écrit.
+ */
+function toggleDictation(input, btn) {
+  if (dictation) { dictation.stop(); return; }
+  if (!SPEECH_OK) return;
+
+  const rec = new SpeechRec();
+  rec.lang = 'fr-FR';
+  rec.continuous = true;
+  rec.interimResults = true;
+
+  const base = input.value ? input.value.replace(/\s*$/, '') + ' ' : '';
+  let settled = '';
+
+  const paint = (interim) => {
+    input.value = base + settled + interim;
+    autoGrow(input);
+    $('#send-btn').disabled = !input.value.trim();
+  };
+
+  rec.onresult = (e) => {
+    let interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const t = e.results[i][0].transcript;
+      if (e.results[i].isFinal) settled += t;
+      else interim += t;
+    }
+    paint(interim);
+  };
+
+  rec.onerror = (e) => {
+    // « no-speech » arrive dès qu'on marque une pause : ce n'est pas une panne.
+    if (e.error === 'no-speech' || e.error === 'aborted') return;
+    toast(e.error === 'not-allowed'
+      ? "Le micro a été refusé. Autorise-le dans les réglages du navigateur."
+      : `Dictée interrompue : ${e.error}`, { kind: 'warn' });
+  };
+
+  rec.onend = () => {
+    dictation = null;
+    btn.classList.remove('recording');
+    btn.setAttribute('aria-pressed', 'false');
+    paint('');
+    S.drafts[S.current] = input.value;
+    input.focus();
+  };
+
+  try { rec.start(); } catch { return; }
+  dictation = rec;
+  btn.classList.add('recording');
+  btn.setAttribute('aria-pressed', 'true');
+  announce('Dictée en cours.');
 }
 
 // ---- pièces jointes --------------------------------------------------------
@@ -4042,12 +4207,62 @@ function attachmentsHTML(m) {
 }
 
 const imageHTML = (f) => `<figure class="msg-image">
-  <img src="/api/attachments/${escapeAttr(f.id)}" alt="${escapeAttr(f.name)}" loading="lazy" decoding="async">
+  <button class="img-open" type="button" data-lightbox="${escapeAttr(f.id)}"
+          data-name="${escapeAttr(f.name)}" aria-label="Agrandir ${escapeAttr(f.name)}">
+    <img src="/api/attachments/${escapeAttr(f.id)}" alt="${escapeAttr(f.name)}" loading="lazy" decoding="async">
+    <span class="img-zoom" aria-hidden="true">${IC.expand}</span>
+  </button>
   <figcaption>
     <span>${escapeHtml(f.name)}</span>
     <a href="/api/attachments/${escapeAttr(f.id)}?download=1" download>${fmtBytes(f.bytes)} · télécharger</a>
   </figcaption>
 </figure>`;
+
+/**
+ * Vue plein écran d'une image.
+ *
+ * Un seul écouteur posé sur le document plutôt qu'un par image : les messages
+ * sont re-rendus en permanence pendant le streaming, et rebrancher les
+ * gestionnaires à chaque fois finit toujours par en laisser un derrière.
+ */
+let lightboxClose = null;
+function openLightbox(id, name) {
+  closeLightbox();
+  const box = el('div', 'lightbox');
+  box.setAttribute('role', 'dialog');
+  box.setAttribute('aria-modal', 'true');
+  box.setAttribute('aria-label', name || 'Image');
+  box.innerHTML = `
+    <img src="/api/attachments/${escapeAttr(id)}" alt="${escapeAttr(name || '')}">
+    <div class="lightbox-bar">
+      <span>${escapeHtml(name || '')}</span>
+      <a href="/api/attachments/${escapeAttr(id)}?download=1" download>Télécharger</a>
+      <button type="button" class="lightbox-x" aria-label="Fermer">✕</button>
+    </div>`;
+  document.body.appendChild(box);
+  document.body.classList.add('no-scroll');
+
+  const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); closeLightbox(); } };
+  // Le clic sur l'image ne ferme pas : on veut pouvoir la regarder sans risque.
+  box.addEventListener('click', (e) => {
+    if (e.target === box || e.target.closest('.lightbox-x')) closeLightbox();
+  });
+  document.addEventListener('keydown', onKey, true);
+  box.querySelector('.lightbox-x').focus();
+
+  lightboxClose = () => {
+    document.removeEventListener('keydown', onKey, true);
+    box.remove();
+    document.body.classList.remove('no-scroll');
+    lightboxClose = null;
+  };
+}
+function closeLightbox() { if (lightboxClose) lightboxClose(); }
+
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-lightbox]');
+  if (btn) openLightbox(btn.dataset.lightbox, btn.dataset.name);
+});
 
 /**
  * Une image arrivée pendant que le message s'écrit.
@@ -4399,6 +4614,19 @@ function wireComposer() {
   input.value = S.drafts[S.current] || '';
   autoGrow(input);
   btn.disabled = !input.value.trim();
+
+  // Changer de salon pendant une dictée la laisserait écrire dans le vide.
+  if (dictation) dictation.stop();
+  const mic = $('#mic-btn');
+  if (mic) {
+    mic.onclick = () => toggleDictation(input, mic);
+    input.addEventListener('keydown', (e) => {
+      if (e.ctrlKey && e.shiftKey && (e.key === 'D' || e.key === 'd')) {
+        e.preventDefault();
+        toggleDictation(input, mic);
+      }
+    });
+  }
 
   input.addEventListener('input', () => {
     S.drafts[S.current] = input.value;

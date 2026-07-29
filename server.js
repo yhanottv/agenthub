@@ -17,7 +17,7 @@ import {
   discover as discoverHermes, installHermes, installPlan, dockerStatus, connectToNetwork,
   diagnoseGateway, startGateway,
 } from './hermes.js';
-import { providerCatalog, probeProvider, seedProvidersFromEnv, PRESETS } from './llm.js';
+import { providerCatalog, probeProvider, seedProvidersFromEnv, streamChat, PRESETS } from './llm.js';
 import { Orchestrator } from './orchestrator.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -884,6 +884,64 @@ app.delete('/api/notes/:id', requireAuth, (req, res) => {
   broadcast({ type: 'note.remove', id: req.params.id });
   broadcast({ type: 'graph.dirty' });
   res.json({ ok: true });
+});
+
+// ---- traduction ------------------------------------------------------------
+/**
+ * Traduit un texte avec le fournisseur déjà configuré.
+ *
+ * Pas de service de traduction dédié : ce serait une clé de plus à obtenir pour
+ * une tâche que les modèles déjà branchés font très bien. Le coût entre dans la
+ * consommation comme n'importe quel appel, sinon le total mentirait.
+ */
+const TRANSLATE_LANGS = { fr: 'français', en: 'anglais' };
+const MAX_TRANSLATE_CHARS = 6000;
+
+app.post('/api/translate', requireAuth, async (req, res) => {
+  const text = String(req.body?.text ?? '').trim();
+  const to = TRANSLATE_LANGS[req.body?.to] ? req.body.to : 'en';
+  if (!text) return res.status(400).json({ error: 'Rien à traduire.' });
+  if (text.length > MAX_TRANSLATE_CHARS) {
+    return res.status(413).json({ error: `Texte trop long (max ${MAX_TRANSLATE_CHARS} caractères).` });
+  }
+
+  const target = TRANSLATE_LANGS[to];
+  let out = '';
+
+  /*
+   * On emprunte le service et le modèle du premier agent, pas « le premier
+   * service utilisable ».
+   *
+   * La différence compte : le premier service utilisable était Hermes, qui
+   * répond à /v1/models et paraît donc parfaitement valide — mais refuse toute
+   * complétion tant qu'aucun modèle d'inférence ne lui a été choisi. Le modèle
+   * des agents, lui, est celui dont on sait qu'il répond.
+   */
+  const ref = Agents.all()[0] || {};
+
+  const r = await streamChat({
+    agent: { provider: ref.provider, model: ref.model },
+    messages: [
+      {
+        role: 'system',
+        content: `Tu es un traducteur. Traduis le texte de l'utilisateur en ${target}. `
+          + 'Rends UNIQUEMENT la traduction, sans guillemets, sans commentaire, sans préambule. '
+          + 'Conserve la mise en forme, les sauts de ligne, les listes et le code tels quels. '
+          + `Si le texte est déjà en ${target}, renvoie-le inchangé.`,
+      },
+      { role: 'user', content: text },
+    ],
+    onDelta: (d) => { out += d; },
+  });
+
+  if (r.error) return res.status(502).json({ error: r.error });
+  if (r.usage) {
+    Usage.record({
+      agent_id: null, channel_id: null, provider: r.provider, model: r.model,
+      tokens_in: r.usage.tokensIn, tokens_out: r.usage.tokensOut, estimated: r.usage.estimated,
+    });
+  }
+  res.json({ text: out.trim(), to, model: r.model, provider: r.provider });
 });
 
 // ---- recherche -------------------------------------------------------------
