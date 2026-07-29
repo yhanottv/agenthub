@@ -1233,19 +1233,15 @@ const dropStalePreviews = () => {
 };
 
 /**
- * Enregistre un site à prévisualiser.
+ * Retient un site a previsualiser.
  *
- * Un site n'est pas une page : il a une feuille de style à côté, un script, une
- * seconde page derrière un lien. Servir un seul document interdirait tout ça, et
- * « prévisualiser un site » ne voudrait plus rien dire. On garde donc un jeu de
- * fichiers, servi sous un préfixe commun pour que les chemins relatifs tombent
- * juste — `href="a-propos.html"` doit mener quelque part.
- */
-/**
- * Retient un jeu de fichiers et renvoie de quoi l'afficher.
+ * Un site n'est pas une page : il a une feuille de style a cote, un script, une
+ * seconde page derriere un lien. Servir un seul document interdirait tout ca. On
+ * garde donc un jeu de fichiers, servi sous un prefixe commun pour que les
+ * chemins relatifs tombent juste.
  *
  * @param {Array<{path:string, data:Buffer}>} entries
- * @returns {{id:string, url:string, entry:string, files:string[]}|{error:string}}
+ * @returns {{id:string, url:string, entry:string, files:string[], notes:string[]}|{error:string}}
  */
 function registerPreview(entries) {
   const files = new Map();
@@ -1268,10 +1264,20 @@ function registerPreview(entries) {
     || names.find((n) => /\.html?$/i.test(n))
     || names[0];
 
+  // Ce que le site ne sait pas résoudre seul, et ce qu'on fait pour lui. Dit à
+  // l'utilisateur, parce qu'un aperçu qui bricole en silence ment sur ce qu'il
+  // montre : le site tel quel n'aurait pas tourné.
+  const { bare, cssImports } = scanModules(files);
+  const importMap = buildImportMap(bare, declaredVersions(files));
+  const notes = [];
+  if (bare.size) notes.push(`dépendances résolues via esm.sh : ${[...bare].join(', ')}`);
+  if (cssImports.size) notes.push(`feuille(s) de style importée(s) par un module, réinjectée(s) dans la page`);
+
+  const plan = { importMap, cssImports: [...cssImports] };
   const id = 'pv_' + crypto.randomBytes(9).toString('hex');
-  previews.set(id, { files, entry, at: Date.now() });
+  previews.set(id, { files, entry, plan, at: Date.now() });
   dropStalePreviews();
-  return { id, url: `/api/preview/${id}/${entry}`, entry, files: names };
+  return { id, url: `/api/preview/${id}/${entry}`, entry, files: names, notes };
 }
 
 /**
@@ -1299,14 +1305,120 @@ function resolveInBundle(ref, fromPage, files) {
   return sameKind.length === 1 ? sameKind[0] : null;
 }
 
-/** Remplace les références internes d'une page par leur contenu. */
-function inlineOwnAssets(html, page, files) {
+// ---- faire tourner un projet à modules, sans étape de construction ---------
+/*
+ * Les agents produisent volontiers un projet moderne : `index.html` de cinq
+ * lignes, tout le contenu construit par JavaScript, et des imports par nom de
+ * paquet — `import * as THREE from 'three'`. C'est du code juste, mais aucun
+ * navigateur ne sait résoudre un nom de paquet : la page s'ouvrait sur son seul
+ * texte statique, en général le lien « Aller au contenu », et paraissait vide.
+ *
+ * Un navigateur sait pourtant le faire si on lui donne la carte. On lit donc les
+ * dépendances déclarées, on écrit une carte d'imports vers esm.sh — déjà autorisé
+ * par la politique de l'aperçu — et le projet tourne tel quel. Deux détails
+ * réglés au passage : un module ne peut pas importer une feuille de style, donc
+ * ces imports sortent du script et le CSS entre dans la page ; et un module n'est
+ * jamais mis en ligne dans le document, sinon ses imports relatifs se
+ * résoudraient depuis la page et non depuis son dossier.
+ */
+
+const BARE_IMPORT = /(?:^|[\s;])(?:import|export)(?:\s[\s\S]*?\sfrom|)\s*['"]([^'".][^'"]*)['"]/g;
+const isBare = (spec) => spec && !/^[./]/.test(spec) && !/^[a-z][a-z0-9+.-]*:/i.test(spec);
+
+/** Les versions déclarées, quand le projet embarque son package.json. */
+function declaredVersions(files) {
+  const raw = files.get('package.json');
+  if (!raw) return {};
+  try {
+    const pkg = JSON.parse(raw.toString('utf8'));
+    return { ...(pkg.devDependencies || {}), ...(pkg.dependencies || {}) };
+  } catch { return {}; }
+}
+
+/** Ce que le site importe sans pouvoir le résoudre seul. */
+function scanModules(files) {
+  const bare = new Set();
+  const cssImports = new Set();
+  for (const [path, buf] of files) {
+    if (!/\.m?js$/i.test(path)) continue;
+    const src = buf.toString('utf8');
+    for (const m of src.matchAll(BARE_IMPORT)) {
+      if (isBare(m[1])) bare.add(m[1]);
+    }
+    for (const m of src.matchAll(/(?:^|[\s;])import\s*['"]([^'"]+\.css)['"]/g)) {
+      const found = resolveInBundle(m[1], path, files);
+      if (found) cssImports.add(found);
+    }
+  }
+  return { bare, cssImports };
+}
+
+/** Carte d'imports vers esm.sh, en respectant les versions du projet. */
+function buildImportMap(bare, versions) {
+  const imports = {};
+  for (const spec of bare) {
+    const name = spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0];
+    const v = String(versions[name] || '').replace(/^[\^~>=<\s]+/, '');
+    const at = v && /^\d/.test(v) ? `@${v}` : '';
+    imports[spec] = `https://esm.sh/${spec.replace(name, name + at)}`;
+    // Un sous-chemin (`three/examples/…`) doit se résoudre aussi, sans qu'on ait
+    // eu besoin de le voir passer.
+    imports[`${name}/`] = `https://esm.sh/${name}${at}/`;
+  }
+  return imports;
+}
+
+/** Retire d'un module les imports de feuilles de style, que la page reprend. */
+function stripCssImports(js) {
+  return js.replace(/^[ \t]*import\s*['"][^'"]+\.css['"];?[ \t]*\r?\n?/gm, '');
+}
+
+/**
+ * Ramène un chemin du site à un chemin relatif au fichier qui le mentionne.
+ *
+ * Un chemin absolu depuis la racine — `src="/src/main.js"` — désigne la racine du
+ * serveur, pas le site prévisualisé. C'est la façon dont Vite écrit ses pages, et
+ * c'est ce qui faisait échouer le seul script de la page : le navigateur
+ * demandait `/src/main.js`, qui n'existe pas chez nous, et rien ne se chargeait.
+ * L'aperçu ne peut pas non plus poser une balise `<base>` : sa politique
+ * l'interdit, précisément pour qu'une page ne puisse pas se réenraciner ailleurs.
+ */
+function toRelative(target, fromFile) {
+  const depth = fromFile.split('/').length - 1;
+  return depth ? '../'.repeat(depth) + target : target;
+}
+
+/** Réécrit les chemins absolus d'une page vers le site prévisualisé. */
+function rerootHtml(html, page, files) {
+  return html.replace(/\b(src|href)=(["'])(\/[^"'>]*)\2/gi, (tag, attr, q, ref) => {
+    const found = resolveInBundle(ref, page, files);
+    return found ? `${attr}=${q}${toRelative(found, page)}${q}` : tag;
+  });
+}
+
+/** Même correction dans un module, pour `import '/src/…'`. */
+function rerootImports(js, fromFile, files) {
+  return js.replace(/(\bfrom\s*|\bimport\s*)(["'])(\/[^"']+)\2/g, (m, kw, q, ref) => {
+    const found = resolveInBundle(ref, fromFile, files);
+    return found ? `${kw}${q}${toRelative(found, fromFile)}${q}` : m;
+  });
+}
+
+/**
+ * Prépare la page d'entrée : styles et scripts classiques en ligne, carte
+ * d'imports pour les modules, CSS des modules réinjecté.
+ */
+function preparePage(html, page, files, plan) {
   const grab = (ref) => {
     const found = resolveInBundle(ref, page, files);
     return found ? files.get(found).toString('utf8') : null;
   };
 
-  let out = html.replace(
+  // Les chemins absolus d'abord : ils désignent la racine du serveur, pas le
+  // site, et sans cette correction rien de ce qui suit ne trouverait sa cible.
+  let out = rerootHtml(html, page, files);
+
+  out = out.replace(
     /<link\b[^>]*\brel=["']?stylesheet["']?[^>]*>/gi,
     (tag) => {
       const href = tag.match(/\bhref=["']([^"']+)["']/i)?.[1];
@@ -1320,20 +1432,33 @@ function inlineOwnAssets(html, page, files) {
   out = out.replace(
     /<script\b([^>]*)\bsrc=["']([^"']+)["']([^>]*)>\s*<\/script>/gi,
     (tag, before, src, after) => {
+      const attrs = `${before} ${after}`;
+      // Un module reste une requête : mis en ligne, ses imports relatifs
+      // partiraient du dossier de la page au lieu du sien.
+      if (/\btype=["']module["']/i.test(attrs)) return tag;
       const js = grab(src);
       if (js === null) return tag;
-      const attrs = `${before} ${after}`;
-      const isModule = /\btype=["']module["']/i.test(attrs);
-      // `defer` fait attendre le DOM : l'exécuter en ligne au même endroit le
-      // lancerait trop tôt. Un module est différé par nature, même remarque.
-      const deferred = isModule || /\bdefer\b/i.test(attrs);
-      const body = deferred
+      const body = /\bdefer\b/i.test(attrs)
         ? `document.addEventListener('DOMContentLoaded', function () {\n${js}\n});`
         : js;
-      return `<script${isModule ? ' type="module"' : ''}>\n${body}\n</script>`;
+      return `<script>\n${body}\n</script>`;
     },
   );
 
+  // La carte doit précéder tout module : on la place au plus tôt dans le head.
+  const head = [];
+  if (Object.keys(plan.importMap).length) {
+    head.push(`<script type="importmap">${JSON.stringify({ imports: plan.importMap })}</script>`);
+  }
+  for (const css of plan.cssImports) {
+    head.push(`<style data-from="${css}">\n${files.get(css).toString('utf8')}\n</style>`);
+  }
+  if (head.length) {
+    const at = out.search(/<head[^>]*>/i);
+    out = at === -1
+      ? head.join('\n') + '\n' + out
+      : out.slice(0, out.indexOf('>', at) + 1) + '\n' + head.join('\n') + out.slice(out.indexOf('>', at) + 1);
+  }
   return out;
 }
 
@@ -1425,8 +1550,16 @@ app.get('/api/preview/:id/*', requireAuth, (req, res) => {
   // et celle que le navigateur a réellement utilisée, et la feuille de style
   // était refusée : le site s'affichait nu. En ligne, il n'y a plus rien à
   // deviner : `'unsafe-inline'` suffit, quel que soit l'hôte ou le schéma.
-  if (body !== undefined && /\.html?$/i.test(wanted || p.entry)) {
-    return res.type('html').send(inlineOwnAssets(body.toString('utf8'), wanted || p.entry, p.files));
+  const name = wanted || p.entry;
+  if (body !== undefined && /\.html?$/i.test(name)) {
+    return res.type('html').send(preparePage(body.toString('utf8'), name, p.files, p.plan));
+  }
+  // Deux corrections dans un script : un module ne peut pas importer une feuille
+  // de style — l'import sort d'ici et le CSS est entré dans la page à sa place —
+  // et un chemin absolu doit être ramené vers le site.
+  if (body !== undefined && /\.m?js$/i.test(name)) {
+    res.setHeader('Content-Type', previewMime(name));
+    return res.send(rerootImports(stripCssImports(body.toString('utf8')), name, p.files));
   }
 
   if (body === undefined) {
@@ -1435,7 +1568,7 @@ app.get('/api/preview/:id/*', requireAuth, (req, res) => {
         wanted.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))}</code></p>`
       : '<p style="font:14px system-ui;padding:24px">Prévisualisation expirée.</p>');
   }
-  res.setHeader('Content-Type', previewMime(wanted || p.entry));
+  res.setHeader('Content-Type', previewMime(name));
   res.send(body);
 });
 

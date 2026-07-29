@@ -2129,8 +2129,16 @@ body.resizing .preview-frame { pointer-events: none; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .preview-foot {
-  flex: none; padding: 5px var(--sp-3); font-size: 10.5px; color: var(--muted-2);
+  flex: none; display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap;
+  padding: 5px var(--sp-3); font-size: 10.5px; color: var(--muted-2);
   border-top: 1px solid var(--line); background: var(--surface);
+}
+/* Ce que l'apercu a du rebrancher pour que le site tourne : le taire serait
+   mentir sur ce qu'on montre — tel quel, le site ne demarrait pas. */
+.preview-fix {
+  padding: 1px 7px; border-radius: var(--r-pill);
+  background: var(--gold-soft); color: var(--gold); font-weight: 600;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
 /* Sous cette largeur un partage en deux ne laisse de place a personne : le

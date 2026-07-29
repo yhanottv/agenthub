@@ -4839,7 +4839,10 @@ function previewDockHTML() {
       <iframe class="preview-frame" id="preview-frame" src="${escapeAttr(url)}"
               sandbox="allow-scripts allow-pointer-lock allow-modals"
               title="Site produit par un agent"></iframe>
-      <div class="preview-foot">isolé de ton compte · bibliothèques publiques chargées, aucun autre appel</div>
+      <div class="preview-foot">
+        <span>isolé de ton compte · bibliothèques publiques chargées, aucun autre appel</span>
+        ${(S.preview.notes || []).map((n) => `<span class="preview-fix">${escapeHtml(n)}</span>`).join('')}
+      </div>
     </aside>`;
 }
 
@@ -4866,7 +4869,8 @@ async function openCodePreview(block, code) {
   const r = await tryApi(api('POST', '/api/preview', { files: site.files }), 'Prévisualisation');
   if (!r) return;
 
-  S.preview = { url: r.url, name: site.entry, count: r.files?.length || site.files.length };
+  S.preview = { url: r.url, name: site.entry, count: r.files?.length || site.files.length,
+    notes: r.notes || [] };
   if ($('.chat')) renderView();
   else openPreviewFullscreen();
 }
@@ -4883,7 +4887,8 @@ async function openArchivePreview(id, name, btn) {
   try {
     const r = await tryApi(api('POST', `/api/preview/attachment/${id}`), 'Aperçu de l\'archive');
     if (!r) return;
-    S.preview = { url: r.url, name: r.entry || name, count: r.files?.length || 1, archive: name };
+    S.preview = { url: r.url, name: r.entry || name, count: r.files?.length || 1, archive: name,
+      notes: r.notes || [] };
     if ($('.chat')) renderView();
     else openPreviewFullscreen();
   } finally {

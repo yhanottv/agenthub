@@ -398,7 +398,7 @@ async function attemptStream({ provider, model, headers, body, onDelta, onReason
     if (signal?.aborted) return out({ aborted: true });
     // A connection that never opened is the textbook case worth retrying.
     if (timedOut) {
-      return out({ error: `${provider.label} n'a pas répondu en ${Math.round(CONNECT_TIMEOUT_MS / 1000)} s.`, retryable: true });
+      return out({ error: `${provider.label} n'a pas répondu en ${Math.round(CONNECT_TIMEOUT_MS / 1000)} s pour « ${model} ». Ce service met parfois un modèle en file d'attente : essaie un autre modèle.`, retryable: true });
     }
     return out({ error: `${provider.label} — ${describeNetworkError(err, provider.base_url)}`, retryable: true });
   }
