@@ -980,8 +980,25 @@ button.agent-card:hover { border-color: var(--accent); transform: translateY(-1p
    couleur du texte, la distinction vert/rouge n'a d'intérêt qu'à la fin. */
 .codeblock.coding .code-add, .codeblock.coding .code-del { color: inherit; }
 
+/* Le pli du bloc et ses actions vivent sur la meme ligne : imbriquer des
+   boutons dans le bouton de pliage serait invalide et injouable au clavier. */
+.code-top { display: flex; align-items: center; }
+.code-acts { display: flex; align-items: center; gap: 2px; padding-right: 6px; flex: none; }
+.code-act {
+  padding: 4px 8px; border-radius: var(--r-xs); font-size: 11px; font-weight: 600;
+  color: var(--muted); white-space: nowrap;
+  transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+}
+.code-act:hover { background: var(--line-soft); color: var(--text); }
+.code-act:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+@media (max-width: 620px) {
+  /* Sur un ecran etroit, trois libelles poussent le compteur hors du bloc. */
+  .code-acts { gap: 0; }
+  .code-act { padding: 4px 6px; font-size: 10.5px; }
+}
+
 .code-head {
-  display: flex; align-items: center; gap: var(--sp-2); width: 100%;
+  display: flex; align-items: center; gap: var(--sp-2); flex: 1; min-width: 0;
   padding: 9px var(--sp-3); text-align: left;
   color: var(--text-2); font-size: var(--fs-md);
   transition: background var(--fast) var(--ease);
@@ -2055,6 +2072,27 @@ select:disabled {
 .lightbox-x:hover { background: rgba(255, 255, 255, .16); color: #fff; }
 .lightbox-x:focus-visible { outline: 2px solid #8fa8ff; outline-offset: 2px; }
 body.no-scroll { overflow: hidden; }
+
+/* --- previsualisation d'une page produite par un agent --- */
+.preview-wrap {
+  position: fixed; inset: 0; z-index: 95; display: flex; flex-direction: column;
+  background: var(--bg);
+  animation: fade var(--mid) var(--ease);
+}
+.preview-bar {
+  display: flex; align-items: center; gap: var(--sp-3);
+  padding: 10px var(--sp-4); flex: none;
+  background: var(--surface); border-bottom: 1px solid var(--line);
+}
+.preview-title { font-weight: 650; font-size: var(--fs-base); }
+.preview-note { flex: 1; min-width: 0; font-size: 11.5px; color: var(--muted-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Fond blanc impose : une page ecrite sans fond serait illisible en theme
+   sombre, alors qu'elle s'affichera sur blanc partout ailleurs. */
+.preview-frame { flex: 1; width: 100%; border: 0; background: #fff; }
+@media (max-width: 620px) {
+  .preview-note { display: none; }
+}
 
 /* --- dictee --- */
 #mic-btn.recording { color: var(--alert); }

@@ -742,6 +742,16 @@ const TRANSCRIBE_CANDIDATES = [
   'mistralai/voxtral-small-24b-2507',
 ];
 
+/**
+ * Services dont la transcription est gratuite dans un quota d'usage courant.
+ *
+ * Groq donne Whisper large v3 sans facturer l'audio ; c'est la seule voie
+ * réellement gratuite parmi les services compatibles OpenAI, et une clé s'y crée
+ * en une minute. La détection les essaie donc en premier : à qualité comparable,
+ * personne ne veut payer la dictée à la seconde.
+ */
+const FREE_TRANSCRIBERS = new Set(['groq']);
+
 /** Le service et le modèle choisis pour la transcription, s'ils sont utilisables. */
 export function transcribeProvider() {
   const id = Settings.get('transcribe_provider', '');
@@ -752,7 +762,15 @@ export function transcribeProvider() {
   if (!usable(provider)) {
     return { provider: null, model: '', reason: `le service ${provider.label} n'est pas utilisable (clé ou URL manquante)` };
   }
-  return { provider, model, reason: '' };
+  return { provider, model, reason: '', free: FREE_TRANSCRIBERS.has(provider.id) };
+}
+
+/** Les services gratuits que l'utilisateur n'a pas encore branchés. */
+export function freeTranscribeOptions() {
+  const have = new Set(Providers.all().filter(usable).map((p) => p.id));
+  return PRESETS
+    .filter((p) => FREE_TRANSCRIBERS.has(p.id) && !have.has(p.id))
+    .map((p) => ({ id: p.id, label: p.label }));
 }
 
 async function postAudio({ provider, model, buffer, mime, filename, language, signal }) {
@@ -862,8 +880,14 @@ export async function findTranscriber({ onProgress = () => {} } = {}) {
   const tried = [];
   const audio = toneWav();
 
-  for (const provider of Providers.all()) {
-    if (!usable(provider)) continue;
+  // Le gratuit d'abord : l'ordre de la liste des fournisseurs sert à autre chose,
+  // et laisser gagner un service payant alors qu'un gratuit répond serait un
+  // choix pris à la place de l'utilisateur, sans le lui dire.
+  const ordered = Providers.all()
+    .filter(usable)
+    .sort((a, b) => (FREE_TRANSCRIBERS.has(b.id) ? 1 : 0) - (FREE_TRANSCRIBERS.has(a.id) ? 1 : 0));
+
+  for (const provider of ordered) {
     for (const model of TRANSCRIBE_CANDIDATES) {
       onProgress(`${provider.label} · ${model}`);
       const r = await postAudio({
@@ -872,8 +896,9 @@ export async function findTranscriber({ onProgress = () => {} } = {}) {
       if (r.status === 200) {
         Settings.set('transcribe_provider', provider.id);
         Settings.set('transcribe_model', model);
-        console.log(`Transcription : ${provider.label} répond avec « ${model} ».`);
-        return { ok: true, provider: provider.id, label: provider.label, model, tried };
+        const free = FREE_TRANSCRIBERS.has(provider.id);
+        console.log(`Transcription : ${provider.label} répond avec « ${model} »${free ? ' (gratuit)' : ''}.`);
+        return { ok: true, provider: provider.id, label: provider.label, model, free, tried };
       }
       tried.push({ provider: provider.id, model, status: r.status, note: r.netError || '' });
       // Un 401 ou un 402 ne se corrige pas en changeant de modèle : la clé ou le

@@ -297,7 +297,7 @@ export class Orchestrator {
             // des dépôts abandonnés l'emporterait au bout de six heures.
             messageId: msg.id,
             signal: ctx.signal,
-            onImage: (a) => this.broadcast({
+            onFile: (a) => this.broadcast({
               type: 'message.attachment',
               id: msg.id,
               channelId: channel.id,

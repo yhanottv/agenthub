@@ -4230,16 +4230,28 @@ function initTranscribePanel(v) {
   // traduisible, au lieu d'un assemblage à moitié français.
   const show = (info) => {
     if (info?.ready) {
-      state.innerHTML = '<span>Transcription en place.</span> '
-        + `<code>${escapeHtml(info.label || info.provider)} · ${escapeHtml(info.model)}</code>`;
+      state.innerHTML = `<span>${info.free ? 'Transcription en place, et gratuite.' : 'Transcription en place.'}</span> `
+        + `<code>${escapeHtml(info.label || info.provider)} · ${escapeHtml(info.model)}</code>`
+        + (info.free ? '' : freeHint(info.freeOptions));
       btn.textContent = 'Chercher à nouveau';
     } else {
       const detail = info?.reason && info.reason !== 'non configuré' ? info.reason : '';
       state.innerHTML = '<span>Aucun service de transcription configuré.</span>'
-        + (detail ? ` <code>${escapeHtml(detail)}</code>` : '');
+        + (detail ? ` <code>${escapeHtml(detail)}</code>` : '')
+        + freeHint(info?.freeOptions);
       btn.textContent = 'Chercher un service de transcription';
     }
     window.I18N?.applyLang(state);
+  };
+
+  // Payer la dictée à la seconde quand une clé gratuite existe est un choix, pas
+  // une fatalité : encore faut-il savoir que l'autre voie existe.
+  const freeHint = (options) => {
+    if (!options?.length) return '';
+    const noms = options.map((o) => o.label).join(', ');
+    return '<br><span>Une clé gratuite transcrit sans frais :</span> '
+      + `<code>${escapeHtml(noms)}</code> `
+      + '<span>ajoute ce service dans Fournisseurs de modèles, puis relance la recherche.</span>';
   };
 
   tryApi(api('GET', '/api/transcribe'), 'Transcription').then((info) => info && show(info));
@@ -4639,6 +4651,133 @@ function openLightbox(id, name) {
 }
 function closeLightbox() { if (lightboxClose) lightboxClose(); }
 
+// ---- code produit par un agent ---------------------------------------------
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast('Code copié.', { kind: 'success' });
+  } catch {
+    toast('Copie refusée par le navigateur.', { kind: 'warn' });
+  }
+}
+
+/**
+ * Enregistre le bloc sur la machine, sans passer par le serveur.
+ *
+ * Le nom vient du langage annoncé, et d'un nom de fichier trouvé dans les
+ * premières lignes quand il y en a un : les modèles écrivent souvent
+ * « // src/jeu.js » en tête, et c'est un meilleur nom que « code-3.js ».
+ */
+function downloadCode(block, code) {
+  const lang = block?.dataset.lang || '';
+  const ext = CODE_EXT[lang] || 'txt';
+  const declared = code.slice(0, 400).match(/^[ \t]*(?:\/\/|#|<!--|\/\*)[ \t]*([\w.\-/]+\.[a-z0-9]{1,6})/im);
+  const guessed = declared?.[1]?.split('/').pop();
+  const name = guessed || (ext === 'Dockerfile' ? 'Dockerfile' : `code-${Date.now().toString(36).slice(-4)}.${ext}`);
+
+  const url = URL.createObjectURL(new Blob([code], { type: 'text/plain;charset=utf-8' }));
+  const a = el('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Révoquer trop tôt annule le téléchargement dans certains navigateurs.
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+  toast(`« ${name} » téléchargé.`, { kind: 'success' });
+}
+
+/**
+ * Assemble la page à prévisualiser.
+ *
+ * Un agent répond souvent en trois blocs — la page, la feuille de style, le
+ * script. Prévisualiser le premier seul donnerait une page nue, alors que
+ * l'intention était évidemment de les assembler. On injecte donc les blocs CSS
+ * et JS voisins quand la page n'en porte pas déjà.
+ */
+function assemblePage(block, code) {
+  const scope = block.closest('.msg-content');
+  if (!scope) return code;
+
+  const grab = (langs) => [...scope.querySelectorAll('.codeblock')]
+    .filter((b) => b !== block && langs.includes(b.dataset.lang || ''))
+    .map((b) => b.querySelector('pre code')?.textContent || '')
+    .filter((t) => t.trim());
+
+  let html = code;
+  if (!/<style[\s>]/i.test(html)) {
+    const css = grab(['css', 'scss']);
+    if (css.length) html = injectBefore(html, '</head>', `<style>\n${css.join('\n\n')}\n</style>\n`);
+  }
+  if (!/<script[\s>]/i.test(html)) {
+    const js = grab(['js', 'javascript', 'mjs']);
+    if (js.length) html = injectBefore(html, '</body>', `<script>\n${js.join('\n\n')}\n</script>\n`);
+  }
+  return html;
+}
+
+/** Insère avant une balise fermante, ou à la fin si elle n'existe pas. */
+function injectBefore(html, closing, snippet) {
+  const i = html.toLowerCase().lastIndexOf(closing);
+  return i === -1 ? html + '\n' + snippet : html.slice(0, i) + snippet + html.slice(i);
+}
+
+let previewClose = null;
+
+/**
+ * Ouvre la page dans une iframe cloisonnée.
+ *
+ * Le code vient d'un modèle : il est exécuté sans `allow-same-origin`, donc dans
+ * une origine opaque qui ne voit ni notre cookie de session ni notre DOM, et le
+ * serveur lui sert une politique qui lui interdit tout accès réseau. Ni sortie
+ * de l'iframe, ni navigation de la page parente.
+ */
+async function openCodePreview(block, code) {
+  const isSvg = (block?.dataset.lang || '') === 'svg';
+  const page = isSvg
+    ? `<!doctype html><meta charset="utf-8"><style>html,body{margin:0;height:100%;display:grid;place-items:center;background:#fff}svg{max-width:100%;max-height:100%}</style>${code}`
+    : assemblePage(block, code);
+
+  const r = await tryApi(api('POST', '/api/preview', { html: page }), 'Prévisualisation');
+  if (!r) return;
+
+  closeCodePreview();
+  const box = el('div', 'preview-wrap');
+  box.setAttribute('role', 'dialog');
+  box.setAttribute('aria-modal', 'true');
+  box.setAttribute('aria-label', 'Prévisualisation');
+  box.innerHTML = `
+    <div class="preview-bar">
+      <span class="preview-title">Prévisualisation</span>
+      <span class="preview-note">exécutée hors ligne, isolée de ton compte</span>
+      <button type="button" class="btn ghost" data-preview-reload>Relancer</button>
+      <button type="button" class="btn ghost" data-preview-x>Fermer</button>
+    </div>
+    <iframe class="preview-frame" src="${escapeAttr(r.url)}"
+            sandbox="allow-scripts allow-pointer-lock allow-modals"
+            title="Page produite par un agent"></iframe>`;
+  document.body.appendChild(box);
+  document.body.classList.add('no-scroll');
+
+  const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); closeCodePreview(); } };
+  document.addEventListener('keydown', onKey, true);
+  box.querySelector('[data-preview-x]').onclick = closeCodePreview;
+  box.querySelector('[data-preview-reload]').onclick = () => {
+    const f = box.querySelector('.preview-frame');
+    f.src = f.src;                      // un jeu se relance sans rouvrir la fenêtre
+  };
+  box.querySelector('[data-preview-x]').focus();
+
+  previewClose = () => {
+    document.removeEventListener('keydown', onKey, true);
+    box.remove();
+    document.body.classList.remove('no-scroll');
+    previewClose = null;
+  };
+}
+function closeCodePreview() { if (previewClose) previewClose(); }
+
 document.addEventListener('click', (e) => {
   const btn = e.target.closest('[data-lightbox]');
   if (btn) openLightbox(btn.dataset.lightbox, btn.dataset.name);
@@ -4801,6 +4940,17 @@ function wireMessageActions(box) {
       head.setAttribute('aria-expanded', String(open));
       const label = head.querySelector('.code-open');
       if (label) label.textContent = open ? 'Masquer' : 'Afficher';
+      return;
+    }
+
+    // Copier / télécharger / prévisualiser le code d'un bloc.
+    const act = e.target.closest('[data-code-copy], [data-code-download], [data-code-preview]');
+    if (act) {
+      const block = act.closest('.codeblock');
+      const code = block?.querySelector('pre code')?.textContent ?? '';
+      if (act.hasAttribute('data-code-copy')) copyText(code);
+      else if (act.hasAttribute('data-code-download')) downloadCode(block, code);
+      else openCodePreview(block, code);
       return;
     }
 
@@ -5185,17 +5335,53 @@ function renderCodeBlock(fence) {
   }
 
   const label = lang ? lang.toLowerCase() : 'code';
-  return `<div class="codeblock">
-    <button class="code-head" type="button" data-code-toggle aria-expanded="false">
-      <span class="code-caret" aria-hidden="true">${IC.chev}</span>
-      <span class="code-lang">${escapeHtml(label)}</span>
-      <span class="code-counts">
-        <span class="code-add">+${add}</span>${del ? `<span class="code-del">−${del}</span>` : ''}
-      </span>
-      <span class="code-open">Afficher</span>
-    </button>
+  return `<div class="codeblock" data-lang="${escapeAttr(label)}">
+    <div class="code-top">
+      <button class="code-head" type="button" data-code-toggle aria-expanded="false">
+        <span class="code-caret" aria-hidden="true">${IC.chev}</span>
+        <span class="code-lang">${escapeHtml(label)}</span>
+        <span class="code-counts">
+          <span class="code-add">+${add}</span>${del ? `<span class="code-del">−${del}</span>` : ''}
+        </span>
+        <span class="code-open">Afficher</span>
+      </button>
+      <div class="code-acts">
+        ${isPreviewable(lang, code) ? '<button class="code-act" type="button" data-code-preview>Prévisualiser</button>' : ''}
+        <button class="code-act" type="button" data-code-copy>Copier</button>
+        <button class="code-act" type="button" data-code-download>Télécharger</button>
+      </div>
+    </div>
     <div class="code-body"><div class="code-inner"><pre><code>${escapeHtml(code)}</code></pre></div></div>
   </div>`;
+}
+
+// Extension déduite du langage annoncé : c'est le nom du fichier qu'on
+// téléchargera, et « code.txt » pour un site web serait inutilisable.
+const CODE_EXT = {
+  html: 'html', htm: 'html', xml: 'xml', svg: 'svg',
+  css: 'css', scss: 'scss',
+  js: 'js', javascript: 'js', jsx: 'jsx', mjs: 'mjs',
+  ts: 'ts', typescript: 'ts', tsx: 'tsx',
+  json: 'json', yaml: 'yml', yml: 'yml', toml: 'toml', ini: 'ini',
+  py: 'py', python: 'py', rb: 'rb', ruby: 'rb', php: 'php',
+  java: 'java', kt: 'kt', go: 'go', rs: 'rs', rust: 'rs',
+  c: 'c', h: 'h', cpp: 'cpp', 'c++': 'cpp', cs: 'cs',
+  sh: 'sh', bash: 'sh', zsh: 'sh', ps1: 'ps1', powershell: 'ps1',
+  sql: 'sql', md: 'md', markdown: 'md', dockerfile: 'Dockerfile',
+  vue: 'vue', svelte: 'svelte', lua: 'lua', swift: 'swift', dart: 'dart',
+};
+
+/**
+ * Une page complète, donc quelque chose qui peut tourner seul.
+ *
+ * Un fragment de HTML — trois balises pour illustrer une explication — ne
+ * mérite pas un bouton qui promet un aperçu : on exige une vraie page.
+ */
+function isPreviewable(lang, code) {
+  const l = String(lang || '').toLowerCase();
+  if (!['html', 'htm', 'svg'].includes(l)) return false;
+  if (l === 'svg') return /<svg[\s>]/i.test(code);
+  return /<html[\s>]|<!doctype\s+html|<body[\s>]/i.test(code);
 }
 
 // ============================ markdown ======================================

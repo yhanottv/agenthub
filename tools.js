@@ -18,6 +18,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { Notes, NoteProposals, Search, Attachments, Usage } from './db.js';
 import { generateImage, imageProvider } from './llm.js';
+import { makeZip, prepareEntries, MAX_ENTRIES, MAX_TOTAL_BYTES } from './archive.js';
 
 const UPLOAD_DIR = path.join(process.env.DATA_DIR || './data', 'uploads');
 
@@ -405,6 +406,36 @@ export const TOOL_DEFS = [
   {
     type: 'function',
     function: {
+      name: 'creer_archive',
+      description: "Rassemble plusieurs fichiers dans une archive .zip et la publie dans la conversation, "
+        + "prête à télécharger. À utiliser dès qu'un projet dépasse un ou deux fichiers : site web, "
+        + "jeu, script avec ses dépendances, dossier de documentation. Écris le contenu complet de "
+        + "chaque fichier — pas un résumé, pas un extrait. "
+        + `Limites : ${MAX_ENTRIES} fichiers, ${Math.round(MAX_TOTAL_BYTES / 1048576)} Mo au total.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          nom: { type: 'string', description: "Nom du projet, qui devient le nom de l'archive. Ex : « jeu-serpent »." },
+          fichiers: {
+            type: 'array',
+            description: 'Les fichiers du projet, avec leur arborescence.',
+            items: {
+              type: 'object',
+              properties: {
+                chemin: { type: 'string', description: 'Chemin relatif, ex : « index.html » ou « src/jeu.js ».' },
+                contenu: { type: 'string', description: 'Contenu complet du fichier.' },
+              },
+              required: ['chemin', 'contenu'],
+            },
+          },
+        },
+        required: ['nom', 'fichiers'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'lire_piece_jointe',
       description: "Lit le contenu texte d'un fichier déposé dans ce salon.",
       parameters: {
@@ -435,6 +466,7 @@ export const TOOL_LABELS = {
   proposer_note: 'propose une note',
   calculer: 'calcule',
   generer_image: 'dessine',
+  creer_archive: 'prépare une archive',
   lire_piece_jointe: 'lit un fichier',
 };
 
@@ -612,13 +644,57 @@ export async function runTool(name, rawArgs, ctx = {}) {
           bytes: r.buffer.length,
           path: diskPath,
         });
-        ctx.onImage?.(a);
+        ctx.onFile?.(a);
 
         return {
           ok: true,
           text: `Image créée et publiée dans la conversation (${Math.round(a.bytes / 1024)} Ko).`
             + `${r.revised ? ` Le service a reformulé la demande en : « ${r.revised.slice(0, 300)} ».` : ''}`
             + ' Elle est déjà visible : ne la décris pas à nouveau, commente-la si besoin.',
+        };
+      }
+
+      case 'creer_archive': {
+        if (!ctx.channel?.id) return { ok: false, text: 'Aucun salon en contexte.' };
+
+        const { kept, skipped, bytes } = prepareEntries(args.fichiers);
+        if (!kept.length) {
+          return {
+            ok: false,
+            text: 'Aucun fichier utilisable dans cette archive'
+              + (skipped.length ? ` : ${skipped.slice(0, 6).join(', ')}.` : '.')
+              + ' Donne pour chacun un chemin relatif et son contenu complet.',
+          };
+        }
+
+        const zip = makeZip(kept);
+        // Le fichier est écrit sous un identifiant que nous choisissons : le nom
+        // proposé par le modèle sert d'étiquette, jamais de chemin sur le disque.
+        const id = 'at_' + crypto.randomBytes(8).toString('hex');
+        fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+        const diskPath = path.join(UPLOAD_DIR, id);
+        fs.writeFileSync(diskPath, zip);
+
+        const a = Attachments.create({
+          id,
+          channel_id: ctx.channel.id,
+          message_id: ctx.messageId || null,
+          name: `${slugName(args.nom || 'projet')}.zip`,
+          mime: 'application/zip',
+          bytes: zip.length,
+          path: diskPath,
+        });
+        ctx.onFile?.(a);
+
+        const arbo = kept.map((e) => e.path).slice(0, 40).join(', ');
+        return {
+          ok: true,
+          text: `Archive « ${a.name} » publiée dans la conversation : ${kept.length} fichier(s), `
+            + `${Math.round(bytes / 1024)} Ko décompressés, ${Math.round(a.bytes / 1024)} Ko compressés.\n`
+            + `Contenu : ${arbo}${kept.length > 40 ? ', …' : ''}.`
+            + (skipped.length ? `\nÉcarté : ${skipped.slice(0, 6).join(', ')}.` : '')
+            + '\nElle est déjà téléchargeable : ne recopie pas les fichiers dans ta réponse, '
+            + 'explique seulement comment s\'en servir.',
         };
       }
 

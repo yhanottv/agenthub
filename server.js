@@ -19,7 +19,7 @@ import {
 } from './hermes.js';
 import {
   providerCatalog, probeProvider, seedProvidersFromEnv, streamChat, PRESETS,
-  transcribeAudio, transcribeProvider, findTranscriber,
+  transcribeAudio, transcribeProvider, findTranscriber, freeTranscribeOptions,
 } from './llm.js';
 import { Orchestrator } from './orchestrator.js';
 
@@ -109,6 +109,9 @@ app.use((_req, res, next) => {
     'Content-Security-Policy',
     "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
     "img-src 'self' data:; connect-src 'self' ws: wss:; font-src 'self'; " +
+    // La prévisualisation d'une page produite par un agent vit dans une iframe
+    // servie par nous ; sans `frame-src`, `default-src` la refuserait.
+    "frame-src 'self'; " +
     "object-src 'none'; base-uri 'self'; frame-ancestors 'none';",
   );
   next();
@@ -1152,6 +1155,69 @@ app.post('/api/channels/:id/attachments',
     res.json({ id: a.id, name: a.name, mime: a.mime, bytes: a.bytes, readable: Boolean(a.text) });
   });
 
+// ---- prévisualisation de page ----------------------------------------------
+/*
+ * Exécuter le HTML qu'un agent vient d'écrire, sans lui ouvrir la maison.
+ *
+ * Pourquoi passer par le serveur alors que le code est déjà dans le navigateur :
+ * une iframe `srcdoc` ou `blob:` hérite de la politique de la page parente, où
+ * `script-src 'self'` interdit tout script en ligne. Le jeu ne démarrerait pas.
+ * On sert donc la page depuis une URL à nous, avec sa propre politique.
+ *
+ * Ce qui la rend sûre, dans cet ordre :
+ *
+ * - l'iframe est en `sandbox` sans `allow-same-origin`, donc la page tourne dans
+ *   une origine opaque : pas d'accès au cookie de session, ni au DOM parent ;
+ * - sa politique est `default-src 'none'` avec les scripts en ligne autorisés :
+ *   le code fourni s'exécute, mais ne peut joindre aucun réseau, donc ni notre
+ *   API ni l'extérieur ;
+ * - rien n'est écrit sur le disque et tout expire, parce qu'une prévisualisation
+ *   n'est pas un document.
+ */
+const PREVIEW_TTL_MS = 30 * 60 * 1000;
+const MAX_PREVIEWS = 24;
+const MAX_PREVIEW_BYTES = 2 * 1024 * 1024;
+const previews = new Map();
+
+const dropStalePreviews = () => {
+  const cutoff = Date.now() - PREVIEW_TTL_MS;
+  for (const [id, p] of previews) if (p.at < cutoff) previews.delete(id);
+  // Une fenêtre laissée ouverte ne doit pas faire grossir la mémoire sans fin :
+  // au-delà du plafond, les plus anciennes partent (Map itère dans l'ordre
+  // d'insertion, donc la première est la plus ancienne).
+  while (previews.size > MAX_PREVIEWS) previews.delete(previews.keys().next().value);
+};
+
+app.post('/api/preview', requireAuth, (req, res) => {
+  const html = String(req.body?.html || '');
+  if (!html.trim()) return res.status(400).json({ error: 'Rien à prévisualiser.' });
+  if (Buffer.byteLength(html, 'utf8') > MAX_PREVIEW_BYTES) {
+    return res.status(413).json({ error: 'Page trop lourde pour la prévisualisation (2 Mo maximum).' });
+  }
+  const id = 'pv_' + crypto.randomBytes(9).toString('hex');
+  previews.set(id, { html, at: Date.now() });
+  dropStalePreviews();
+  res.json({ id, url: `/api/preview/${id}`, expiresIn: PREVIEW_TTL_MS });
+});
+
+app.get('/api/preview/:id', requireAuth, (req, res) => {
+  dropStalePreviews();
+  const p = previews.get(req.params.id);
+  if (!p) return res.status(404).type('html').send('<p>Prévisualisation expirée.</p>');
+
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  // L'en-tête global est DENY : il faut le desserrer ici, sinon notre propre
+  // iframe se ferait refuser par notre propre page.
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Content-Security-Policy',
+    "default-src 'none'; "
+    + "script-src 'unsafe-inline' blob:; style-src 'unsafe-inline'; "
+    + 'img-src data: blob:; media-src data: blob:; font-src data:; '
+    + "connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self';");
+  res.send(p.html);
+});
+
 // ---- dictée ----------------------------------------------------------------
 // L'audio traverse le serveur sans être stocké : il part vers le service de
 // transcription, et le texte revient. Rien à nettoyer, rien qui traîne.
@@ -1159,8 +1225,13 @@ app.post('/api/channels/:id/attachments',
 const MAX_AUDIO_UPLOAD = 24 * 1024 * 1024;
 
 app.get('/api/transcribe', requireAuth, (_req, res) => {
-  const { provider, model, reason } = transcribeProvider();
-  res.json({ ready: Boolean(provider), provider: provider?.id || '', label: provider?.label || '', model, reason });
+  const { provider, model, reason, free } = transcribeProvider();
+  res.json({
+    ready: Boolean(provider), provider: provider?.id || '', label: provider?.label || '',
+    model, reason, free: Boolean(free),
+    // Ce qui reste à brancher pour ne plus payer la dictée.
+    freeOptions: freeTranscribeOptions(),
+  });
 });
 
 /** Cherche un service capable de transcrire et retient le premier qui répond. */
