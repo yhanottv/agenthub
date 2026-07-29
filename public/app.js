@@ -2228,7 +2228,27 @@ function openProviderModal(provider, preset, onSaved) {
 const slugify = (s) => String(s || '').toLowerCase().trim().replace(/[^a-z0-9_-]/g, '-').slice(0, 40);
 
 // ---- Assistant de première configuration -----------------------------------
-const WIZ_STEPS = ['Bienvenue', 'Hermes', 'Services', 'Modèle'];
+const WIZ_STEPS = ['Bienvenue', 'Hermes', 'Services', 'Modèle', 'Images'];
+
+// Services dont on sait qu'ils servent des modèles d'images, et par quel nom
+// commencer. Une aide au démarrage, pas une liste fermée : le champ reste libre.
+const IMAGE_SUGGESTIONS = [
+  {
+    id: 'openrouter', label: 'OpenRouter', model: 'google/gemini-2.5-flash-image',
+    why: 'Une seule clé pour le texte et les images. C\'est la voie que je recommande.',
+    price: '~0,04 € l\'image',
+  },
+  {
+    id: 'gemini', label: 'Google Gemini', model: 'gemini-2.5-flash-image',
+    why: 'Clé gratuite sur Google AI Studio, avec un quota de départ confortable.',
+    price: 'gratuit puis facturé',
+  },
+  {
+    id: 'openai', label: 'OpenAI', model: 'gpt-image-1',
+    why: 'Si tu as déjà une clé OpenAI.',
+    price: '~0,04 € l\'image',
+  },
+];
 
 async function checkSetup(force = false) {
   const s = await tryApi(api('GET', '/api/setup'), 'Vérification de la configuration');
@@ -2262,7 +2282,7 @@ function renderWizard() {
   const step = S.wizStep;
   const usable = (S.providers || []).filter((p) => p.enabled);
 
-  const body = [wizWelcome, wizHermes, wizServices, wizModel][step](s, usable);
+  const body = [wizWelcome, wizHermes, wizServices, wizModel, wizImages][step](s, usable);
 
   w.innerHTML = `
     <div class="wiz-card">
@@ -2298,14 +2318,21 @@ function wizWelcome(s) {
     nextLabel: 'Commencer',
     html: `
       <h2 class="wiz-title">Bienvenue dans AgentHub.</h2>
-      <p class="wiz-lede">On va vérifier ton installation et connecter au moins un service
-        de modèles. Trois minutes, et ton organisation d'agents est prête à travailler.</p>
+      <p class="wiz-lede">Quatre étapes pour que ton organisation d'agents se mette au
+        travail. Compte trois minutes.</p>
       <ul class="wiz-list">
-        <li><strong>Hermes</strong> — on vérifie qu'il répond et ce qu'il propose.</li>
-        <li><strong>Services</strong> — AgentRouter, OpenRouter, OpenAI, Ollama… tu choisis.</li>
-        <li><strong>Modèle</strong> — celui que tes agents utiliseront par défaut.</li>
+        <li><span class="wiz-li-ic">1</span><div><strong>Hermes</strong> — on vérifie qu'il répond et ce qu'il propose.</div></li>
+        <li><span class="wiz-li-ic">2</span><div><strong>Services</strong> — AgentRouter, OpenRouter, Gemini, OpenAI, Ollama… tu choisis.</div></li>
+        <li><span class="wiz-li-ic">3</span><div><strong>Modèle</strong> — celui que tes agents utiliseront pour écrire.</div></li>
+        <li><span class="wiz-li-ic">4</span><div><strong>Images</strong> — le modèle qui dessinera, si tu veux que tes agents illustrent.</div></li>
       </ul>
-      ${s.agents ? `<p class="wiz-note">Ton organisation compte déjà ${s.agents} agent${s.agents > 1 ? 's' : ''} et ${s.channels} salon${s.channels > 1 ? 's' : ''}.</p>` : ''}`,
+      <p class="wiz-note">
+        <strong>Ce qu'il te faut :</strong> au moins une clé API. Une seule clé
+        <strong>OpenRouter</strong> couvre à la fois le texte et les images — c'est le plus
+        simple pour démarrer. Sinon, une clé <strong>Google Gemini</strong> (gratuite sur AI
+        Studio) fait aussi les deux.
+      </p>
+      ${s.agents ? `<p class="wiz-note muted-note">Ton organisation compte déjà ${s.agents} agent${s.agents > 1 ? 's' : ''} et ${s.channels} salon${s.channels > 1 ? 's' : ''}.</p>` : ''}`,
   };
 }
 
@@ -2417,7 +2444,7 @@ function wizModel(s, usable) {
   const chosen = S.wizProvider && usable.find((p) => p.id === S.wizProvider) ? S.wizProvider : (usable[0] || {}).id;
   const prov = usable.find((p) => p.id === chosen);
   return {
-    nextLabel: 'Terminer',
+    nextLabel: 'Suivant',
     nextDisabled: !prov,
     html: `
       <h2 class="wiz-title">Le modèle par défaut</h2>
@@ -2452,6 +2479,116 @@ function wizModel(s, usable) {
       }
       toast(`Modèle appliqué à ${S.agents.length} agent${S.agents.length > 1 ? 's' : ''}.`, { kind: 'success' });
       return true;
+    },
+  };
+}
+
+/**
+ * Dernière étape : le modèle qui dessine.
+ *
+ * C'est le point le plus opaque de l'installation — les services de texte ne
+ * servent pas forcément d'images, et rien dans un catalogue ne dit lesquels le
+ * font. On propose donc des couples service + modèle connus pour marcher,
+ * plutôt que de laisser deux champs vides devant l'utilisateur.
+ */
+function wizImages(s, usable) {
+  const current = S.settings.image_provider && S.settings.image_model
+    ? { id: S.settings.image_provider, model: S.settings.image_model } : null;
+  const connected = new Set(usable.map((p) => p.id));
+  const label = (id) => (S.providers || []).find((p) => p.id === id)?.label || id;
+
+  // Les modèles au nom évocateur trouvés chez les services déjà branchés.
+  const found = [];
+  for (const p of usable) {
+    for (const m of p.models) {
+      if (/image|dall|flux|imagen|nano-banana/i.test(m)) found.push({ id: p.id, label: p.label, model: m });
+    }
+  }
+
+  return {
+    nextLabel: 'Terminer',
+    html: `
+      <h2 class="wiz-title">Faire dessiner tes agents</h2>
+      <p class="wiz-lede">Si tu veux qu'ils produisent des illustrations, des logos ou des
+        maquettes dans les conversations, il leur faut un modèle d'image. C'est facultatif —
+        tout le reste fonctionne sans.</p>
+
+      ${current ? `
+        <div class="check-row good">
+          <span class="check-ic">✓</span>
+          <div class="check-main">
+            <div class="check-title">${escapeHtml(label(current.id))} · ${escapeHtml(current.model)}</div>
+            <div class="check-detail">Tes agents peuvent créer des images.</div>
+          </div>
+        </div>` : `
+        <div class="check-row warn">
+          <span class="check-ic">!</span>
+          <div class="check-main">
+            <div class="check-title">Aucun modèle d'image</div>
+            <div class="check-detail">L'outil de dessin restera indisponible, et tes agents
+              le diront au lieu de promettre une image qui n'arrivera pas.</div>
+          </div>
+        </div>`}
+
+      ${found.length ? `
+        <div class="wiz-sub">Trouvé chez tes services déjà connectés</div>
+        <div class="pick-grid">
+          ${found.slice(0, 6).map((f) => `
+            <button class="pick-card ${current && current.id === f.id && current.model === f.model ? 'on' : ''}"
+                    type="button" data-pick="${escapeAttr(f.id)}" data-model="${escapeAttr(f.model)}">
+              <span class="pick-name">${escapeHtml(f.model)}</span>
+              <span class="pick-why">chez ${escapeHtml(f.label)}</span>
+            </button>`).join('')}
+        </div>` : ''}
+
+      <div class="wiz-sub">${found.length ? 'Ou connecte un service dédié' : 'Choisis un service'}</div>
+      <div class="pick-grid">
+        ${IMAGE_SUGGESTIONS.map((sug) => `
+          <button class="pick-card ${connected.has(sug.id) ? '' : 'todo'}" type="button" data-sug="${escapeAttr(sug.id)}">
+            <span class="pick-name">${escapeHtml(sug.label)}
+              ${connected.has(sug.id) ? '<span class="pill done">connecté</span>' : '<span class="pill pending">clé requise</span>'}</span>
+            <span class="pick-why">${escapeHtml(sug.why)}</span>
+            <span class="pick-meta"><code>${escapeHtml(sug.model)}</code> · ${escapeHtml(sug.price)}</span>
+          </button>`).join('')}
+      </div>
+
+      <div class="wiz-help" style="margin-top:16px">
+        Tu peux revenir là-dessus n'importe quand dans <strong>Réglages → Images</strong>,
+        et changer de modèle sans rien casser.
+      </div>`,
+    wire: (w) => {
+      // Un modèle déjà disponible : un clic suffit.
+      $$('[data-pick]', w).forEach((b) => b.onclick = async () => {
+        const res = await tryApi(api('PUT', '/api/settings', {
+          image_provider: b.dataset.pick, image_model: b.dataset.model,
+        }), 'Enregistrement');
+        if (res) {
+          S.settings = res;
+          toast('Tes agents peuvent maintenant dessiner.', { kind: 'success' });
+          renderWizard();
+        }
+      });
+
+      // Un service à connecter : on ouvre sa fiche, puis on retient le modèle
+      // suggéré dès que la clé est acceptée.
+      $$('[data-sug]', w).forEach((b) => b.onclick = () => {
+        const sug = IMAGE_SUGGESTIONS.find((x) => x.id === b.dataset.sug);
+        const prov = (S.providers || []).find((p) => p.id === sug.id);
+        openProviderModal(prov, (S.presets || []).find((k) => k.id === sug.id), async (providers) => {
+          if (providers) S.providers = providers;
+          await checkSetupSilently();
+          const now = (S.providers || []).find((p) => p.id === sug.id);
+          if (now && now.enabled) {
+            const model = now.models.includes(sug.model) ? sug.model
+              : now.models.find((m) => /image|dall|flux|imagen/i.test(m)) || sug.model;
+            const res = await tryApi(api('PUT', '/api/settings', {
+              image_provider: sug.id, image_model: model,
+            }), 'Enregistrement');
+            if (res) S.settings = res;
+          }
+          renderWizard();
+        });
+      });
     },
   };
 }

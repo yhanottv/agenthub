@@ -41,7 +41,15 @@ export const PRESETS = [
   },
   {
     id: 'openai', label: 'OpenAI', base_url: 'https://api.openai.com/v1',
-    hint: 'Modèles GPT officiels.', needs_key: true,
+    hint: 'Modèles GPT officiels, et génération d\'images avec gpt-image-1.', needs_key: true,
+  },
+  {
+    // Google expose une façade compatible OpenAI devant l'API Gemini, ce qui
+    // permet de s'y brancher sans client dédié.
+    id: 'gemini', label: 'Google Gemini',
+    base_url: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    hint: 'Modèles Gemini, dont ceux qui dessinent. Clé gratuite sur Google AI Studio.',
+    needs_key: true,
   },
   {
     id: 'groq', label: 'Groq', base_url: 'https://api.groq.com/openai/v1',

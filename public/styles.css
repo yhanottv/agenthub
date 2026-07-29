@@ -1192,12 +1192,63 @@ button.agent-card:hover { border-color: var(--accent); transform: translateY(-1p
 .wiz-steps li.done { color: var(--muted); }
 .wiz-steps li.done .wiz-num { background: var(--accent-soft); color: var(--accent-ink); }
 
-.wiz-body { padding: var(--sp-5); overflow-y: auto; }
+.wiz-body { padding: var(--sp-5); overflow-y: auto; animation: wiz-in .24s var(--ease-out) both; }
+@keyframes wiz-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .wiz-body { animation: none; }
+  .pick-card:hover { transform: none; }
+}
 .wiz-title { font-size: 22px; font-weight: 700; letter-spacing: -.03em; margin: 0 0 var(--sp-2); }
 .wiz-lede { color: var(--muted); margin: 0 0 var(--sp-4); line-height: 1.65; max-width: 58ch; }
-.wiz-list { margin: 0; padding-left: 20px; color: var(--muted); line-height: 1.8; }
-.wiz-list strong { color: var(--text); }
-.wiz-note { margin: var(--sp-4) 0 0; font-size: var(--fs-md); color: var(--muted-2); }
+/* Une liste numerotee a la main plutot qu'un <ol> : la pastille doit etre
+   alignee sur la premiere ligne du texte, pas sur son milieu. */
+.wiz-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 11px; }
+.wiz-list li { display: flex; gap: 11px; align-items: flex-start; color: var(--muted); line-height: 1.6; }
+.wiz-list strong { color: var(--text); font-weight: 600; }
+.wiz-li-ic {
+  flex: none; width: 22px; height: 22px; border-radius: 50%;
+  display: grid; place-items: center; margin-top: 1px;
+  background: var(--accent-soft); color: var(--accent-ink);
+  font-size: var(--fs-sm); font-weight: 700;
+}
+
+.wiz-note {
+  margin: var(--sp-4) 0 0; padding: 12px var(--sp-4);
+  font-size: var(--fs-md); color: var(--text-2); line-height: 1.7;
+  background: var(--surface-2); border-left: 3px solid var(--accent);
+  border-radius: 0 var(--r-xs) var(--r-xs) 0;
+}
+.wiz-note strong { color: var(--text); }
+.wiz-note.muted-note {
+  background: transparent; border-left-color: var(--line);
+  color: var(--muted); padding: 6px 0 0 var(--sp-3);
+}
+
+.wiz-sub {
+  margin: var(--sp-5) 0 var(--sp-2); font-size: var(--fs-sm); color: var(--muted);
+  text-transform: uppercase; letter-spacing: .08em; font-weight: 600;
+}
+
+/* Cartes de choix : un service, un modele, une raison de le prendre. */
+.pick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: var(--sp-2); }
+.pick-card {
+  display: flex; flex-direction: column; gap: 5px; text-align: left;
+  padding: 13px var(--sp-4); cursor: pointer; font-family: inherit; color: inherit;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-sm);
+  transition: border-color var(--fast) var(--ease), background var(--fast) var(--ease),
+              transform var(--fast) var(--ease);
+}
+.pick-card:hover { border-color: var(--accent); transform: translateY(-1px); }
+.pick-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pick-card.on { border-color: var(--ok); background: var(--surface-2); }
+.pick-card.todo { border-style: dashed; }
+.pick-name {
+  display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+  font-weight: 600; font-size: var(--fs-base);
+}
+.pick-why { color: var(--muted); font-size: var(--fs-md); line-height: 1.55; }
+.pick-meta { color: var(--muted); font-size: var(--fs-xs); margin-top: auto; padding-top: 3px; }
+.pick-meta code { font-size: var(--fs-xs); }
 .wiz-help {
   margin-top: var(--sp-4); padding: var(--sp-3); border-radius: var(--r-sm);
   background: var(--gold-soft); color: var(--text-2); font-size: var(--fs-md); line-height: 1.65;
