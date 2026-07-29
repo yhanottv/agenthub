@@ -17,7 +17,10 @@ import {
   discover as discoverHermes, installHermes, installPlan, dockerStatus, connectToNetwork,
   diagnoseGateway, startGateway,
 } from './hermes.js';
-import { providerCatalog, probeProvider, seedProvidersFromEnv, streamChat, PRESETS } from './llm.js';
+import {
+  providerCatalog, probeProvider, seedProvidersFromEnv, streamChat, PRESETS,
+  transcribeAudio, transcribeProvider, findTranscriber,
+} from './llm.js';
 import { Orchestrator } from './orchestrator.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -609,6 +612,7 @@ app.put('/api/settings', requireAuth, (req, res) => {
     'owner_name', 'org_name', 'theme', 'daily_budget', 'tools_enabled',
     'notes_auto', 'notes_budget', 'context_budget',
     'image_provider', 'image_model', 'image_mode',
+    'transcribe_provider', 'transcribe_model',
   ];
   const FLAGS = ['tools_enabled', 'notes_auto'];
   for (const [k, v] of Object.entries(patch)) {
@@ -1146,6 +1150,46 @@ app.post('/api/channels/:id/attachments',
       text: isText ? buf.toString('utf8') : '',
     });
     res.json({ id: a.id, name: a.name, mime: a.mime, bytes: a.bytes, readable: Boolean(a.text) });
+  });
+
+// ---- dictée ----------------------------------------------------------------
+// L'audio traverse le serveur sans être stocké : il part vers le service de
+// transcription, et le texte revient. Rien à nettoyer, rien qui traîne.
+
+const MAX_AUDIO_UPLOAD = 24 * 1024 * 1024;
+
+app.get('/api/transcribe', requireAuth, (_req, res) => {
+  const { provider, model, reason } = transcribeProvider();
+  res.json({ ready: Boolean(provider), provider: provider?.id || '', label: provider?.label || '', model, reason });
+});
+
+/** Cherche un service capable de transcrire et retient le premier qui répond. */
+app.post('/api/transcribe/detect', requireAuth, async (_req, res) => {
+  const r = await findTranscriber({ onProgress: (m) => console.log(`  transcription : essai ${m}`) });
+  res.json(r);
+});
+
+app.post('/api/transcribe',
+  requireAuth,
+  express.raw({ type: '*/*', limit: MAX_AUDIO_UPLOAD }),
+  async (req, res) => {
+    const buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    if (!buffer.length) return res.status(400).json({ error: 'Enregistrement vide.' });
+
+    const mime = String(req.query.type || 'audio/webm').slice(0, 60);
+    const ext = (mime.split(';')[0].split('/')[1] || 'webm').replace(/[^a-z0-9]/gi, '') || 'webm';
+    const r = await transcribeAudio({
+      buffer, mime, filename: `dictee.${ext}`,
+      language: String(req.query.lang || 'fr').slice(0, 5),
+    });
+
+    if (!r.ok) return res.status(r.needsSetup ? 409 : 502).json({ error: r.error, needsSetup: r.needsSetup });
+
+    Usage.record({
+      agent_id: null, channel_id: null, provider: r.provider, model: r.model,
+      tokens_in: 0, tokens_out: 0, estimated: false, cost: r.cost,
+    });
+    res.json({ text: r.text, seconds: r.seconds });
   });
 
 /**

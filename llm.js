@@ -718,6 +718,172 @@ const usageOf = (payload) => {
   return { tokensIn: u.prompt_tokens || 0, tokensOut: u.completion_tokens || 0, estimated: false };
 };
 
+// ---- transcription ---------------------------------------------------------
+// La dictée passait par l'API vocale du navigateur, qui envoie l'audio au
+// service du navigateur : hors de notre portée, indisponible sur plusieurs
+// Chromium, et incapable de viser une entrée audio précise. Transcrire nous-même
+// supprime les trois problèmes d'un coup — et l'audio ne quitte le serveur que
+// vers le service que l'utilisateur a déjà choisi.
+
+const TRANSCRIBE_TIMEOUT_MS = Number(process.env.LLM_TRANSCRIBE_TIMEOUT_MS || 120000);
+const MAX_AUDIO_BYTES = 24 * 1024 * 1024;
+
+/**
+ * Les modèles de transcription ne sont pas toujours dans `/models` : `whisper-1`
+ * répond chez OpenRouter sans y figurer. Chercher dans le catalogue ne suffit
+ * donc pas — on essaie cette liste, du plus répandu au plus spécifique.
+ */
+const TRANSCRIBE_CANDIDATES = [
+  'whisper-1',
+  'whisper-large-v3',
+  'whisper-large-v3-turbo',
+  'gpt-4o-mini-transcribe',
+  'gpt-4o-transcribe',
+  'mistralai/voxtral-small-24b-2507',
+];
+
+/** Le service et le modèle choisis pour la transcription, s'ils sont utilisables. */
+export function transcribeProvider() {
+  const id = Settings.get('transcribe_provider', '');
+  const model = Settings.get('transcribe_model', '');
+  if (!id || !model) return { provider: null, model: '', reason: 'non configuré' };
+  const provider = Providers.get(id);
+  if (!provider) return { provider: null, model: '', reason: `le service « ${id} » n'existe plus` };
+  if (!usable(provider)) {
+    return { provider: null, model: '', reason: `le service ${provider.label} n'est pas utilisable (clé ou URL manquante)` };
+  }
+  return { provider, model, reason: '' };
+}
+
+async function postAudio({ provider, model, buffer, mime, filename, language, signal }) {
+  // Les en-têtes maison passent avant Authorization : un en-tête libre ne doit
+  // jamais pouvoir remplacer la clé.
+  const headers = { ...(provider.headers || {}), Accept: 'application/json' };
+  if (provider.api_key) headers.Authorization = `Bearer ${provider.api_key}`;
+
+  const form = new FormData();
+  form.append('file', new Blob([buffer], { type: mime }), filename);
+  form.append('model', model);
+  if (language) form.append('language', language);
+  form.append('response_format', 'json');
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort('timeout'), TRANSCRIBE_TIMEOUT_MS);
+  const onAbort = () => ctrl.abort('caller');
+  signal?.addEventListener('abort', onAbort, { once: true });
+
+  try {
+    const resp = await fetch(endpoint(provider.base_url, 'audio/transcriptions'), {
+      method: 'POST', headers, body: form, signal: ctrl.signal,
+    });
+    const raw = await resp.text();
+    return { status: resp.status, raw };
+  } catch (err) {
+    if (signal?.aborted) return { status: 0, raw: '', aborted: true };
+    return { status: 0, raw: '', netError: describeNetworkError(err, provider.base_url) };
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+  }
+}
+
+/**
+ * Transcrit un enregistrement.
+ *
+ * @returns {Promise<{ok:boolean, text?:string, error?:string, needsSetup?:boolean, cost?:number}>}
+ */
+export async function transcribeAudio({ buffer, mime = 'audio/webm', filename = 'dictee.webm',
+  language = 'fr', signal } = {}) {
+  if (!buffer?.length) return { ok: false, error: 'Enregistrement vide.' };
+  if (buffer.length > MAX_AUDIO_BYTES) {
+    return { ok: false, error: `Enregistrement trop lourd (${Math.round(buffer.length / 1048576)} Mo, 24 Mo maximum).` };
+  }
+
+  const { provider, model, reason } = transcribeProvider();
+  if (!provider) {
+    return {
+      ok: false, needsSetup: true,
+      error: `Aucun service de transcription configuré (${reason}). Réglages → Microphone.`,
+    };
+  }
+
+  const r = await postAudio({ provider, model, buffer, mime, filename, language, signal });
+  if (r.aborted) return { ok: false, error: 'Transcription interrompue.' };
+  if (r.netError) return { ok: false, error: r.netError };
+  if (r.status !== 200) {
+    if (r.status === 404) {
+      return {
+        ok: false, needsSetup: true,
+        error: `${provider.label} ne transcrit pas, ou ne connaît pas « ${model} ». `
+             + 'Relance la détection dans Réglages → Microphone.',
+      };
+    }
+    return { ok: false, error: describeHttpError(provider, r.status, r.raw) };
+  }
+
+  let payload;
+  try { payload = JSON.parse(r.raw); } catch { return { ok: false, error: 'Réponse illisible (JSON attendu).' }; }
+  const text = String(payload?.text ?? '').trim();
+  if (!text) return { ok: false, error: 'Rien n\'a été reconnu dans cet enregistrement.' };
+
+  // Ces services facturent à la seconde d'audio, pas au token : le coût vient
+  // donc de leur réponse, quand elle le donne, plutôt que d'une grille de prix.
+  const cost = Number(payload?.usage?.cost);
+  return {
+    ok: true, text, provider: provider.id, model,
+    cost: Number.isFinite(cost) && cost >= 0 ? cost : undefined,
+    seconds: Number(payload?.usage?.seconds) || undefined,
+  };
+}
+
+/** Un bip mono de 0,3 s : de quoi voir si un service accepte l'endpoint. */
+function toneWav(seconds = 0.3, rate = 16000) {
+  const n = Math.floor(seconds * rate);
+  const b = Buffer.alloc(44 + n * 2);
+  b.write('RIFF', 0); b.writeUInt32LE(36 + n * 2, 4); b.write('WAVE', 8);
+  b.write('fmt ', 12); b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20);
+  b.writeUInt16LE(1, 22); b.writeUInt32LE(rate, 24); b.writeUInt32LE(rate * 2, 28);
+  b.writeUInt16LE(2, 32); b.writeUInt16LE(16, 34);
+  b.write('data', 36); b.writeUInt32LE(n * 2, 40);
+  for (let i = 0; i < n; i++) {
+    b.writeInt16LE(Math.round(3000 * Math.sin((2 * Math.PI * 220 * i) / rate)), 44 + i * 2);
+  }
+  return b;
+}
+
+/**
+ * Cherche qui sait transcrire, et retient le premier qui répond.
+ *
+ * Demander à l'utilisateur de savoir que `whisper-1` marche chez OpenRouter mais
+ * n'apparaît pas dans son catalogue serait absurde. On essaie donc pour lui, et
+ * on enregistre le couple qui a fonctionné.
+ */
+export async function findTranscriber({ onProgress = () => {} } = {}) {
+  const tried = [];
+  const audio = toneWav();
+
+  for (const provider of Providers.all()) {
+    if (!usable(provider)) continue;
+    for (const model of TRANSCRIBE_CANDIDATES) {
+      onProgress(`${provider.label} · ${model}`);
+      const r = await postAudio({
+        provider, model, buffer: audio, mime: 'audio/wav', filename: 'test.wav', language: 'fr',
+      });
+      if (r.status === 200) {
+        Settings.set('transcribe_provider', provider.id);
+        Settings.set('transcribe_model', model);
+        console.log(`Transcription : ${provider.label} répond avec « ${model} ».`);
+        return { ok: true, provider: provider.id, label: provider.label, model, tried };
+      }
+      tried.push({ provider: provider.id, model, status: r.status, note: r.netError || '' });
+      // Un 401 ou un 402 ne se corrige pas en changeant de modèle : la clé ou le
+      // crédit est en cause, on passe au service suivant.
+      if (r.status === 401 || r.status === 403 || r.status === 402) break;
+    }
+  }
+  return { ok: false, tried, error: 'Aucun de tes services ne propose de transcription audio.' };
+}
+
 /**
  * Type déduit des octets, jamais de ce que le service annonce.
  *

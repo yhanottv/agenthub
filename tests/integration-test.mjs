@@ -23,12 +23,31 @@ const sse = (res, chunks) => {
 };
 
 const calls = [];
+const audioForms = [];       // multipart bodies received on /audio/transcriptions
 let lastPayload = null;      // raw body of the most recent completion request
 const gateway = http.createServer((req, res) => {
   // Model discovery: any OpenAI-compatible service answers GET /v1/models.
   if (req.method === 'GET' && /\/models$/.test(req.url)) {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ data: [{ id: 'claude-opus-4-8' }, { id: 'test-model' }] }));
+    return;
+  }
+  // Transcription: the model name decides the answer, so one mock covers the
+  // success path, the unknown-model 404, and the per-second cost passthrough.
+  if (req.method === 'POST' && /\/audio\/transcriptions$/.test(req.url)) {
+    const chunks = [];
+    req.on('data', (d) => chunks.push(d));
+    req.on('end', () => {
+      const form = Buffer.concat(chunks).toString('latin1');
+      audioForms.push(form);
+      if (/name="model"\r?\n\r?\nwhisper-1/.test(form)) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ text: '  Bonjour, ceci est un test.  ', usage: { seconds: 3, cost: 0.0003 } }));
+        return;
+      }
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'unknown model' } }));
+    });
     return;
   }
   let body = '';
@@ -470,6 +489,71 @@ ok('a public listing marks the key as unverified', unverifiable.keyVerified === 
   `keyVerified=${unverifiable.keyVerified}`);
 ok('and surfaces a note instead of a bare green tick', Boolean(unverifiable.keyNote), unverifiable.keyNote || '');
 ok('models are still listed', unverifiable.models.length > 0);
+
+// ---- transcription ---------------------------------------------------------
+// La dictée ne passe plus par le service vocal du navigateur : le serveur envoie
+// l'audio au fournisseur choisi. Ce qui se figeait ici, c'est que l'audio part
+// bien en multipart, que le texte revient nettoyé, qu'un modèle inconnu se
+// distingue d'une panne, et que le coût à la seconde arrive en consommation.
+const { transcribeAudio, transcribeProvider, findTranscriber } = await import('/app/llm.js');
+
+ok('sans réglage, la transcription se déclare non configurée',
+  transcribeProvider().provider === null && transcribeProvider().reason === 'non configuré');
+
+const vide = await transcribeAudio({ buffer: Buffer.alloc(0) });
+ok('un enregistrement vide est refusé avant tout appel réseau', vide.ok === false && !vide.needsSetup);
+
+const nonConfig = await transcribeAudio({ buffer: Buffer.from('xx') });
+ok('sans service, l\'erreur dit où aller', nonConfig.needsSetup === true
+  && /Réglages → Microphone/.test(nonConfig.error), nonConfig.error);
+
+// La détection essaie les modèles connus et retient le premier qui répond.
+const trouve = await findTranscriber();
+ok('LA DÉTECTION TROUVE UN SERVICE QUI TRANSCRIT', trouve.ok === true, JSON.stringify(trouve).slice(0, 200));
+ok('et retient le modèle qui a répondu', trouve.model === 'whisper-1', trouve.model);
+ok('le choix est enregistré', Settings.get('transcribe_model') === 'whisper-1'
+  && Boolean(Settings.get('transcribe_provider')));
+
+const avant = audioForms.length;
+const dit = await transcribeAudio({
+  buffer: Buffer.from('RIFFfaux-audio'), mime: 'audio/webm', filename: 'dictee.webm', language: 'fr',
+});
+ok('LE TEXTE DICTÉ REVIENT', dit.ok === true && dit.text === 'Bonjour, ceci est un test.',
+  JSON.stringify(dit).slice(0, 200));
+ok('les espaces autour sont retirés', !/^\s|\s$/.test(dit.text || 'x'));
+ok('le coût vient du fournisseur, pas d\'une grille de tokens', dit.cost === 0.0003, String(dit.cost));
+
+const form = audioForms[avant] || '';
+ok('l\'audio part en multipart avec son nom de fichier', /filename="dictee.webm"/.test(form));
+ok('la langue est transmise', /name="language"\r?\n\r?\nfr/.test(form));
+ok('les octets audio sont bien dans le corps', form.includes('RIFFfaux-audio'));
+
+// Un modèle inconnu doit renvoyer vers la détection, pas se lire comme une panne.
+Settings.set('transcribe_model', 'modele-inexistant');
+const inconnu = await transcribeAudio({ buffer: Buffer.from('xx') });
+ok('un modèle inconnu renvoie vers la détection',
+  inconnu.ok === false && inconnu.needsSetup === true && /détection/.test(inconnu.error), inconnu.error);
+Settings.set('transcribe_model', 'whisper-1');
+
+// Le coût annoncé par le service doit survivre à l'enregistrement en base : une
+// grille de prix au token le ramènerait à zéro et sous-estimerait le mois.
+const avantCout = Usage.summary(3600000).cost;
+const nonTarifesAvant = Usage.summary(3600000).unpricedCalls;
+Usage.record({
+  provider: 'openrouter', model: 'whisper-1', tokens_in: 0, tokens_out: 0, estimated: false, cost: 0.0003,
+});
+const apres = Usage.summary(3600000);
+ok('LE COÛT DE LA DICTÉE ENTRE EN CONSOMMATION',
+  Math.abs((apres.cost - avantCout) - 0.0003) < 1e-9,
+  `écart = ${apres.cost - avantCout}`);
+ok('et l\'appel n\'est pas compté comme non tarifé',
+  apres.unpricedCalls === nonTarifesAvant, `${nonTarifesAvant} -> ${apres.unpricedCalls}`);
+
+// Sans coût fourni, un appel à zéro token reste non tarifé : c'est le signal
+// honnête que le total affiché est un plancher.
+Usage.record({ provider: 'openrouter', model: 'modele-sans-tarif', tokens_in: 5, tokens_out: 5 });
+ok('un modèle sans tarif reste signalé comme non tarifé',
+  Usage.summary(3600000).unpricedCalls === nonTarifesAvant + 1);
 
 // ---- done ------------------------------------------------------------------
 gateway.close();

@@ -3528,6 +3528,18 @@ function renderSettings(v) {
           <div class="mic-meter"><span id="mic-level"></span></div>
         </div>
         <div class="field-hint" id="mic-state">Vérification…</div>
+
+        <div class="mic-sep"></div>
+        <div class="field-label">Transcription</div>
+        <div class="field-hint" id="tr-state">Vérification…</div>
+        <button class="btn ghost" id="tr-detect" type="button" style="margin-top:10px">
+          Chercher un service de transcription</button>
+        <div class="field-hint" style="margin-top:8px">
+          Sans ça, la dictée dépend du service vocal du navigateur, qui n'existe pas
+          partout et n'est joignable nulle part de façon fiable. Avec, AgentHub
+          transcrit lui-même, en visant l'entrée choisie ci-dessus. Facturé à la
+          seconde d'audio, et compté dans la consommation.
+        </div>
       </div>
 
       <div class="agent-card">
@@ -3907,7 +3919,7 @@ function renderChat(v) {
             <input type="file" id="file-input" class="sr-only" multiple>
             <button class="icon-btn attach-btn" id="attach-btn" type="button"
                     aria-label="Joindre un fichier" title="Joindre un fichier">${IC.clip}</button>
-            ${SPEECH_OK ? `<button class="icon-btn attach-btn" id="mic-btn" type="button"
+            ${SPEECH_OK || transcribeReady() ? `<button class="icon-btn attach-btn" id="mic-btn" type="button"
                     aria-label="Dicter" title="Dicter (Ctrl+Maj+D)" aria-pressed="false">${IC.mic}</button>` : ''}
             <div class="composer-box">
               <label for="composer-input" class="sr-only">Message</label>
@@ -4203,6 +4215,54 @@ function initMicPanel(v) {
     await fill();                         // les noms sont lisibles maintenant
     runMicMeter(stream, level, say, btn);
   };
+
+  initTranscribePanel(v);
+}
+
+/** La transcription côté serveur : son état, et le bouton qui la met en place. */
+function initTranscribePanel(v) {
+  const state = $('#tr-state', v);
+  const btn = $('#tr-detect', v);
+  if (!state || !btn) return;
+
+  // Le nom du service et celui du modèle sortent dans un <code> : ils ne se
+  // traduisent pas, et le reste de la phrase reste une chaîne entière — donc
+  // traduisible, au lieu d'un assemblage à moitié français.
+  const show = (info) => {
+    if (info?.ready) {
+      state.innerHTML = '<span>Transcription en place.</span> '
+        + `<code>${escapeHtml(info.label || info.provider)} · ${escapeHtml(info.model)}</code>`;
+      btn.textContent = 'Chercher à nouveau';
+    } else {
+      const detail = info?.reason && info.reason !== 'non configuré' ? info.reason : '';
+      state.innerHTML = '<span>Aucun service de transcription configuré.</span>'
+        + (detail ? ` <code>${escapeHtml(detail)}</code>` : '');
+      btn.textContent = 'Chercher un service de transcription';
+    }
+    window.I18N?.applyLang(state);
+  };
+
+  tryApi(api('GET', '/api/transcribe'), 'Transcription').then((info) => info && show(info));
+
+  btn.onclick = async () => {
+    btn.disabled = true;
+    state.textContent = 'Essai de tes services, un modèle après l\'autre…';
+    const r = await tryApi(api('POST', '/api/transcribe/detect'), 'Recherche');
+    btn.disabled = false;
+    if (!r) return;
+    if (!r.ok) {
+      // On dit ce qui a été essayé : « aucun ne transcrit » sans détail
+      // ressemble à une panne d'AgentHub alors que c'est un fait sur les services.
+      const essais = (r.tried || []).length;
+      state.textContent = `${r.error} (${essais} combinaison(s) essayée(s)).`;
+      toast(r.error, { kind: 'warn' });
+      return;
+    }
+    S.settings = { ...S.settings, transcribe_provider: r.provider, transcribe_model: r.model };
+    show({ ready: true, label: r.label, provider: r.provider, model: r.model });
+    toast(`Transcription par ${r.label} · ${r.model}.`, { kind: 'success' });
+    renderAll();
+  };
 }
 
 // ---- dictée ----------------------------------------------------------------
@@ -4232,32 +4292,153 @@ async function dictationProblem(code) {
     }
     return 'La dictée a besoin du micro. Réessaie et accepte la demande du navigateur.';
   }
-  if (code === 'service-not-allowed') {
-    return 'Le service de reconnaissance vocale du navigateur a refusé. Sous Windows, active la reconnaissance vocale en ligne.';
+  // Ces deux-là ne parlent pas du micro : c'est le service vocal du navigateur
+  // qui décline ou reste injoignable. Rien à régler côté micro, et rien qu'on
+  // puisse réparer d'ici — mais AgentHub sait transcrire lui-même.
+  if (code === 'service-not-allowed' || code === 'network') {
+    return 'Le service vocal du navigateur est injoignable. Va dans Réglages → Microphone et lance la recherche : AgentHub transcrira lui-même, sans lui.';
   }
   if (code === 'audio-capture') {
     return 'Aucun micro détecté. Teste-le dans Réglages → Microphone.';
-  }
-  if (code === 'network') {
-    return 'La reconnaissance vocale n\'a pas pu joindre son service.';
   }
   return `Dictée interrompue : ${code}`;
 }
 
 let dictation = null;
+let recorder = null;
+
+/** Un service de transcription est-il prêt côté serveur ? */
+const transcribeReady = () =>
+  Boolean(S.settings?.transcribe_provider && S.settings?.transcribe_model);
 
 /**
  * Dicte dans le champ de saisie.
+ *
+ * Deux voies, et la seconde est la bonne quand elle est disponible :
+ *
+ * - transcrire côté serveur, avec le service que l'utilisateur a déjà choisi.
+ *   L'enregistrement vise l'entrée audio sélectionnée, et rien ne dépend du
+ *   navigateur au-delà de sa capacité à enregistrer ;
+ * - l'API vocale du navigateur, qui envoie l'audio au service du navigateur.
+ *   Pratique parce qu'elle ne demande aucune configuration, mais absente de
+ *   Firefox, injoignable sur plusieurs Chromium, et incapable de viser une
+ *   entrée précise. C'est le repli.
+ */
+function toggleDictation(input, btn) {
+  if (recorder) { recorder.stop(); return; }
+  if (dictation) { dictation.stop(); return; }
+  if (transcribeReady()) { recordThenTranscribe(input, btn); return; }
+  if (!SPEECH_OK) {
+    toast('Ce navigateur ne sait pas dicter. Configure un service de transcription dans Réglages → Microphone.',
+      { kind: 'warn' });
+    return;
+  }
+  startBrowserDictation(input, btn);
+}
+
+/**
+ * Ajoute le texte dicté à la fin, sans jamais écraser ce qui était tapé.
+ *
+ * La transcription revient après un aller-retour réseau, donc parfois après un
+ * changement de vue : le champ capturé n'est alors plus dans la page. On reprend
+ * celui qui y est, et à défaut on rend le texte dans une notification plutôt que
+ * de le laisser disparaître.
+ */
+function appendDictated(input, text) {
+  const clean = String(text || '').trim();
+  if (!clean) return;
+  const field = input?.isConnected ? input : $('#composer-input');
+  if (!field) { toast(clean, { title: 'Texte dicté' }); return; }
+
+  field.value = (field.value ? field.value.replace(/\s*$/, '') + ' ' : '') + clean;
+  autoGrow(field);
+  const send = $('#send-btn');
+  if (send) send.disabled = !field.value.trim();
+  S.drafts[S.current] = field.value;
+  field.focus();
+}
+
+const AUDIO_TYPES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
+const RECORD_MAX_MS = 120000;
+
+/**
+ * Enregistre, puis fait transcrire par le serveur.
+ *
+ * L'enregistrement s'arrête au second clic, ou seul au bout de deux minutes : un
+ * micro laissé ouvert par oubli coûterait de l'argent sans rien produire.
+ */
+async function recordThenTranscribe(input, btn) {
+  const id = localStorage.getItem(MIC_KEY) || '';
+  let stream;
+  try {
+    // « ideal » et non « exact » : un identifiant devenu obsolète doit retomber
+    // sur l'entrée par défaut, pas faire échouer la dictée.
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: id ? { deviceId: { ideal: id } } : true,
+    });
+  } catch (err) {
+    toast(micErrorText(err), { kind: 'warn' });
+    return;
+  }
+
+  const type = AUDIO_TYPES.find((t) => window.MediaRecorder?.isTypeSupported?.(t)) || '';
+  let rec;
+  try {
+    rec = new MediaRecorder(stream, type ? { mimeType: type } : undefined);
+  } catch {
+    stream.getTracks().forEach((t) => t.stop());
+    toast('Ce navigateur ne sait pas enregistrer d\'audio.', { kind: 'warn' });
+    return;
+  }
+
+  const chunks = [];
+  rec.ondataavailable = (e) => { if (e.data?.size) chunks.push(e.data); };
+
+  rec.onstop = async () => {
+    stream.getTracks().forEach((t) => t.stop());
+    recorder = null;
+    btn.classList.remove('recording');
+    btn.setAttribute('aria-pressed', 'false');
+
+    const blob = new Blob(chunks, { type: rec.mimeType || type || 'audio/webm' });
+    if (blob.size < 1500) { announce('Enregistrement trop court.'); return; }
+
+    btn.classList.add('working');
+    announce('Transcription…');
+    try {
+      const r = await fetch(`/api/transcribe?type=${encodeURIComponent(blob.type)}`, {
+        method: 'POST', headers: { 'Content-Type': blob.type }, body: blob,
+      });
+      const data = await r.json().catch(() => null);
+      if (!r.ok) {
+        toast(data?.error || `Transcription refusée (HTTP ${r.status}).`, { kind: 'warn' });
+        return;
+      }
+      appendDictated(input, data?.text);
+    } catch {
+      toast('Serveur injoignable — vérifie ta connexion.', { kind: 'warn' });
+    } finally {
+      btn.classList.remove('working');
+    }
+  };
+
+  rec.start();
+  recorder = rec;
+  btn.classList.add('recording');
+  btn.setAttribute('aria-pressed', 'true');
+  announce('Enregistrement — reclique pour transcrire.');
+  setTimeout(() => { if (recorder === rec) rec.stop(); }, RECORD_MAX_MS);
+}
+
+/**
+ * Dictée par l'API du navigateur.
  *
  * Le texte provisoire est affiché puis remplacé par la version définitive : sans
  * ça on écrit dans le vide pendant plusieurs secondes et on croit que rien ne
  * marche. La base — ce qui était tapé avant — est conservée pour ne jamais
  * écraser ce que l'utilisateur avait déjà écrit.
  */
-function toggleDictation(input, btn) {
-  if (dictation) { dictation.stop(); return; }
-  if (!SPEECH_OK) return;
-
+function startBrowserDictation(input, btn) {
   const rec = new SpeechRec();
   rec.lang = 'fr-FR';
   rec.continuous = true;

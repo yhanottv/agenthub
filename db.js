@@ -403,6 +403,8 @@ export const PUBLIC_SETTINGS = [
   'image_provider',    // service utilisé pour générer les images
   'image_model',       // et son modèle
   'image_mode',        // auto | images | chat — quel protocole d'image
+  'transcribe_provider', // service qui transcrit la dictée
+  'transcribe_model',    // et son modèle
 ];
 
 export const Settings = {
@@ -1232,7 +1234,14 @@ export const Usage = {
     const tout = Math.max(0, Math.round(u.tokens_out || 0));
     // The price is resolved and frozen now: re-tariffing a model later must not
     // silently rewrite what past months cost.
-    const { cost, priced } = Prices.compute(u.provider, u.model, tin, tout);
+    //
+    // A caller may pass the cost outright: transcription is billed per second of
+    // audio, not per token, so the provider's own figure is the only honest one —
+    // a token grid would report zero and quietly understate the month.
+    const given = Number.isFinite(u.cost) && u.cost >= 0;
+    const { cost, priced } = given
+      ? { cost: u.cost, priced: true }
+      : Prices.compute(u.provider, u.model, tin, tout);
     db.prepare(`INSERT INTO usage_log (id,agent_id,channel_id,provider,model,tokens_in,tokens_out,estimated,cost,priced,created_at)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
       .run(uid('us_'), u.agent_id || null, u.channel_id || null,

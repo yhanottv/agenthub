@@ -296,12 +296,22 @@ const CORE_EN = {
     'The browser blocked dictation even though the microphone is allowed. Reload the page, then test your microphone in Settings.',
   'La dictée a besoin du micro. Réessaie et accepte la demande du navigateur.':
     'Dictation needs the microphone. Try again and accept the browser prompt.',
-  'Le service de reconnaissance vocale du navigateur a refusé. Sous Windows, active la reconnaissance vocale en ligne.':
-    'The browser\'s speech recognition service refused. On Windows, turn on online speech recognition.',
   'Aucun micro détecté. Teste-le dans Réglages → Microphone.':
     'No microphone detected. Test it in Settings → Microphone.',
-  'La reconnaissance vocale n\'a pas pu joindre son service.':
-    'Speech recognition could not reach its service.',
+  'Le service vocal du navigateur est injoignable. Va dans Réglages → Microphone et lance la recherche : AgentHub transcrira lui-même, sans lui.':
+    'The browser\'s speech service is unreachable. Go to Settings → Microphone and run the search: AgentHub will transcribe itself, without it.',
+  'Transcription': 'Transcription',
+  'Transcription en place.': 'Transcription ready.',
+  'Aucun service de transcription configuré.': 'No transcription service set up.',
+  'Chercher un service de transcription': 'Look for a transcription service',
+  'Chercher à nouveau': 'Search again',
+  'Essai de tes services, un modèle après l\'autre…': 'Trying your services, one model after another…',
+  'Enregistrement trop court.': 'Recording too short.',
+  'Ce navigateur ne sait pas enregistrer d\'audio.': 'This browser cannot record audio.',
+  'Ce navigateur ne sait pas dicter. Configure un service de transcription dans Réglages → Microphone.':
+    'This browser cannot dictate. Set up a transcription service in Settings → Microphone.',
+  'Enregistrement — reclique pour transcrire.': 'Recording — click again to transcribe.',
+  'Transcription…': 'Transcribing…',
 
   // libellés de formulaire et explications courtes
   'Nom (un seul mot, sert aux @mentions)': 'Name (one word, used for @mentions)',

@@ -1957,7 +1957,13 @@ select:disabled {
   border-radius: inherit; background: var(--accent);
   transition: width 80ms linear;
 }
-#mic-state { margin-top: 10px; line-height: 1.7; }
+#mic-state, #tr-state { margin-top: 10px; line-height: 1.7; }
+.mic-sep {
+  height: 1px; margin: var(--sp-4) 0 var(--sp-3); background: var(--line-soft);
+}
+.field-label {
+  font-size: var(--fs-sm); color: var(--muted); font-weight: 600; margin-bottom: 2px;
+}
 
 /* ------------------------------------------- detection / installation Hermes */
 .btn-row { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
@@ -2057,6 +2063,15 @@ body.no-scroll { overflow: hidden; }
   border: 2px solid var(--alert); animation: mic-pulse 1.4s var(--ease) infinite;
 }
 #mic-btn { position: relative; }
+/* Entre l'arret de l'enregistrement et le texte, il y a un aller-retour reseau.
+   Sans marque visible on croit que le clic n'a rien fait, et on reclique. */
+#mic-btn.working { color: var(--accent); pointer-events: none; }
+#mic-btn.working::after {
+  content: ''; position: absolute; inset: -3px; border-radius: 50%;
+  border: 2px solid var(--accent); border-top-color: transparent;
+  animation: mic-spin 700ms linear infinite;
+}
+@keyframes mic-spin { to { transform: rotate(360deg); } }
 @keyframes mic-pulse {
   0%   { opacity: .9; transform: scale(.86); }
   70%  { opacity: 0;  transform: scale(1.25); }
