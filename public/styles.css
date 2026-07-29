@@ -1441,67 +1441,132 @@ button.tag.on { background: var(--accent); color: var(--on-accent); }
   border: 1px dashed var(--line);
 }
 
-/* ---------------------------------------------------------- Memory Galaxy ---
-   Le canvas peint son propre ciel : il garde donc un fond sombre dans les deux
-   thèmes, et tout ce qui se pose dessus est calibré pour ce fond-là, pas pour
-   les variables de surface de l'application. */
-.galaxy-wrap {
-  position: relative; width: 100%; height: min(72vh, 720px); min-height: 380px;
-  border-radius: var(--r-lg); overflow: hidden;
-  background: #06070f; border: 1px solid var(--line);
-}
-.galaxy-wrap canvas { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
-.galaxy-wrap canvas.grabbing { cursor: grabbing; }
-.galaxy-wrap canvas:focus-visible { outline: 2px solid #8fa8ff; outline-offset: -2px; }
-.galaxy-loading {
-  position: absolute; inset: 0; display: grid; place-items: center;
-  color: #aab3d8; font-size: var(--fs-md);
-}
+/* ------------------------------------------------------- carte en bulles ---
+   Chaque catégorie est un cercle qui contient ses éléments. Rien ne bouge tout
+   seul : la carte est calculée une fois, puis lue. Elle vit sur les surfaces
+   normales de l'application, pas sur un fond spatial — c'est une carte de
+   travail, pas un écran de veille. */
 
-.galaxy-hud {
-  position: absolute; top: var(--sp-4); left: var(--sp-4);
-  pointer-events: none; color: #cdd4f2;
-}
-.galaxy-title {
-  display: flex; align-items: center; gap: 7px;
-  font-size: var(--fs-sm); letter-spacing: .14em; text-transform: uppercase;
-  color: #9aa5d4; font-weight: 600;
-}
-.galaxy-title svg { width: 15px; height: 15px; }
-.galaxy-count { font-size: var(--fs-lg); color: #eef1ff; margin-top: 2px; }
-.galaxy-count strong { font-weight: 650; }
-.galaxy-help { font-size: var(--fs-sm); color: #7f8ab5; margin-top: 5px; }
+.bubble-wrap { display: flex; flex-direction: column; gap: var(--sp-3); min-height: 0; }
 
-.galaxy-card {
-  position: absolute; right: var(--sp-4); bottom: var(--sp-4);
-  min-width: 190px; max-width: 300px; padding: 11px 13px;
-  background: rgba(16, 18, 40, .88); border: 1px solid rgba(150, 165, 240, .28);
-  border-radius: var(--r-sm); color: #e8ecff;
-  backdrop-filter: blur(6px);
+.bubble-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--sp-3); flex-wrap: wrap;
+}
+.bubble-layers { display: flex; flex-wrap: wrap; gap: 6px; }
+.bubble-actions { display: flex; align-items: center; gap: var(--sp-3); }
+.bubble-count { color: var(--muted); font-size: var(--fs-sm); }
+
+.layer-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 12px; cursor: pointer; font-family: inherit; font-size: var(--fs-sm);
+  background: var(--surface); color: var(--muted);
+  border: 1px solid var(--line); border-radius: var(--r-pill);
+  transition: color var(--fast) var(--ease), border-color var(--fast) var(--ease),
+              background var(--fast) var(--ease);
+}
+.layer-btn:hover { color: var(--text); border-color: var(--accent); }
+.layer-btn.on { color: var(--text); background: var(--surface-2); border-color: var(--line); }
+.layer-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.layer-btn small { color: var(--muted); font-size: var(--fs-xs); }
+
+.layer-dot {
+  width: 9px; height: 9px; border-radius: 50%; flex: none;
+  background: var(--c, var(--accent)); opacity: .3;
   transition: opacity var(--fast) var(--ease);
 }
-.galaxy-card.hidden { opacity: 0; pointer-events: none; }
-.gc-title { display: flex; align-items: center; gap: 7px; font-weight: 600; font-size: var(--fs-base); }
-.gc-title svg { width: 14px; height: 14px; flex: none; color: #9aa5d4; }
-.gc-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.gc-meta { font-size: var(--fs-sm); color: #98a2cc; margin-top: 3px; }
+.layer-btn.on .layer-dot { opacity: 1; }
+.gc-title .layer-dot { opacity: 1; }
 
-.galaxy-reset {
-  position: absolute; top: var(--sp-4); right: var(--sp-4);
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 7px 13px; cursor: pointer; font-family: inherit; font-size: var(--fs-sm);
-  background: rgba(16, 18, 40, .8); color: #cdd4f2;
-  border: 1px solid rgba(150, 165, 240, .28); border-radius: var(--r-pill);
-  transition: background var(--fast) var(--ease);
+.bubble-note {
+  padding: 10px var(--sp-4); border-radius: var(--r-xs);
+  background: var(--gold-soft); border-left: 3px solid var(--gold);
+  font-size: var(--fs-md); line-height: 1.65;
 }
-.galaxy-reset:hover { background: rgba(40, 46, 90, .9); }
-.galaxy-reset svg { width: 14px; height: 14px; }
-.galaxy-reset:focus-visible { outline: 2px solid #8fa8ff; outline-offset: 2px; }
+
+.bubble-stage {
+  position: relative; width: 100%; height: min(70vh, 700px); min-height: 360px;
+  border: 1px solid var(--line); border-radius: var(--r-lg);
+  background: var(--surface-2); overflow: hidden;
+}
+.galaxy-loading { position: absolute; inset: 0; display: grid; place-items: center;
+  color: var(--muted); font-size: var(--fs-md); }
+
+.bubble-svg { display: block; width: 100%; height: 100%; }
+
+/* — groupes — */
+.bub-ring {
+  fill: color-mix(in srgb, var(--c) 9%, transparent);
+  stroke: color-mix(in srgb, var(--c) 42%, transparent);
+  stroke-width: 1.2;
+  transition: fill var(--fast) var(--ease), stroke var(--fast) var(--ease);
+}
+.bub-group { cursor: zoom-in; }
+.bub-group:hover .bub-ring { fill: color-mix(in srgb, var(--c) 15%, transparent); }
+.bub-group.dim { opacity: .18; pointer-events: none; }
+.bub-glabel {
+  fill: var(--text-2); font-weight: 600; letter-spacing: .02em;
+  pointer-events: none; user-select: none;
+}
+
+/* — éléments — */
+.bub-item { cursor: pointer; }
+.bub-item circle {
+  fill: var(--c); stroke: transparent; stroke-width: 2;
+  transition: stroke var(--fast) var(--ease);
+}
+.bub-item.stub circle { fill: transparent; stroke: var(--c); stroke-dasharray: 3 3; stroke-width: 1.3; }
+.bub-item.active circle { stroke: var(--text); stroke-width: 1.6; }
+.bub-item:hover circle, .bub-item.hot circle { stroke: var(--text); }
+.bub-item:focus { outline: none; }
+.bub-item:focus-visible circle { stroke: var(--accent); stroke-width: 3; }
+.bub-ilabel {
+  fill: #fff; font-weight: 600; pointer-events: none; user-select: none;
+  paint-order: stroke; stroke: rgba(0, 0, 0, .3); stroke-width: 2px;
+}
+.bub-item.stub .bub-ilabel { fill: var(--text-2); stroke: none; }
+
+/* Le survol éteint tout ce qui n'est pas concerné : c'est ce qui rend un lien
+   lisible au milieu de cent cercles. */
+.bubble-stage.hovering .bub-item { opacity: .28; transition: opacity var(--fast) var(--ease); }
+.bubble-stage.hovering .bub-item.hot { opacity: 1; }
+
+#bubble-links line {
+  stroke: var(--accent); stroke-width: 1.4; opacity: .55; pointer-events: none;
+}
+
+/* — carte de survol — */
+.bubble-card {
+  position: absolute; right: var(--sp-4); bottom: var(--sp-4);
+  min-width: 200px; max-width: 320px; padding: 11px 13px;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-sm); box-shadow: 0 8px 24px rgba(0, 0, 0, .12);
+  pointer-events: none;
+}
+.bubble-card.hidden { display: none; }
+.gc-title { display: flex; align-items: center; gap: 7px; font-weight: 600; font-size: var(--fs-base); }
+.gc-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gc-meta { font-size: var(--fs-sm); color: var(--muted); margin-top: 3px; line-height: 1.5; }
+
+/* — fiche d'un skill — */
+.skill-head { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.skill-head .muted { font-size: var(--fs-sm); color: var(--muted); }
+.cmd-row {
+  display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap;
+  padding: 9px var(--sp-3); border-radius: var(--r-xs);
+  background: var(--surface-2); border: 1px solid var(--line);
+}
+.cmd-row code { flex: 1; min-width: 0; font-size: var(--fs-md); overflow-x: auto; }
 
 @media (max-width: 720px) {
-  .galaxy-wrap { height: 60vh; }
-  .galaxy-card { left: var(--sp-4); right: var(--sp-4); max-width: none; }
-  .galaxy-help { display: none; }
+  .bubble-stage { height: 58vh; }
+  .bubble-card { left: var(--sp-4); right: var(--sp-4); max-width: none; }
+}
+
+/* Sans color-mix (navigateurs plus anciens), les bulles de groupe seraient
+   invisibles : un repli neutre vaut mieux qu'un cercle absent. */
+@supports not (color: color-mix(in srgb, red 50%, blue)) {
+  .bub-ring { fill: var(--surface); stroke: var(--line); }
 }
 
 /* ===========================================================================
@@ -1667,42 +1732,8 @@ a.attach-chip:hover { border-color: var(--accent); color: var(--accent-ink); }
 }
 
 /* ===========================================================================
-   Calques de la galaxie et réglage de la mémoire injectée
+   Réglage de la mémoire injectée
    =========================================================================== */
-
-.galaxy-layers {
-  position: absolute; left: var(--sp-4); bottom: var(--sp-4);
-  display: flex; flex-wrap: wrap; gap: 6px; max-width: min(460px, calc(100% - var(--sp-8)));
-}
-.layer-btn {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 6px 11px; cursor: pointer; font-family: inherit; font-size: var(--fs-sm);
-  background: rgba(16, 18, 40, .78); color: #8f9ac4;
-  border: 1px solid rgba(150, 165, 240, .2); border-radius: var(--r-pill);
-  backdrop-filter: blur(6px);
-  transition: color var(--fast) var(--ease), border-color var(--fast) var(--ease),
-              background var(--fast) var(--ease);
-}
-.layer-btn:hover { color: #dfe4ff; border-color: rgba(150, 165, 240, .45); }
-.layer-btn.on { color: #eef1ff; background: rgba(38, 44, 86, .9); border-color: rgba(150, 165, 240, .55); }
-.layer-btn:focus-visible { outline: 2px solid #8fa8ff; outline-offset: 2px; }
-.layer-btn small { color: #6f79a6; font-size: var(--fs-xs); }
-.layer-btn.on small { color: #98a2cc; }
-
-.layer-dot {
-  width: 8px; height: 8px; border-radius: 50%; flex: none;
-  background: var(--c, #c9d4ff); opacity: .45;
-  transition: opacity var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
-}
-.layer-btn.on .layer-dot { opacity: 1; box-shadow: 0 0 7px var(--c, #c9d4ff); }
-.gc-title .layer-dot { opacity: 1; box-shadow: 0 0 7px var(--c); }
-
-/* Le HUD et les calques se disputent la place en petite largeur : les calques
-   gagnent, ce sont eux qui pilotent la lecture de la carte. */
-@media (max-width: 720px) {
-  .galaxy-layers { max-width: calc(100% - var(--sp-5)); }
-  .galaxy-card { bottom: 72px; }
-}
 
 /* — réglage du budget de mémoire — */
 .budget-tune {

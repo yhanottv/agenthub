@@ -8,9 +8,11 @@ import { WebSocketServer } from 'ws';
 
 import {
   Agents, Channels, Messages, Tasks, Settings, Stats, Notes, NoteProposals, Usage, Providers,
-  Sessions, Prices, Search, Attachments, Schedules, Webhooks, Graph, GRAPH_LAYERS,
+  Sessions, Prices, Search, Attachments, Schedules, Webhooks,
   notesBudget, NOTES_BUDGET_MAX, slug, db,
 } from './db.js';
+import { buildGraph, layerCounts, GRAPH_LAYERS, LAYER_META } from './graph.js';
+import { skillsCatalogue, invalidateSkills } from './skills.js';
 import { providerCatalog, probeProvider, seedProvidersFromEnv, PRESETS } from './llm.js';
 import { Orchestrator } from './orchestrator.js';
 
@@ -647,7 +649,17 @@ app.get('/api/notes', requireAuth, (req, res) => res.json({
 app.get('/api/notes/graph', requireAuth, (req, res) => {
   const asked = String(req.query.layers ?? '').split(',').map((s) => s.trim()).filter(Boolean);
   const layers = asked.filter((l) => GRAPH_LAYERS.includes(l));
-  res.json({ ...Graph.build(layers.length ? layers : GRAPH_LAYERS), counts: Graph.counts() });
+  res.json({
+    ...buildGraph(layers.length ? layers : GRAPH_LAYERS),
+    counts: layerCounts(),
+    meta: LAYER_META,
+  });
+});
+
+// ---- skills Hermes ---------------------------------------------------------
+app.get('/api/skills', requireAuth, (req, res) => {
+  if (req.query.refresh) invalidateSkills();
+  res.json(skillsCatalogue(Boolean(req.query.refresh)));
 });
 
 /** Most recently touched first — the "Récent" tab. */

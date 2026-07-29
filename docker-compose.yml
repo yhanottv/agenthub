@@ -27,6 +27,12 @@ services:
       # après huit tentatives ne sert plus à rien.
       TRUST_PROXY: ${TRUST_PROXY:-}
 
+      # Où AgentHub va lire les skills Hermes, si tu montes ses dossiers
+      # (voir le bloc `volumes:` plus bas). Sans ces montages, l'onglet Graph
+      # le dit franchement au lieu d'afficher un catalogue vide.
+      HERMES_SKILLS_DIR: ${HERMES_SKILLS_DIR:-/hermes-home/skills}
+      HERMES_OPTIONAL_SKILLS_DIR: ${HERMES_OPTIONAL_SKILLS_DIR:-/hermes-src/optional-skills}
+
       # Laisse-les vides : le mot de passe se choisit sur le site, et le secret
       # de session est généré au premier démarrage puis conservé en base.
       # Les définir ici FIGE le mot de passe et retire la possibilité de le
@@ -35,6 +41,23 @@ services:
       APP_SECRET: ${AGENTHUB_SECRET:-}
     volumes:
       - agenthub-data:/data
+
+      # ─── Skills Hermes (facultatif) ───────────────────────────────────────
+      # Monte les dossiers de skills d'Hermes en LECTURE SEULE : l'onglet Graph
+      # affiche alors le catalogue officiel Nous Research et les skills déjà
+      # actifs, sans appel réseau ni clé.
+      #
+      # Le nom du volume est celui d'Hermes chez toi — trouve-le avec :
+      #   docker inspect <conteneur-hermes> \
+      #     --format '{{range .Mounts}}{{.Name}} -> {{.Destination}}{{println}}{{end}}'
+      #
+      # `ro` n'est pas décoratif : AgentHub ne doit jamais écrire dans les
+      # fichiers d'Hermes. Installer un skill passe par Hermes lui-même, qui
+      # applique ses propres contrôles (analyse de sécurité, provenance).
+      #
+      # - hermes-webui-yowj_hermes-agent-src:/hermes-src:ro
+      # - hermes-webui-yowj_hermes-home:/hermes-home:ro
+
     # Publié sur la boucle locale UNIQUEMENT, et c'est délibéré.
     #
     # Tant que personne n'a choisi de mot de passe, le premier visiteur peut le
