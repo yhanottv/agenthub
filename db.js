@@ -382,6 +382,9 @@ export const PUBLIC_SETTINGS = [
   'owner_name', 'org_name', 'theme', 'setup_done',
   'daily_budget',      // seuil d'alerte de dépense, en euros
   'tools_enabled',     // les agents peuvent-ils appeler des outils
+  'notes_auto',        // une note d'agent entre-t-elle seule en mémoire
+  'notes_budget',      // caractères de mémoire partagée injectés par prompt
+  'context_budget',    // plafond total du prompt, en caractères
 ];
 
 export const Settings = {
@@ -787,10 +790,31 @@ export const Providers = {
 };
 
 // ---- Notes (second cerveau) ------------------------------------------------
-const NOTE_LIMITS = { title: 120, content: 8000 };
-// Hard ceiling on what gets injected into a system prompt, so the shared memory
-// can never crowd out the actual conversation.
-export const NOTES_CONTEXT_BUDGET = 6000;
+const NOTE_LIMITS = { title: 120, content: 40000 };
+
+/**
+ * Combien de caractères de mémoire partagée entrent dans chaque prompt.
+ *
+ * C'était 6 000, figé dans le code — l'équivalent d'environ 1 500 tokens, à
+ * l'époque où une fenêtre de contexte était étroite. Les modèles servis
+ * aujourd'hui en encaissent cent fois plus, et une mémoire d'organisation qui
+ * tient en deux pages n'est pas une mémoire.
+ *
+ * Le plafond est désormais réglable. Il reste un plafond : la mémoire est
+ * envoyée à CHAQUE appel de CHAQUE agent, donc chaque caractère ajouté est
+ * refacturé à chaque tour — c'est ce que l'écran Notes rappelle en euros.
+ */
+export const NOTES_BUDGET_DEFAULT = 60000;
+export const NOTES_BUDGET_MAX = 400000;
+
+export const notesBudget = () => {
+  const raw = Number(Settings.get('notes_budget', ''));
+  if (!Number.isFinite(raw) || raw <= 0) return NOTES_BUDGET_DEFAULT;
+  return Math.min(NOTES_BUDGET_MAX, Math.max(2000, Math.round(raw)));
+};
+
+// Conservé pour compatibilité : c'est la valeur par défaut, plus une limite.
+export const NOTES_CONTEXT_BUDGET = NOTES_BUDGET_DEFAULT;
 export const NOTE_KINDS = ['note', 'wiki', 'auto'];
 const validNoteKind = (k) => (NOTE_KINDS.includes(k) ? k : 'note');
 
@@ -973,7 +997,7 @@ export const Notes = {
   forContext: () => {
     const out = [];
     const used = [];
-    let budget = NOTES_CONTEXT_BUDGET;
+    let budget = notesBudget();
     for (const n of Notes.all()) {
       if (!n.content.trim()) continue;
       const block = `### ${n.title}\n${n.content.trim()}`;
@@ -994,6 +1018,140 @@ export const Notes = {
   },
 };
 
+// ---- Graphe complet de l'espace de travail ---------------------------------
+/**
+ * La galaxie ne montrait que les notes. Elle montre maintenant tout ce que
+ * l'application connaît déjà — agents, pôles, tâches — et chaque famille
+ * s'allume ou s'éteint côté client.
+ *
+ * Les arêtes sont celles qui existent réellement en base (appartenance à un
+ * pôle, attribution d'une tâche, wikiliens), jamais des rapprochements
+ * devinés : une carte qui invente des liens ne sert qu'à égarer.
+ */
+export const GRAPH_LAYERS = ['notes', 'agents', 'channels', 'tasks'];
+
+export const Graph = {
+  build: (layers = GRAPH_LAYERS) => {
+    const on = (l) => layers.includes(l);
+    const nodes = [];
+    const links = [];
+    const present = new Set();
+
+    const push = (n) => { nodes.push(n); present.add(n.id); };
+    // Une arête n'a de sens que si ses deux extrémités sont affichées.
+    const link = (a, b, kind) => {
+      if (a !== b && present.has(a) && present.has(b)) links.push({ source: a, target: b, kind });
+    };
+
+    if (on('notes')) {
+      for (const n of Notes.all()) {
+        push({
+          id: n.id, type: 'note', title: n.title,
+          subtitle: n.tags.length ? n.tags.map((t) => '#' + t).join(' ') : 'note',
+          color: n.color || '', emoji: '', pinned: Boolean(n.pinned),
+          chars: (n.content || '').length, uses: n.uses,
+          touched_at: n.touched_at || n.updated_at, updated_at: n.updated_at,
+          stub: false,
+        });
+      }
+    }
+
+    if (on('agents')) {
+      for (const a of Agents.all()) {
+        push({
+          id: a.id, type: 'agent', title: a.name,
+          subtitle: a.title || ({ ceo: 'CEO', manager: 'Manager', worker: 'Worker' })[a.rank] || 'Agent',
+          color: a.color, emoji: a.emoji, rank: a.rank, pinned: a.rank === 'ceo',
+          chars: (a.role_prompt || '').length, uses: 0,
+          touched_at: a.created_at, updated_at: a.created_at, stub: false,
+        });
+      }
+    }
+
+    if (on('channels')) {
+      for (const c of Channels.all()) {
+        push({
+          id: c.id, type: 'channel', title: c.name,
+          subtitle: c.topic || (c.kind === 'hermes' ? 'salon direct' : 'pôle'),
+          color: c.color, emoji: c.emoji, pinned: false,
+          chars: 0, uses: c.msg_count || 0,
+          touched_at: c.last_activity || c.created_at, updated_at: c.created_at, stub: false,
+        });
+      }
+    }
+
+    if (on('tasks')) {
+      // Bornées aux plus récentes : l'historique complet des tâches noierait
+      // tout le reste sous une nuée de points sans rien apprendre.
+      for (const t of Tasks.recent(120)) {
+        push({
+          id: t.id, type: 'task', title: t.title.slice(0, 70),
+          subtitle: { done: 'terminée', failed: 'échouée', in_progress: 'en cours' }[t.status] || t.status,
+          color: '', emoji: '', status: t.status, pinned: false,
+          chars: (t.result || '').length, uses: 0,
+          touched_at: t.updated_at, updated_at: t.updated_at, stub: false,
+        });
+      }
+    }
+
+    // — arêtes —
+    if (on('notes')) {
+      for (const l of db.prepare('SELECT from_id, to_id FROM note_links').all()) {
+        link(l.from_id, l.to_id, 'wikilink');
+      }
+      // Une note manquante reste un nœud creux : c'est ce qui donne envie de
+      // l'écrire, et un clic la crée avec son titre.
+      const stubs = db.prepare('SELECT from_id, title FROM note_stubs').all();
+      const stubId = new Map();
+      for (const s of stubs) {
+        const key = s.title.toLowerCase();
+        if (!stubId.has(key)) {
+          const id = 'stub_' + Buffer.from(key).toString('hex').slice(0, 24);
+          stubId.set(key, id);
+          push({
+            id, type: 'note', title: s.title, subtitle: 'à écrire', color: '', emoji: '',
+            pinned: false, chars: 0, uses: 0, touched_at: 0, updated_at: 0, stub: true,
+          });
+        }
+        link(s.from_id, stubId.get(key), 'wikilink');
+      }
+      // Qui a versé quoi en mémoire.
+      if (on('agents')) {
+        for (const p of db.prepare(
+          "SELECT agent_id, note_id FROM note_proposals WHERE status='accepted' AND note_id IS NOT NULL AND agent_id IS NOT NULL").all()) {
+          link(p.agent_id, p.note_id, 'wrote');
+        }
+      }
+    }
+
+    if (on('agents') && on('channels')) {
+      for (const m of db.prepare('SELECT channel_id, agent_id FROM channel_members').all()) {
+        link(m.agent_id, m.channel_id, 'member');
+      }
+    }
+
+    if (on('tasks')) {
+      for (const t of Tasks.recent(120)) {
+        if (on('channels')) link(t.id, t.channel_id, 'in');
+        if (on('agents')) {
+          if (t.assignee_id) link(t.assignee_id, t.id, 'assignee');
+          if (t.assigner_id) link(t.assigner_id, t.id, 'assigner');
+        }
+      }
+    }
+
+    return { nodes, links, layers };
+  },
+
+  /** Combien d'objets chaque calque apporterait, pour l'afficher sur le bouton. */
+  counts: () => ({
+    notes: Notes.count(),
+    agents: Agents.count(),
+    channels: Channels.count(),
+    tasks: Math.min(120, db.prepare('SELECT COUNT(*) n FROM tasks').get().n),
+  }),
+};
+
 // ---- Propositions de notes (second cerveau auto-alimenté) ------------------
 export const NoteProposals = {
   pending: () => db.prepare("SELECT * FROM note_proposals WHERE status='pending' ORDER BY created_at DESC LIMIT 100")
@@ -1006,6 +1164,15 @@ export const NoteProposals = {
 
   countPending: () => db.prepare("SELECT COUNT(*) n FROM note_proposals WHERE status='pending'").get().n,
 
+  /**
+   * Les agents versent-ils directement en mémoire, ou passent-ils par toi ?
+   * Automatique par défaut : une file d'attente qui demande un clic par note
+   * finit ignorée, et une mémoire qu'on n'alimente pas ne sert à rien. Le
+   * garde-fou reste la trace : tout ce qui est entré seul est visible dans
+   * Récent, et se supprime en deux clics.
+   */
+  autoAccept: () => Settings.get('notes_auto', '1') === '1',
+
   create: (p) => {
     const id = uid('np_');
     db.prepare(`INSERT INTO note_proposals (id,title,content,tags,agent_id,agent_name,channel_id,status,created_at)
@@ -1015,6 +1182,17 @@ export const NoteProposals = {
         JSON.stringify(cleanTags(p.tags)), p.agent_id || null,
         clampText(p.agent_name, LIMITS.name), p.channel_id || null, now());
     return NoteProposals.get(id);
+  },
+
+  /**
+   * Dépôt d'un agent : entre en mémoire tout de suite en mode automatique,
+   * attend une validation sinon. Renvoie de quoi le dire à l'agent.
+   */
+  submit: (p) => {
+    const proposal = NoteProposals.create(p);
+    if (!NoteProposals.autoAccept()) return { proposal, note: null, auto: false };
+    const note = NoteProposals.accept(proposal.id);
+    return { proposal, note, auto: true };
   },
 
   /** Accepting turns the proposal into a real note, in one transaction. */

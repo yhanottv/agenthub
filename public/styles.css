@@ -1665,3 +1665,55 @@ a.attach-chip:hover { border-color: var(--accent); color: var(--accent-ink); }
   .price-head, .price-row { grid-template-columns: 1fr 72px 72px; }
   .usage-cost { min-width: 60px; }
 }
+
+/* ===========================================================================
+   Calques de la galaxie et réglage de la mémoire injectée
+   =========================================================================== */
+
+.galaxy-layers {
+  position: absolute; left: var(--sp-4); bottom: var(--sp-4);
+  display: flex; flex-wrap: wrap; gap: 6px; max-width: min(460px, calc(100% - var(--sp-8)));
+}
+.layer-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 11px; cursor: pointer; font-family: inherit; font-size: var(--fs-sm);
+  background: rgba(16, 18, 40, .78); color: #8f9ac4;
+  border: 1px solid rgba(150, 165, 240, .2); border-radius: var(--r-pill);
+  backdrop-filter: blur(6px);
+  transition: color var(--fast) var(--ease), border-color var(--fast) var(--ease),
+              background var(--fast) var(--ease);
+}
+.layer-btn:hover { color: #dfe4ff; border-color: rgba(150, 165, 240, .45); }
+.layer-btn.on { color: #eef1ff; background: rgba(38, 44, 86, .9); border-color: rgba(150, 165, 240, .55); }
+.layer-btn:focus-visible { outline: 2px solid #8fa8ff; outline-offset: 2px; }
+.layer-btn small { color: #6f79a6; font-size: var(--fs-xs); }
+.layer-btn.on small { color: #98a2cc; }
+
+.layer-dot {
+  width: 8px; height: 8px; border-radius: 50%; flex: none;
+  background: var(--c, #c9d4ff); opacity: .45;
+  transition: opacity var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
+}
+.layer-btn.on .layer-dot { opacity: 1; box-shadow: 0 0 7px var(--c, #c9d4ff); }
+.gc-title .layer-dot { opacity: 1; box-shadow: 0 0 7px var(--c); }
+
+/* Le HUD et les calques se disputent la place en petite largeur : les calques
+   gagnent, ce sont eux qui pilotent la lecture de la carte. */
+@media (max-width: 720px) {
+  .galaxy-layers { max-width: calc(100% - var(--sp-5)); }
+  .galaxy-card { bottom: 72px; }
+}
+
+/* — réglage du budget de mémoire — */
+.budget-tune {
+  display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap;
+  margin-top: var(--sp-3); padding-top: var(--sp-3);
+  border-top: 1px solid var(--line-soft); font-size: var(--fs-md);
+}
+.budget-tune label { color: var(--muted); }
+.budget-tune input {
+  width: 118px; padding: 5px 9px; text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.budget-tune .muted { color: var(--muted); }
+.budget-tune strong { color: var(--text); font-weight: 600; }

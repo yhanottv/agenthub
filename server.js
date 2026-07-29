@@ -8,7 +8,8 @@ import { WebSocketServer } from 'ws';
 
 import {
   Agents, Channels, Messages, Tasks, Settings, Stats, Notes, NoteProposals, Usage, Providers,
-  Sessions, Prices, Search, Attachments, Schedules, Webhooks, slug, db,
+  Sessions, Prices, Search, Attachments, Schedules, Webhooks, Graph, GRAPH_LAYERS,
+  notesBudget, NOTES_BUDGET_MAX, slug, db,
 } from './db.js';
 import { providerCatalog, probeProvider, seedProvidersFromEnv, PRESETS } from './llm.js';
 import { Orchestrator } from './orchestrator.js';
@@ -437,12 +438,19 @@ app.get('/api/settings', requireAuth, (req, res) => res.json(Settings.publicAll(
 
 app.put('/api/settings', requireAuth, (req, res) => {
   const patch = req.body || {};
-  const ALLOWED = ['owner_name', 'org_name', 'theme', 'daily_budget', 'tools_enabled'];
+  const ALLOWED = [
+    'owner_name', 'org_name', 'theme', 'daily_budget', 'tools_enabled',
+    'notes_auto', 'notes_budget', 'context_budget',
+  ];
+  const FLAGS = ['tools_enabled', 'notes_auto'];
   for (const [k, v] of Object.entries(patch)) {
     if (!ALLOWED.includes(k)) continue;
     if (k === 'theme' && !['light', 'dark'].includes(v)) continue;
     if (k === 'daily_budget' && v !== '' && !(Number(v) >= 0)) continue;
-    if (k === 'tools_enabled') { Settings.set(k, v ? '1' : ''); continue; }
+    if ((k === 'notes_budget' || k === 'context_budget') && v !== '' && !(Number(v) > 0)) continue;
+    // Une case décochée s'enregistre comme chaîne vide : un '0' serait une
+    // valeur non vide, donc lue comme « présent » par un test de vérité.
+    if (FLAGS.includes(k)) { Settings.set(k, v ? '1' : ''); continue; }
     Settings.set(k, String(v ?? '').slice(0, 80));
   }
   const settings = Settings.publicAll();
@@ -626,10 +634,21 @@ app.get('/api/notes', requireAuth, (req, res) => res.json({
   notes: Notes.all(),
   tags: Notes.tags(),
   pendingProposals: NoteProposals.countPending(),
+  budget: notesBudget(),
+  budgetMax: NOTES_BUDGET_MAX,
+  autoAccept: NoteProposals.autoAccept(),
 }));
 
-/** Nodes and edges for the Memory Galaxy. */
-app.get('/api/notes/graph', requireAuth, (req, res) => res.json(Notes.graph()));
+/**
+ * Nodes and edges for the Memory Galaxy.
+ * `layers` selects the families to include; unknown names are ignored rather
+ * than rejected, so an old client never gets an empty map.
+ */
+app.get('/api/notes/graph', requireAuth, (req, res) => {
+  const asked = String(req.query.layers ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+  const layers = asked.filter((l) => GRAPH_LAYERS.includes(l));
+  res.json({ ...Graph.build(layers.length ? layers : GRAPH_LAYERS), counts: Graph.counts() });
+});
 
 /** Most recently touched first — the "Récent" tab. */
 app.get('/api/notes/recent', requireAuth, (req, res) =>
@@ -1114,6 +1133,49 @@ function runSchedule(s, reason) {
     .catch((err) => console.error('schedule run:', err));
   return true;
 }
+
+// ---- rafraîchissement du catalogue de modèles ------------------------------
+/**
+ * La liste des modèles d'un fournisseur est mise en cache au moment du test de
+ * connexion, et plus rien ne la rafraîchissait.
+ *
+ * En production, `kimi-k3` a disparu du catalogue d'AgentRouter sans qu'aucun
+ * réglage ne change : AgentHub a continué à le demander pendant des jours, et
+ * la passerelle répondait « 无可用渠道 » — un message en chinois, affiché tel
+ * quel à l'utilisateur. Une fois la liste à jour, resolveForAgent retombe tout
+ * seul sur un modèle encore desservi.
+ */
+async function refreshCatalogues(reason) {
+  for (const p of Providers.all()) {
+    if (!p.enabled || !p.base_url) continue;
+    if (p.needs_key && !p.api_key) continue;
+    const before = p.models.join(',');
+    const probe = await probeProvider(p);
+    if (!probe.ok || !probe.models?.length) continue;
+    if (probe.models.join(',') === before) continue;
+
+    const gone = p.models.filter((m) => !probe.models.includes(m));
+    Providers.setModels(p.id, probe.models, p.default_model);
+    console.log(`${p.label} (${reason}) : catalogue mis à jour, ${probe.models.length} modèle(s).`);
+    if (gone.length) {
+      console.warn(`  modèle(s) retiré(s) par le fournisseur : ${gone.join(', ')}`);
+      // Les agents pointant sur un modèle disparu basculent sur le défaut ;
+      // le dire est plus utile que de les laisser échouer un par un.
+      const orphans = Agents.all().filter((a) => a.provider === p.id && gone.includes(a.model));
+      for (const a of orphans) {
+        console.warn(`  ${a.name} utilisait ${a.model} — repli sur ${p.default_model || probe.models[0]}.`);
+      }
+      if (orphans.length) broadcast({ type: 'agents.reload', agents: Agents.all() });
+    }
+    broadcast({ type: 'providers.update', providers: providerCatalog() });
+  }
+}
+
+setInterval(() => { refreshCatalogues('périodique').catch((e) => console.error('catalogue:', e.message)); },
+  6 * 3600_000).unref();
+// Au démarrage, mais après les sondes d'ouverture, pour ne pas doubler les appels.
+setTimeout(() => { refreshCatalogues('démarrage').catch((e) => console.error('catalogue:', e.message)); },
+  60_000).unref();
 
 setInterval(() => {
   const d = new Date();

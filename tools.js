@@ -492,12 +492,17 @@ export async function runTool(name, rawArgs, ctx = {}) {
         if (NoteProposals.isDuplicate(titre)) {
           return { ok: true, text: `« ${titre} » est déjà en mémoire ou déjà proposé — rien à ajouter.` };
         }
-        const p = NoteProposals.create({
+        const r = NoteProposals.submit({
           title: titre, content: contenu, tags: args.tags,
           agent_id: ctx.agent?.id, agent_name: ctx.agent?.name, channel_id: ctx.channel?.id,
         });
-        ctx.onProposal?.(p);
-        return { ok: true, text: `Note « ${titre} » proposée. Elle entrera en mémoire après validation.` };
+        ctx.onProposal?.(r);
+        return {
+          ok: true,
+          text: r.auto
+            ? `Note « ${titre} » ajoutée à la mémoire de l'organisation. Tous les agents la verront désormais.`
+            : `Note « ${titre} » proposée. Elle entrera en mémoire après validation.`,
+        };
       }
 
       case 'calculer': {

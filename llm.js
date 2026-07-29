@@ -7,7 +7,18 @@
 import { Providers } from './db.js';
 
 const IDLE_TIMEOUT_MS = Number(process.env.LLM_IDLE_TIMEOUT_MS || 120000);
-const CONNECT_TIMEOUT_MS = Number(process.env.LLM_CONNECT_TIMEOUT_MS || 30000);
+
+/**
+ * Délai avant le PREMIER octet, pas délai d'établissement de connexion.
+ *
+ * Il était à 30 s, ce qui paraissait large. Mesuré en production sur
+ * AgentRouter, avec des requêtes quasi identiques : 2,7 s, 3,2 s, 15,4 s,
+ * 3,2 s. La latence d'une passerelle qui répartit vers plusieurs fournisseurs
+ * est erratique par nature, et un modèle à raisonnement peut légitimement
+ * réfléchir longtemps avant d'émettre quoi que ce soit. 30 s coupait des
+ * requêtes parfaitement saines.
+ */
+const CONNECT_TIMEOUT_MS = Number(process.env.LLM_CONNECT_TIMEOUT_MS || 90000);
 const PROBE_TIMEOUT_MS = Number(process.env.LLM_PROBE_TIMEOUT_MS || 15000);
 
 /** Known services offered in the setup wizard. Purely descriptive. */
@@ -470,6 +481,15 @@ function summariseUpstream(raw) {
   const s = String(raw || '');
   if (/无效的令牌|invalid token/i.test(s)) {
     return 'Le fournisseur LLM a rejeté le token comme invalide. Renouvelle la clé API.';
+  }
+  // Vu en production : « 当前分组 default 下对于模型 kimi-k3 无可用渠道 ».
+  // La passerelle n'a plus de fournisseur pour ce modèle — souvent parce qu'il
+  // a été retiré du catalogue depuis que la liste a été mise en cache.
+  if (/无可用渠道|no available channel/i.test(s)) {
+    const m = s.match(/模型\s*([\w.\-/]+)/) || s.match(/model\s+([\w.\-/]+)/i);
+    return `Ce modèle${m ? ` (${m[1]})` : ''} n'est plus desservi par la passerelle. `
+         + 'Il a probablement été retiré de son catalogue : rouvre Réglages → Fournisseurs, '
+         + 'teste le service pour rafraîchir la liste, et choisis un modèle encore proposé.';
   }
   if (/余额|insufficient|quota|balance/i.test(s)) {
     return 'Crédit/quota épuisé côté fournisseur LLM.';

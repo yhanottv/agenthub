@@ -289,11 +289,28 @@ ok('THE NOTE REACHES THE MODEL PROMPT', /Acme/.test(sentSystem) && /sobriété/.
   'shared memory absent from the system prompt');
 ok('memory is announced as authoritative', /Mémoire partagée/.test(sentSystem));
 
-// A note larger than the budget must be truncated, never silently dropped whole.
+// Le budget de mémoire injectée est réglable, plus figé à 6 000 caractères.
+// Ce qui doit rester vrai, c'est qu'il est respecté quelle que soit sa valeur,
+// et qu'une note trop grosse est TRONQUÉE plutôt que rejetée en silence.
+const { Settings, notesBudget } = await import('/app/db.js');
+
+ok('le budget par défaut dépasse largement les 6 000 caractères d\'origine',
+  notesBudget() >= 40000, `${notesBudget()} caractères`);
+
 Notes.create({ title: 'Pavé', content: 'x'.repeat(9000) });
-const big = Notes.forContext().join('\n');
-ok('context stays within budget', big.length <= 6200, `${big.length} chars`);
-ok('oversized note is marked as truncated', /tronquée/.test(big) || big.length <= 6200);
+const large = Notes.forContext().join('\n');
+ok('une note de 9 000 caractères tient désormais dans le budget',
+  large.includes('Pavé'), 'la note a été coupée alors que le budget le permet');
+
+Settings.set('notes_budget', '4000');
+ok('le budget réglé est bien pris en compte', notesBudget() === 4000);
+const tight = Notes.forContext().join('\n');
+ok('le contexte respecte le budget réglé', tight.length <= 4200, `${tight.length} caractères`);
+ok('la note en surplus est marquée comme tronquée',
+  /tronquée/.test(tight) || tight.length <= 4200);
+
+Settings.set('notes_budget', '');
+ok('vider le réglage rend le budget par défaut', notesBudget() >= 40000);
 
 ok('a note can be updated', Notes.update(n1.id, { content: 'Nouveau ton.' }).content === 'Nouveau ton.');
 ok('a note can be deleted', Notes.remove(n1.id) === true && Notes.get(n1.id) === undefined);

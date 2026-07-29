@@ -5,7 +5,7 @@
 // in turn hand it to a worker. Delegation targets are looked up in the channel
 // first and then across the whole organisation, so a pôle is not a hard wall.
 
-import { Agents, Channels, Messages, Tasks, Notes, Usage, Attachments, Settings } from './db.js';
+import { Agents, Channels, Messages, Tasks, Notes, Usage, Attachments, Settings, notesBudget } from './db.js';
 import { streamChat } from './llm.js';
 import { TOOL_DEFS, runTool, describeCall } from './tools.js';
 
@@ -16,15 +16,27 @@ const MAX_DELEGATIONS_PER_TURN = 4;
 const MAX_TOOL_ROUNDS = 4;        // tool → answer → tool → … before we stop
 
 /**
- * Rough ceiling on the prompt, in characters.
+ * Plafond approximatif du prompt, en caractères.
  *
- * There was no budget at all: thirty messages of history plus up to 4 000
- * characters per delegated result, and nothing capped the total. On a long
- * conversation that overflows the model's window, and the provider answers with
- * a 400 that says nothing useful. Four characters per token is the same
- * approximation the usage meter uses.
+ * Il n'y en avait aucun : trente messages d'historique plus jusqu'à 4 000
+ * caractères par tâche déléguée, sans rien pour borner le total. Sur une
+ * conversation chargée ça déborde la fenêtre du modèle, et le fournisseur
+ * répond par un 400 qui n'explique rien. Quatre caractères par token, la même
+ * approximation que le compteur de consommation.
+ *
+ * Réglable, et jamais inférieur à la mémoire partagée : un budget de notes
+ * supérieur au budget de contexte ferait tronquer l'historique à néant avant
+ * même la première réplique.
  */
-const MAX_CONTEXT_CHARS = Number(process.env.MAX_CONTEXT_CHARS || 48000);
+const CONTEXT_BUDGET_DEFAULT = 240000;
+const CONTEXT_BUDGET_MAX = 800000;
+
+function maxContextChars() {
+  const raw = Number(Settings.get('context_budget', '')) || Number(process.env.MAX_CONTEXT_CHARS) || 0;
+  const wanted = raw > 0 ? raw : CONTEXT_BUDGET_DEFAULT;
+  const floor = notesBudget() + 20000;   // la mémoire, plus de quoi converser
+  return Math.min(CONTEXT_BUDGET_MAX, Math.max(floor, Math.round(wanted)));
+}
 
 const RANK_LEVEL = { ceo: 0, manager: 1, worker: 2 };
 const rankLevel = (a) => RANK_LEVEL[a?.rank] ?? 2;
@@ -280,7 +292,21 @@ export class Orchestrator {
           const r = await runTool(call.name, call.args, {
             agent,
             channel,
-            onProposal: (p) => this.broadcast({ type: 'proposal.new', proposal: p }),
+            onProposal: (r) => {
+              if (r.auto && r.note) {
+                // Entrée directe en mémoire : le graphe et la liste des notes
+                // ont changé, il faut le dire à tout le monde.
+                this.broadcast({ type: 'note.change', note: r.note });
+                this.broadcast({ type: 'graph.dirty' });
+                this.broadcast({
+                  type: 'memory.learned',
+                  title: r.note.title,
+                  agent: r.proposal.agent_name || agent.name,
+                });
+              } else {
+                this.broadcast({ type: 'proposal.new', proposal: r.proposal });
+              }
+            },
           });
           toolTrace.push({ name: call.name, label, ok: r.ok });
 
@@ -515,7 +541,7 @@ export class Orchestrator {
     const triggerMsg = trigger ? { role: 'user', content: trigger } : null;
     const fixed = preamble.reduce((n, m) => n + m.content.length, 0)
       + (triggerMsg ? triggerMsg.content.length : 0);
-    let budget = MAX_CONTEXT_CHARS - fixed;
+    let budget = maxContextChars() - fixed;
     const kept = [];
     for (let i = turns.length - 1; i >= 0; i--) {
       const cost = turns[i].content.length + 16;   // rough per-message overhead

@@ -16,7 +16,17 @@ const S = {
   // Second cerveau : trois façons de regarder la même mémoire.
   brainTab: 'recent',       // recent | notes | graph
   brainTag: '',             // filtre par tag dans l'onglet Notes
-  noteTags: [], proposals: [], graph: null,
+  noteTags: [], proposals: [], graph: null, graphKey: '',
+  notesBudget: 60000, notesBudgetMax: 400000, notesAuto: true,
+  // Les calques survivent au rechargement : c'est un réglage de lecture, pas
+  // un état de session, et le refaire à chaque visite serait pénible.
+  graphLayers: (() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('ah_layers') || 'null');
+      if (Array.isArray(saved) && saved.length) return saved;
+    } catch { /* valeur illisible */ }
+    return ['notes', 'agents', 'channels'];
+  })(),
   presets: [], setup: null, wizStep: 0, wizProvider: null,
   auth: { claimed: true, envPassword: false, minPassword: 8 },
   view: 'home',             // home | chat | team | brain | usage | journal | settings
@@ -366,6 +376,9 @@ async function loadNotes() {
   if (!r) return;
   S.notes = r.notes || [];
   S.noteTags = r.tags || [];
+  if (r.budget) S.notesBudget = r.budget;
+  if (r.budgetMax) S.notesBudgetMax = r.budgetMax;
+  S.notesAuto = r.autoAccept !== false;
   if (S.view === 'brain') renderView();
 }
 
@@ -379,12 +392,15 @@ async function loadProposals() {
 /**
  * The graph is fetched separately from the note list: it carries the stub nodes
  * and every edge, which the notes payload has no reason to duplicate.
+ * Layer selection happens server-side so an unwanted family is never sent.
  */
 async function loadGraph(force = false) {
-  if (S.graph && !force) return S.graph;
-  const r = await tryApi(api('GET', '/api/notes/graph'), 'Chargement du graphe');
+  const key = S.graphLayers.join(',');
+  if (S.graph && S.graphKey === key && !force) return S.graph;
+  const r = await tryApi(api('GET', `/api/notes/graph?layers=${encodeURIComponent(key)}`), 'Chargement du graphe');
   if (!r) return null;
   S.graph = r;
+  S.graphKey = key;
   return r;
 }
 
@@ -947,7 +963,6 @@ function modelBadge(a) {
 }
 
 // ---- Second cerveau --------------------------------------------------------
-const NOTES_BUDGET = 6000;   // must match NOTES_CONTEXT_BUDGET server-side
 
 function notesUsedChars() {
   return S.notes.reduce((n, x) => n + (x.content.trim() ? x.title.length + x.content.trim().length + 5 : 0), 0);
@@ -1083,8 +1098,9 @@ const emptyBrainHTML = () => `
 // ---- onglet Notes ----------------------------------------------------------
 function renderBrainNotes(panel) {
   const used = notesUsedChars();
-  const pct = Math.min(100, Math.round((used / NOTES_BUDGET) * 100));
-  const over = used > NOTES_BUDGET;
+  const budget = S.notesBudget;
+  const pct = Math.min(100, Math.round((used / budget) * 100));
+  const over = used > budget;
   const shown = S.brainTag ? S.notes.filter((n) => (n.tags || []).includes(S.brainTag)) : S.notes;
 
   panel.innerHTML = `
@@ -1096,12 +1112,27 @@ function renderBrainNotes(panel) {
 
     <div class="budget">
       <div class="budget-head">
-        <span>${used.toLocaleString('fr-FR')} / ${NOTES_BUDGET.toLocaleString('fr-FR')} caractères injectés</span>
+        <span>${used.toLocaleString('fr-FR')} / ${budget.toLocaleString('fr-FR')} caractères injectés</span>
         <span class="${over ? 'budget-over' : 'muted'}">${over ? 'au-delà : les dernières notes seront tronquées' : `${pct} %`}</span>
       </div>
       <div class="budget-bar"><span style="width:${pct}%" class="${over ? 'over' : ''}"></span></div>
-      <div class="field-hint" style="margin-top:8px">Les notes épinglées passent en premier et sont donc les dernières à être coupées.</div>
+      <div class="budget-tune">
+        <label for="nb-budget">Mémoire injectée à chaque appel</label>
+        <input id="nb-budget" type="number" min="2000" max="${S.notesBudgetMax}" step="10000" value="${budget}">
+        <span class="muted">caractères ≈ <strong>${Math.round(budget / 4).toLocaleString('fr-FR')}</strong> tokens</span>
+        <button class="btn sm" id="nb-save" type="button">Appliquer</button>
+      </div>
+      <div class="field-hint" style="margin-top:8px;line-height:1.7">
+        Les notes épinglées passent en premier et sont donc les dernières à être coupées.
+        Cette mémoire part avec <strong>chaque</strong> message de <strong>chaque</strong> agent :
+        la doubler double la part de contexte facturée à chaque tour. Maximum ${S.notesBudgetMax.toLocaleString('fr-FR')} caractères.
+      </div>
     </div>
+
+    <label class="checklist-item" style="padding:0;margin:0 0 18px">
+      <input type="checkbox" id="nb-auto" ${S.notesAuto ? 'checked' : ''}>
+      <span>Les agents écrivent directement en mémoire, sans validation de ta part</span>
+    </label>
 
     ${S.noteTags.length ? `<div class="tag-filter">
       <button class="tag ${S.brainTag ? '' : 'on'}" type="button" data-tagf="">tout</button>
@@ -1116,6 +1147,26 @@ function renderBrainNotes(panel) {
     S.brainTag = b.dataset.tagf;
     renderView();
   });
+
+  $('#nb-save', panel).onclick = async (e) => {
+    const v = Math.max(2000, Math.min(S.notesBudgetMax, Number($('#nb-budget', panel).value) || 0));
+    e.currentTarget.disabled = true;
+    const r = await tryApi(api('PUT', '/api/settings', { notes_budget: String(v) }), 'Enregistrement');
+    e.currentTarget.disabled = false;
+    if (r) { S.settings = r; toast(`Mémoire injectée portée à ${v.toLocaleString('fr-FR')} caractères.`, { kind: 'success' }); loadNotes(); }
+  };
+
+  $('#nb-auto', panel).onchange = async (e) => {
+    const on = e.currentTarget.checked;
+    const r = await tryApi(api('PUT', '/api/settings', { notes_auto: on ? '1' : '' }), 'Enregistrement');
+    if (r) {
+      S.settings = r;
+      S.notesAuto = on;
+      toast(on ? 'Les agents écrivent directement en mémoire.' : 'Les notes des agents attendront ta validation.',
+        { kind: 'success' });
+    } else e.currentTarget.checked = !on;
+  };
+
   wireNoteCards(panel);
 }
 
@@ -1145,6 +1196,29 @@ function freshnessColor(ts, alpha = 1) {
   return `hsl(${hue} ${sat}% ${light}% / ${alpha})`;
 }
 
+/**
+ * Applique une opacité à une couleur, quelle que soit sa notation.
+ * freshnessColor produit du `hsl(… / a)`, les agents et les pôles du `#rrggbb` :
+ * le dégradé du halo a besoin des deux dans la même fonction.
+ */
+function withAlpha(color, a) {
+  const alpha = Math.max(0, Math.min(1, a));
+  const s = String(color || '').trim();
+
+  // hsl(250 12% 96%) ou hsl(250 12% 96% / .4) — on retire l'opacité existante
+  // avant de poser la nouvelle, sinon on empile deux barres obliques.
+  const hsl = s.match(/^hsla?\(([^/)]+?)(?:\s*\/[^)]*)?\)$/i);
+  if (hsl) return `hsl(${hsl[1].trim()} / ${alpha})`;
+
+  const hex = s.replace('#', '');
+  if (hex.length === 3 || hex.length === 6) {
+    const full = hex.length === 3 ? hex.split('').map((c) => c + c).join('') : hex;
+    const n = parseInt(full, 16);
+    return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+  }
+  return `rgba(200, 212, 255, ${alpha})`;
+}
+
 let galaxy = null;
 function destroyGalaxy() {
   if (galaxy) { galaxy.destroy(); galaxy = null; }
@@ -1171,17 +1245,39 @@ async function renderBrainGraph(panel) {
   }
 
   const links = data.links.length;
+  const counts = data.counts || {};
   panel.innerHTML = `<div class="galaxy-wrap" id="galaxy-wrap">
-    <canvas id="galaxy-canvas" aria-label="Carte de la mémoire"></canvas>
+    <canvas id="galaxy-canvas" aria-label="Carte de l'espace de travail"></canvas>
     <div class="galaxy-hud">
       <div class="galaxy-title">${IC.galaxy} MEMORY GALAXY</div>
       <div class="galaxy-count"><strong>${data.nodes.length}</strong> étoile${data.nodes.length > 1 ? 's' : ''} · <strong>${links}</strong> lien${links > 1 ? 's' : ''}</div>
       <div class="galaxy-help">${GALAXY_HELP}</div>
       <div class="galaxy-help">✦ plus c'est clair et blanc, plus c'est récent</div>
     </div>
+
+    <div class="galaxy-layers" role="group" aria-label="Ce qui apparaît dans la galaxie">
+      ${LAYERS.map(([id, label]) => `
+        <button class="layer-btn ${S.graphLayers.includes(id) ? 'on' : ''}" type="button"
+                data-layer="${id}" aria-pressed="${S.graphLayers.includes(id)}">
+          <span class="layer-dot" style="--c:${LAYER_COLOR[id]}"></span>${label}
+          <small>${counts[id] ?? 0}</small>
+        </button>`).join('')}
+    </div>
+
     <div class="galaxy-card hidden" id="galaxy-card" aria-live="polite"></div>
     <button class="galaxy-reset" id="galaxy-reset" type="button" title="Recentrer">${IC.galaxy} Recentrer</button>
   </div>`;
+
+  $$('[data-layer]', panel).forEach((b) => b.onclick = async () => {
+    const id = b.dataset.layer;
+    const next = S.graphLayers.includes(id)
+      ? S.graphLayers.filter((l) => l !== id)
+      : [...S.graphLayers, id];
+    if (!next.length) { toast('Garde au moins une famille affichée.', { kind: 'warn' }); return; }
+    S.graphLayers = LAYERS.map(([l]) => l).filter((l) => next.includes(l));   // ordre stable
+    localStorage.setItem('ah_layers', JSON.stringify(S.graphLayers));
+    renderView();
+  });
 
   const canvas = $('#galaxy-canvas', panel);
   const card = $('#galaxy-card', panel);
@@ -1191,28 +1287,75 @@ async function renderBrainGraph(panel) {
       if (!node) { card.classList.add('hidden'); return; }
       card.classList.remove('hidden');
       card.innerHTML = `
-        <div class="gc-title">${IC.galaxy}<span>${escapeHtml(node.title)}</span></div>
-        <div class="gc-meta">${node.stub ? 'Note manquante' : kindLabel(node.kind)} · ${node.degree} lien${node.degree > 1 ? 's' : ''}</div>
-        ${node.stub ? '<div class="gc-meta">clic pour la créer</div>'
-          : `<div class="gc-meta">${node.chars.toLocaleString('fr-FR')} caractères · vue ${agoText(node.touched_at || node.updated_at)}</div>`}`;
+        <div class="gc-title">
+          <span class="layer-dot" style="--c:${nodeColor(node)}"></span>
+          <span>${escapeHtml(node.emoji ? node.emoji + ' ' : '')}${escapeHtml(node.title)}</span>
+        </div>
+        <div class="gc-meta">${escapeHtml(node.subtitle || TYPE_LABEL[node.type] || '')} · ${node.degree} lien${node.degree > 1 ? 's' : ''}</div>
+        <div class="gc-meta">${nodeDetail(node)}</div>`;
     },
-    onPick: (node) => {
-      if (node.stub) {
-        openNoteModal(null, { title: node.title });
-        return;
-      }
-      const note = S.notes.find((n) => n.id === node.id);
-      if (!note) return;
-      // Opening from the map counts as a use, which is what re-lights the star.
-      api('POST', `/api/notes/${note.id}/touch`).catch(() => {});
-      openNoteModal(note);
-    },
+    onPick: (node) => pickNode(node),
   });
 
   $('#galaxy-reset', panel).onclick = () => galaxy && galaxy.reset();
 }
 
-const kindLabel = (k) => ({ note: 'Note', wiki: 'Wiki', auto: 'Proposée par un agent' })[k] || 'Note';
+const LAYERS = [
+  ['notes', 'Notes'],
+  ['agents', 'Agents'],
+  ['channels', 'Pôles'],
+  ['tasks', 'Tâches'],
+];
+const LAYER_COLOR = {
+  notes: '#c9d4ff', agents: '#7ea6ff', channels: '#63d3c0', tasks: '#e0b464',
+};
+const TYPE_LABEL = { note: 'Note', agent: 'Agent', channel: 'Pôle', task: 'Tâche' };
+const TASK_COLOR = { done: '#6fc98d', failed: '#d98a6f', in_progress: '#e0b464', pending: '#9aa5d4' };
+
+/** Couleur d'une étoile : la sienne quand elle en a une, sinon celle du calque. */
+function nodeColor(node) {
+  if (node.type === 'note') return node.stub ? '#8f9ac4' : freshnessColor(node.touched_at || node.updated_at, 1);
+  if (node.type === 'task') return TASK_COLOR[node.status] || LAYER_COLOR.tasks;
+  return safeColor(node.color, LAYER_COLOR[node.type === 'agent' ? 'agents' : 'channels']);
+}
+
+function nodeDetail(node) {
+  if (node.stub) return 'note absente — clic pour la créer';
+  if (node.type === 'note') return `${node.chars.toLocaleString('fr-FR')} caractères · vue ${agoText(node.touched_at || node.updated_at)}`;
+  if (node.type === 'agent') return 'clic pour ouvrir sa fiche';
+  if (node.type === 'channel') return `${node.uses.toLocaleString('fr-FR')} message${node.uses > 1 ? 's' : ''} · clic pour ouvrir`;
+  if (node.type === 'task') return node.chars ? `résultat de ${node.chars.toLocaleString('fr-FR')} caractères` : 'sans résultat enregistré';
+  return '';
+}
+
+/** Chaque famille s'ouvre là où elle vit réellement. */
+function pickNode(node) {
+  if (node.type === 'note') {
+    if (node.stub) { openNoteModal(null, { title: node.title }); return; }
+    const note = S.notes.find((n) => n.id === node.id);
+    if (!note) return;
+    // Ouvrir depuis la carte compte comme un usage — c'est ce qui rallume l'étoile.
+    api('POST', `/api/notes/${note.id}/touch`).catch(() => {});
+    openNoteModal(note);
+    return;
+  }
+  if (node.type === 'agent') {
+    const agent = agentById(node.id);
+    if (agent) openAgentModal(agent);
+    return;
+  }
+  if (node.type === 'channel') {
+    if (channelById(node.id)) openChannel(node.id);
+    return;
+  }
+  if (node.type === 'task') {
+    // Une tâche n'a pas d'écran à elle : on va là où elle s'est jouée.
+    const t = S.graph?.nodes.find((n) => n.id === node.id);
+    const edge = S.graph?.links.find((l) => l.source === node.id && l.kind === 'in');
+    if (edge && channelById(edge.target)) openChannel(edge.target);
+    else toast(t ? `Tâche « ${t.title} » — ${t.subtitle}` : 'Tâche introuvable.', { kind: 'info' });
+  }
+}
 
 class Galaxy {
   constructor(canvas, data, opts = {}) {
@@ -1513,7 +1656,11 @@ class Galaxy {
       const node = this.nodes[i];
       const p = proj[i];
       const f = freshness(node.touched_at || node.updated_at);
-      const base = 2.1 + Math.min(3.4, Math.sqrt(node.degree) * 1.15)
+      // Agents et pôles portent la structure : ils restent lisibles même quand
+      // des centaines de notes les entourent.
+      const weight = node.type === 'channel' ? 3.4 : node.type === 'agent' ? 2.8
+        : node.type === 'task' ? 1.2 : 2.1;
+      const base = weight + Math.min(3.4, Math.sqrt(node.degree) * 1.15)
         + Math.min(1.8, node.chars / 2200);
       const r = Math.max(1, base * p.k * 1.25);
 
@@ -1524,6 +1671,7 @@ class Galaxy {
 
       const dim = hoverIdx >= 0 && i !== hoverIdx && !near.has(i);
       const alpha = (dim ? 0.28 : 1) * (0.55 + 0.45 * Math.min(1, p.k * 1.6));
+      const col = nodeColor(node);
 
       if (node.stub) {
         // Une note qui n'existe pas encore : un contour, pas une étoile.
@@ -1539,9 +1687,11 @@ class Galaxy {
         continue;
       }
 
+      // Le halo porte la couleur de la famille : c'est ce qui rend les calques
+      // lisibles d'un coup d'œil, sans avoir à survoler quoi que ce soit.
       const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r * 5);
-      glow.addColorStop(0, freshnessColor(node.touched_at || node.updated_at, alpha * 0.9));
-      glow.addColorStop(0.35, freshnessColor(node.touched_at || node.updated_at, alpha * 0.22));
+      glow.addColorStop(0, withAlpha(col, alpha * 0.85));
+      glow.addColorStop(0.35, withAlpha(col, alpha * 0.2));
       glow.addColorStop(1, 'rgba(0,0,0,0)');
       ctx.fillStyle = glow;
       ctx.beginPath();
@@ -1549,29 +1699,47 @@ class Galaxy {
       ctx.fill();
 
       ctx.globalAlpha = alpha;
-      ctx.fillStyle = node.pinned ? '#fff6d8' : freshnessColor(node.touched_at || node.updated_at, 1);
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.fillStyle = node.type === 'note' && node.pinned ? '#fff6d8' : col;
+
+      // Une forme par famille : à distance la couleur suffit rarement, la
+      // silhouette se lit même quand l'étoile ne fait que trois pixels.
+      if (node.type === 'channel') {
+        const s = r * 1.7;
+        ctx.fillRect(p.x - s / 2, p.y - s / 2, s, s);
+      } else if (node.type === 'task') {
+        const s = r * 1.5;
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y - s); ctx.lineTo(p.x + s, p.y);
+        ctx.lineTo(p.x, p.y + s); ctx.lineTo(p.x - s, p.y);
+        ctx.closePath();
+        ctx.fill();
+      } else {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
 
       if (node.pinned) {
-        ctx.strokeStyle = `rgba(255,214,120,${alpha * 0.8})`;
-        ctx.lineWidth = 1.1;
+        ctx.strokeStyle = withAlpha(node.type === 'agent' ? col : '#ffd678', alpha * 0.85);
+        ctx.lineWidth = 1.2;
         ctx.beginPath();
-        ctx.arc(p.x, p.y, r + 2.6, 0, Math.PI * 2);
+        ctx.arc(p.x, p.y, r + 3, 0, Math.PI * 2);
         ctx.stroke();
       }
       ctx.globalAlpha = 1;
 
       // Les titres n'apparaissent que sur les étoiles proches et notables,
-      // sinon le centre de la galaxie devient un mur de texte.
-      const label = i === hoverIdx || (!dim && f < 0.5 && node.degree >= 2 && p.k > 0.55);
+      // sinon le centre de la galaxie devient un mur de texte. Agents et pôles
+      // sont peu nombreux et structurants : eux méritent toujours leur nom.
+      const structural = node.type === 'agent' || node.type === 'channel';
+      const label = i === hoverIdx
+        || (!dim && p.k > 0.5 && (structural || (f < 0.5 && node.degree >= 2 && p.k > 0.55)));
       if (label) {
-        ctx.globalAlpha = i === hoverIdx ? 1 : Math.min(0.75, p.k);
-        ctx.font = `${i === hoverIdx ? 600 : 400} ${Math.round(11 + p.k * 2)}px ui-sans-serif, system-ui, sans-serif`;
-        ctx.fillStyle = '#e8ecff';
+        ctx.globalAlpha = i === hoverIdx ? 1 : Math.min(structural ? 0.9 : 0.75, p.k);
+        ctx.font = `${i === hoverIdx || structural ? 600 : 400} ${Math.round(11 + p.k * 2)}px ui-sans-serif, system-ui, sans-serif`;
+        ctx.fillStyle = structural ? col : '#e8ecff';
         ctx.textAlign = 'center';
-        ctx.fillText(node.title.slice(0, 28), p.x, p.y - r - 7);
+        ctx.fillText((node.emoji ? node.emoji + ' ' : '') + node.title.slice(0, 28), p.x, p.y - r - 8);
         ctx.globalAlpha = 1;
       }
     }
@@ -1623,10 +1791,10 @@ function openNoteModal(note, prefill = {}) {
       </div>
       <div class="field">
         <label for="n-content">Contenu</label>
-        <textarea id="n-content" rows="12" maxlength="8000"
+        <textarea id="n-content" rows="14" maxlength="40000"
                   placeholder="Ce que tous tes agents doivent savoir…">${isEdit ? escapeHtml(note.content) : ''}</textarea>
         <div class="field-hint">
-          <span id="n-count">0</span> / 8000 caractères ·
+          <span id="n-count">0</span> / 40 000 caractères ·
           écris <code>[[Titre d'une note]]</code> pour la relier dans la galaxie
         </div>
         <div class="link-preview" id="n-links"></div>
@@ -3865,6 +4033,12 @@ function handleEvent(e) {
       S.proposals = [e.proposal, ...S.proposals.filter((p) => p.id !== e.proposal.id)];
       if (S.view === 'brain') renderView();
       else toast(`${e.proposal.agent_name || 'Un agent'} propose une note : « ${e.proposal.title} »`, { kind: 'info' });
+      break;
+
+    case 'memory.learned':
+      // Écriture directe en mémoire : la note arrive par note.change, ce
+      // message-ci ne sert qu'à ce que ça ne se fasse pas dans ton dos.
+      toast(`${e.agent} a retenu : « ${e.title} »`, { kind: 'success', title: 'Mémoire enrichie' });
       break;
 
     case 'proposals.update':
