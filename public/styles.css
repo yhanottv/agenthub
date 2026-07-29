@@ -1065,8 +1065,18 @@ button.agent-card:hover { border-color: var(--accent); transform: translateY(-1p
 .task-flow { display: inline-flex; align-items: center; gap: 5px; }
 
 /* ------------------------------------------------------- modal / palette -- */
+/* Ordre d'empilement, du fond vers l'avant :
+     29/30  tiroirs mobiles
+     60     palette de recherche
+     70     assistant de configuration
+     90     boite de dialogue
+     100    notifications
+   La boite passe DEVANT l'assistant, et pas l'inverse : c'est l'assistant
+   lui-meme qui ouvre la fiche d'un service. A 50, elle s'ouvrait derriere son
+   propre appelant — visible seulement quand on essayait vraiment de
+   configurer un service depuis l'assistant. */
 .modal, .palette {
-  position: fixed; inset: 0; z-index: 50;
+  position: fixed; inset: 0; z-index: 90;
   background: rgba(16, 18, 25, .45); backdrop-filter: blur(3px);
   animation: fade .18s var(--ease) both;
 }
@@ -1165,6 +1175,8 @@ button.agent-card:hover { border-color: var(--accent); transform: translateY(-1p
   background: rgba(16, 18, 25, .5); backdrop-filter: blur(4px);
   animation: fade .2s var(--ease) both;
 }
+body:has(.modal:not(.hidden)) .wizard { filter: brightness(.72) saturate(.9); transition: filter var(--fast) var(--ease); }
+
 .wiz-card {
   width: 640px; max-width: 100%; max-height: 90vh; display: flex; flex-direction: column;
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg);
@@ -1310,7 +1322,7 @@ button.provider-row:hover { border-color: var(--accent); }
 
 /* -------------------------------------------------------------- toasts --- */
 .toasts {
-  position: fixed; bottom: var(--sp-5); right: var(--sp-5); z-index: 80;
+  position: fixed; bottom: var(--sp-5); right: var(--sp-5); z-index: 100;
   display: flex; flex-direction: column; gap: var(--sp-2); max-width: min(380px, calc(100vw - 44px));
 }
 .toast {

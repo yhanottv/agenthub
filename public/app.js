@@ -2338,7 +2338,23 @@ function wizWelcome(s) {
 
 function wizHermes(s) {
   const h = s.hermes || {};
-  const state = h.reachable ? 'good' : h.configured ? 'bad' : 'warn';
+
+  /*
+   * Trois pannes distinctes, trois dépannages différents.
+   *
+   * Tout ce qui n'était pas joignable s'annonçait « Hermes ne répond pas »,
+   * suivi d'une liste de vérifications réseau — alors que la cause la plus
+   * fréquente au premier démarrage est simplement qu'aucune clé n'a encore été
+   * saisie. On envoyait donc l'utilisateur inspecter ses réseaux Docker pour un
+   * champ vide.
+   */
+  const noKey = h.configured && !h.keyConfigured;
+  const state = h.reachable ? 'good' : noKey || !h.configured ? 'warn' : 'bad';
+  const title = h.reachable ? 'Hermes répond'
+    : !h.configured ? "Hermes n'est pas configuré"
+    : noKey ? "Il manque la clé d'Hermes"
+    : 'Hermes ne répond pas';
+
   return {
     nextLabel: 'Suivant',
     html: `
@@ -2346,17 +2362,30 @@ function wizHermes(s) {
       <p class="wiz-lede">Hermes apporte la continuité de session, ses outils et sa mémoire
         persistante. AgentHub fonctionne sans, mais c'est mieux avec.</p>
       <div class="check-row ${state}">
-        <span class="check-ic">${h.reachable ? '✓' : h.configured ? '✕' : '!'}</span>
+        <span class="check-ic">${h.reachable ? '✓' : state === 'bad' ? '✕' : '!'}</span>
         <div class="check-main">
-          <div class="check-title">${h.reachable ? 'Hermes répond' : h.configured ? 'Hermes ne répond pas' : 'Hermes n\'est pas configuré'}</div>
+          <div class="check-title">${title}</div>
           <div class="check-detail">
             ${h.configured ? `<code>${escapeHtml(h.base)}</code>` : 'Aucune URL enregistrée.'}
             ${h.reachable ? ` · ${h.models.length} modèle${h.models.length > 1 ? 's' : ''}` : ''}
-            ${h.error ? `<br>${escapeHtml(h.error)}` : ''}
+            ${h.error && !noKey ? `<br>${escapeHtml(h.error)}` : ''}
           </div>
         </div>
       </div>
-      ${h.reachable ? '' : `
+
+      ${h.reachable ? '' : noKey ? `
+        <div class="wiz-help">
+          <strong>C'est la seule chose qui manque.</strong>
+          <p style="margin:8px 0 0;line-height:1.75">
+            La clé d'Hermes est la valeur de <code>API_SERVER_KEY</code> dans sa
+            configuration — souvent dans son <code>.env</code> ou son
+            <code>docker-compose.yml</code>. Récupère-la et colle-la ci-dessous.
+          </p>
+          <p style="margin:8px 0 0;line-height:1.75">
+            Tu peux aussi passer cette étape : AgentHub marche très bien sans Hermes,
+            avec n'importe quel autre service.
+          </p>
+        </div>` : `
         <div class="wiz-help">
           <strong>Dans l'ordre :</strong>
           <ol style="margin:8px 0 0;padding-left:20px;line-height:1.75">
