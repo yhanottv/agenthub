@@ -131,6 +131,44 @@ export function resolveForAgent(agent = {}, override = null) {
 
 const slugOf = (s) => String(s || '').toLowerCase().trim();
 
+/**
+ * Traduit un échec réseau en phrase actionnable.
+ *
+ * `fetch` échoue toujours avec le même « fetch failed » ; la cause réelle est
+ * dans `err.cause.code`. Sans ce démêlage, un nom d'hôte qui ne résout pas et
+ * un service qui refuse la connexion produisaient le même message inutile — et
+ * l'utilisateur n'avait aucun moyen de savoir qu'il lui manquait un conteneur.
+ */
+export function describeNetworkError(err, baseUrl) {
+  const code = err?.cause?.code || err?.code || '';
+  let host = '';
+  try { host = new URL(baseUrl).host; } catch { host = String(baseUrl || ''); }
+
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
+    const internal = !host.includes('.');
+    return `Le nom « ${host} » ne résout pas.`
+      + (internal
+        ? ' C\'est un nom de conteneur Docker : soit le conteneur n\'existe pas, soit il n\'est '
+          + 'pas sur le même réseau qu\'AgentHub. Vérifie avec `docker ps` qu\'il tourne, et que '
+          + 'le bloc `networks:` de docker-compose.yml les relie.'
+        : ' Vérifie l\'orthographe du domaine, ou la résolution DNS du serveur.');
+  }
+  if (code === 'ECONNREFUSED') {
+    return `Rien n'écoute sur ${host}. Le service est peut-être arrêté, ou sur un autre port.`;
+  }
+  if (code === 'ECONNRESET' || code === 'EPIPE') {
+    return `${host} a coupé la connexion en cours de route.`;
+  }
+  if (code === 'CERT_HAS_EXPIRED' || code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'
+      || code === 'DEPTH_ZERO_SELF_SIGNED_CERT') {
+    return `Le certificat TLS de ${host} n'est pas valide (${code}).`;
+  }
+  if (code === 'ETIMEDOUT' || code === 'UND_ERR_CONNECT_TIMEOUT') {
+    return `${host} n'a pas répondu à temps.`;
+  }
+  return `Injoignable : ${err?.message || 'erreur réseau'}${code ? ` (${code})` : ''}`;
+}
+
 // Providers are configured either with or without the /v1 suffix.
 function endpoint(baseUrl, path) {
   const base = String(baseUrl).replace(/\/+$/, '');
@@ -138,8 +176,8 @@ function endpoint(baseUrl, path) {
 }
 
 /** One GET {base}/v1/models, optionally authenticated. */
-async function fetchModels(baseUrl, apiKey) {
-  const headers = { Accept: 'application/json' };
+async function fetchModels(baseUrl, apiKey, extraHeaders) {
+  const headers = { Accept: 'application/json', ...(extraHeaders || {}) };
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
   const ctrl = new AbortController();
@@ -153,7 +191,7 @@ async function fetchModels(baseUrl, apiKey) {
       ok: false,
       error: ctrl.signal.aborted
         ? `Pas de réponse en ${Math.round(PROBE_TIMEOUT_MS / 1000)} s.`
-        : `Injoignable : ${err.message}`,
+        : describeNetworkError(err, baseUrl),
     };
   }
   clearTimeout(timer);
@@ -205,7 +243,8 @@ export async function probeProvider(cfg) {
     };
   }
 
-  const authed = await fetchModels(baseUrl, apiKey);
+  const extra = cfg.headers || {};
+  const authed = await fetchModels(baseUrl, apiKey, extra);
   if (!authed.ok) {
     // « La clé API est refusée » ne dit pas quoi faire. La cause la plus
     // fréquente est une clé collée dans le mauvais formulaire : les clés ne
@@ -234,7 +273,7 @@ export async function probeProvider(cfg) {
   // Was the key actually what got us in? Repeat the call anonymously.
   let keyVerified = null;
   if (apiKey) {
-    const anon = await fetchModels(baseUrl, '');
+    const anon = await fetchModels(baseUrl, '', extra);
     keyVerified = !anon.ok;
   }
 
@@ -283,7 +322,9 @@ export async function streamChat(opts) {
     };
   }
 
-  const headers = { 'Content-Type': 'application/json', Accept: 'text/event-stream' };
+  // Les en-tetes libres du fournisseur d'abord : Authorization est pose ensuite
+  // et ne peut donc pas etre ecrase depuis ce champ.
+  const headers = { ...(provider.headers || {}), 'Content-Type': 'application/json', Accept: 'text/event-stream' };
   if (provider.api_key) headers.Authorization = `Bearer ${provider.api_key}`;
   if (provider.session_header && sessionKey) headers[provider.session_header] = sessionKey;
 
@@ -359,7 +400,7 @@ async function attemptStream({ provider, model, headers, body, onDelta, onReason
     if (timedOut) {
       return out({ error: `${provider.label} n'a pas répondu en ${Math.round(CONNECT_TIMEOUT_MS / 1000)} s.`, retryable: true });
     }
-    return out({ error: `${provider.label} injoignable: ${err.message}`, retryable: true });
+    return out({ error: `${provider.label} — ${describeNetworkError(err, provider.base_url)}`, retryable: true });
   }
 
   if (!resp.ok) {
@@ -523,7 +564,7 @@ export async function generateImage({ prompt, size = '1024x1024', signal } = {})
 }
 
 async function imageViaEndpoint({ provider, model, prompt, size, signal }) {
-  const headers = { 'Content-Type': 'application/json', Accept: 'application/json' };
+  const headers = { ...(provider.headers || {}), 'Content-Type': 'application/json', Accept: 'application/json' };
   if (provider.api_key) headers.Authorization = `Bearer ${provider.api_key}`;
 
   const ctrl = new AbortController();
@@ -604,7 +645,7 @@ async function imageViaEndpoint({ provider, model, prompt, size, signal }) {
  * est une consigne et non une garantie — autant le savoir.
  */
 async function imageViaChat({ provider, model, prompt, size, signal }) {
-  const headers = { 'Content-Type': 'application/json', Accept: 'application/json' };
+  const headers = { ...(provider.headers || {}), 'Content-Type': 'application/json', Accept: 'application/json' };
   if (provider.api_key) headers.Authorization = `Bearer ${provider.api_key}`;
 
   const ratio = { '1536x1024': 'au format paysage (16:9)', '1024x1536': 'au format portrait (9:16)' }[size]

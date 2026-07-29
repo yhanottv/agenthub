@@ -252,6 +252,10 @@ for (const ddl of [
   // prix plus tard ne doit pas réécrire l'historique.
   "ALTER TABLE usage_log ADD COLUMN cost REAL NOT NULL DEFAULT 0",
   "ALTER TABLE usage_log ADD COLUMN priced INTEGER NOT NULL DEFAULT 0",
+  // En-tetes libres par fournisseur. Certains endpoints compatibles OpenAI en
+  // exigent (identifiant de client, version d'API, referer) : sans ce champ il
+  // fallait un proxy juste pour ajouter une ligne d'en-tete.
+  "ALTER TABLE providers ADD COLUMN headers TEXT NOT NULL DEFAULT '{}'",
 ]) {
   try { db.exec(ddl); } catch { /* column already exists */ }
 }
@@ -705,6 +709,36 @@ export const Tasks = {
 };
 
 // ---- Providers -------------------------------------------------------------
+/**
+ * En-tetes stockes en JSON. Les noms sont filtres : laisser definir
+ * Authorization ou Host depuis ce champ permettrait de contourner la cle
+ * enregistree ou de detourner la requete.
+ */
+const RESERVED_HEADERS = new Set(['authorization', 'host', 'content-length', 'connection', 'content-type']);
+
+export const cleanHeaders = (obj) => {
+  const out = {};
+  if (!obj || typeof obj !== 'object') return out;
+  let n = 0;
+  for (const [k, v] of Object.entries(obj)) {
+    const name = String(k).trim();
+    // Un nom d'en-tete valide selon la RFC 7230 : pas d'espace, pas de deux-points.
+    if (!/^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/.test(name)) continue;
+    if (RESERVED_HEADERS.has(name.toLowerCase())) continue;
+    // Retrait des retours à la ligne : c'est ce qui permettrait d'injecter un
+    // second en-tête, ou de couper la requête en deux.
+    const value = String(v ?? '').replace(/[\r\n]+/g, ' ').trim().slice(0, 400);
+    if (!value) continue;
+    out[name] = value;
+    if (++n >= 12) break;
+  }
+  return out;
+};
+
+const parseHeaders = (raw) => {
+  try { return cleanHeaders(JSON.parse(raw || '{}')); } catch { return {}; }
+};
+
 const parseModels = (raw) => {
   try {
     const v = JSON.parse(raw || '[]');
@@ -714,11 +748,11 @@ const parseModels = (raw) => {
 
 export const Providers = {
   all: () => db.prepare('SELECT * FROM providers ORDER BY sort, id').all()
-    .map((p) => ({ ...p, models: parseModels(p.models) })),
+    .map((p) => ({ ...p, models: parseModels(p.models), headers: parseHeaders(p.headers) })),
 
   get: (id) => {
     const p = db.prepare('SELECT * FROM providers WHERE id=?').get(id);
-    return p ? { ...p, models: parseModels(p.models) } : null;
+    return p ? { ...p, models: parseModels(p.models), headers: parseHeaders(p.headers) } : null;
   },
 
   count: () => db.prepare('SELECT COUNT(*) n FROM providers').get().n,
@@ -735,6 +769,7 @@ export const Providers = {
     needsKey: Boolean(p.needs_key),
     keyConfigured: Boolean(p.api_key),
     keyHint: p.api_key ? `••••${p.api_key.slice(-4)}` : '',
+    headers: p.headers,
     enabled: Boolean(p.enabled) && Boolean(p.base_url) && (!p.needs_key || Boolean(p.api_key)),
   })),
 
@@ -755,6 +790,7 @@ export const Providers = {
         : (cur?.models || [])),
       hint: clampText(p.hint, 200) ?? cur?.hint ?? '',
       session_header: clampText(p.session_header, 60) ?? cur?.session_header ?? '',
+      headers: JSON.stringify(p.headers !== undefined ? cleanHeaders(p.headers) : (cur?.headers || {})),
       needs_key: p.needs_key === undefined ? (cur ? cur.needs_key : 1) : (p.needs_key ? 1 : 0),
       enabled: p.enabled === undefined ? (cur ? cur.enabled : 1) : (p.enabled ? 1 : 0),
       sort: p.sort === undefined ? (cur ? cur.sort : Providers.count()) : Number(p.sort) || 0,
@@ -762,11 +798,11 @@ export const Providers = {
       updated_at: ts,
     };
     db.prepare(`INSERT INTO providers
-        (id,label,base_url,api_key,default_model,models,hint,session_header,needs_key,enabled,sort,created_at,updated_at)
-      VALUES (@id,@label,@base_url,@api_key,@default_model,@models,@hint,@session_header,@needs_key,@enabled,@sort,@created_at,@updated_at)
+        (id,label,base_url,api_key,default_model,models,hint,session_header,headers,needs_key,enabled,sort,created_at,updated_at)
+      VALUES (@id,@label,@base_url,@api_key,@default_model,@models,@hint,@session_header,@headers,@needs_key,@enabled,@sort,@created_at,@updated_at)
       ON CONFLICT(id) DO UPDATE SET label=@label, base_url=@base_url, api_key=@api_key,
         default_model=@default_model, models=@models, hint=@hint, session_header=@session_header,
-        needs_key=@needs_key, enabled=@enabled, sort=@sort, updated_at=@updated_at`).run(row);
+        headers=@headers, needs_key=@needs_key, enabled=@enabled, sort=@sort, updated_at=@updated_at`).run(row);
     return Providers.get(id);
   },
 

@@ -2127,6 +2127,22 @@ function openProviderModal(provider, preset, onSaved) {
         ${keyHelpHTML(id)}
       </div>
 
+      <!-- Certains endpoints compatibles OpenAI exigent des en-têtes en plus de
+           la clé. Sans ce champ, il fallait monter un proxy juste pour en
+           ajouter un — ce qui est beaucoup pour une ligne. -->
+      <details class="pv-extra" ${Object.keys(p.headers || {}).length ? 'open' : ''}>
+        <summary>En-têtes supplémentaires${Object.keys(p.headers || {}).length ? ` (${Object.keys(p.headers).length})` : ''}</summary>
+        <div class="field" style="margin-top:10px">
+          <label for="pv-headers">Un par ligne, au format <code>Nom: valeur</code></label>
+          <textarea id="pv-headers" rows="3" placeholder="X-Mon-Entete: valeur">${escapeHtml(
+            Object.entries(p.headers || {}).map(([k, v]) => `${k}: ${v}`).join('\n'))}</textarea>
+          <div class="field-hint">
+            Envoyés à chaque appel. <code>Authorization</code> et <code>Host</code> sont
+            ignorés : la clé ci-dessus fait foi, et détourner l'hôte n'aurait pas de sens.
+          </div>
+        </div>
+      </details>
+
       <button class="btn ghost" id="pv-test" type="button">${IC.spark} Tester et lister les modèles</button>
       <div id="pv-result"></div>
 
@@ -2156,6 +2172,20 @@ function openProviderModal(provider, preset, onSaved) {
 
     const currentId = () => slugify($('#pv-id', b).value || id);
 
+    // « Nom: valeur » par ligne. Le serveur re-filtre de toute facon : ce
+    // decoupage n'est qu'une commodite de saisie.
+    const readHeaders = () => {
+      const out = {};
+      for (const line of ($('#pv-headers', b)?.value || '').split(/\r?\n/)) {
+        const i = line.indexOf(':');
+        if (i <= 0) continue;
+        const name = line.slice(0, i).trim();
+        const value = line.slice(i + 1).trim();
+        if (name && value) out[name] = value;
+      }
+      return out;
+    };
+
     $('#pv-test', b).onclick = async (ev) => {
       const btn = ev.currentTarget;
       btn.disabled = true;
@@ -2167,10 +2197,16 @@ function openProviderModal(provider, preset, onSaved) {
           label: $('#pv-label', b).value.trim() || currentId(),
           base_url: $('#pv-base', b).value.trim(),
           api_key: $('#pv-key', b).value,
+          headers: readHeaders(),
           hint: pre.hint || '',
           session_header: pre.session_header || '',
           needs_key: needsKey,
         }), 'Enregistrement');
+      }
+      // Les en-tetes saisis sont enregistres avant le test : sinon on testerait
+      // sans eux et le resultat ne dirait rien de la configuration voulue.
+      if (!isNew) {
+        await api('PUT', `/api/providers/${currentId()}`, { headers: readHeaders() }).catch(() => {});
       }
       const r = await tryApi(api('POST', `/api/providers/${currentId()}/test`, {
         base_url: $('#pv-base', b).value.trim(),
@@ -2208,6 +2244,7 @@ function openProviderModal(provider, preset, onSaved) {
         base_url: base,
         api_key: $('#pv-key', b).value,
         default_model: modelSel && modelSel.value ? modelSel.value : undefined,
+        headers: readHeaders(),
         hint: p.hint || pre.hint || '',
         session_header: pre.session_header || undefined,
         needs_key: needsKey,
@@ -2262,7 +2299,12 @@ const KEY_HELP = {
   gemini: { where: 'Clé gratuite sur Google AI Studio.', link: 'https://aistudio.google.com/apikey', linkLabel: 'aistudio.google.com/apikey' },
   groq: { where: 'Crée une clé dans la console Groq.', link: 'https://console.groq.com/keys', linkLabel: 'console.groq.com/keys' },
   together: { where: 'Crée une clé dans les réglages Together AI.', link: 'https://api.together.xyz/settings/api-keys', linkLabel: 'api.together.xyz' },
-  agentrouter: { where: 'Ta clé AgentRouter, celle que ton proxy transmet à agentrouter.org.' },
+  agentrouter: {
+    where: "Ta clé AgentRouter. Attention : ce service refuse la clé seule et exige aussi un "
+         + "en-tête identifiant le client — c'est ce que fait un proxy placé devant. Si tu n'en "
+         + "as pas, renseigne-le dans « En-têtes supplémentaires » et pointe l'URL directement "
+         + "sur <code>https://agentrouter.org/v1</code>.",
+  },
 };
 
 function keyHelpHTML(id) {
