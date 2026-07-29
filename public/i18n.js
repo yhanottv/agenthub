@@ -34,14 +34,13 @@ const CORE_EN = {
   'Consommation': 'Usage',
   'Journal': 'Journal',
   'Réglages': 'Settings',
-  'Rechercher un agent, un pôle…': 'Search an agent, a pôle…',
+  'Rechercher un agent, un pôle…': 'Search an agent, a unit…',
   'Rechercher (Ctrl K)': 'Search (Ctrl K)',
   'Ouvrir le menu': 'Open menu',
   'Voir les tâches': 'View tasks',
   'Tâches': 'Tasks',
   'Passer en clair': 'Switch to light',
   'Passer en sombre': 'Switch to dark',
-  'Traducteur': 'Translator',
   'Langue': 'Language',
   'Langue de l\'interface': 'Interface language',
 
@@ -59,7 +58,6 @@ const CORE_EN = {
   'Copier': 'Copy',
   'Actualiser': 'Refresh',
   'Revérifier': 'Check again',
-  'Tout voir': 'See all',
   'Recentrer': 'Recentre',
   'Pause': 'Pause',
   'Reprendre': 'Resume',
@@ -74,7 +72,7 @@ const CORE_EN = {
   'Tester et lister les modèles': 'Test and list models',
 
   // chat
-  'Écris un message…  (@ pour appeler un agent)': 'Write a message…  (@ to call an agent)',
+  'Écris un message… (@ pour appeler un agent)': 'Write a message… (@ to call an agent)',
   'Message': 'Message',
   'Joindre un fichier': 'Attach a file',
   'Dicter': 'Dictate',
@@ -82,7 +80,7 @@ const CORE_EN = {
   'saute une ligne': 'new line',
   'Exporter en Markdown': 'Export as Markdown',
   'Vider la conversation': 'Clear conversation',
-  'Modifier le pôle': 'Edit pôle',
+  'Modifier le pôle': 'Edit unit',
   'Tâches déléguées': 'Delegated tasks',
   'Messages du salon': 'Channel messages',
   'Revenir en bas': 'Back to bottom',
@@ -104,7 +102,8 @@ const CORE_EN = {
   'Tags': 'Tags',
   'Mémoire': 'Memory',
   'Agents': 'Agents',
-  'Pôles': 'Pôles',
+  'Pôles': 'Units',
+  'Pôle': 'Unit',
   'À écrire': 'To write',
   'Dernières mémoires': 'Latest memories',
   'Épingler': 'Pin',
@@ -190,7 +189,6 @@ const CORE_EN = {
   'Le modèle par défaut': 'The default model',
   'Faire dessiner tes agents': 'Let your agents draw',
   'Détecter Hermes automatiquement': 'Detect Hermes automatically',
-  'Configurer Hermes': 'Configure Hermes',
   'Installer Hermes': 'Install Hermes',
   'Utiliser cet Hermes': 'Use this Hermes',
   'Démarrer la passerelle': 'Start the gateway',
@@ -204,15 +202,213 @@ const CORE_EN = {
   // états vides et divers
   'Chargement…': 'Loading…',
   'Connexion…': 'Connecting…',
-  'Traduction…': 'Translating…',
-  'Aucun résultat': 'No results',
   'Rien à cartographier pour l\'instant.': 'Nothing to map yet.',
-  'La galaxie est vide.': 'The galaxy is empty.',
   'Rien en mémoire pour l\'instant.': 'Nothing in memory yet.',
   'Aucun agent sur la période.': 'No agent in this period.',
   'Agrandir': 'Enlarge',
   'aucun': 'none',
   'Chercher': 'Search',
+
+  // Ce qu'on lit quand il n'y a rien : c'est là qu'une interface à moitié
+  // traduite se remarque le plus, et c'est aussi ce qu'on voit en premier
+  // sur une installation neuve — donc avant qu'un modèle soit configuré.
+  'Aucun pôle pour le moment. Un pôle, c\'est un salon où une équipe d\'agents travaille ensemble.':
+    'No unit yet. A unit is a channel where a team of agents works together.',
+  'Aucune tâche déléguée pour l’instant.': 'No delegated task yet.',
+  'Aucun appel sur cette période. Écris à un pôle et les compteurs se rempliront.':
+    'No calls in this period. Write to a unit and the counters will fill up.',
+  'Aucun modèle appelé pour l\'instant.': 'No model called yet.',
+  'Aucune sauvegarde pour l\'instant.': 'No backup yet.',
+  'Aucun déclenchement programmé.': 'No scheduled run.',
+  'Aucun tarif renseigné pour ce modèle': 'No price set for this model',
+  'Écris une note, ou active un autre calque.': 'Write a note, or turn on another layer.',
+  'Rien dans le contenu non plus.': 'Nothing in the content either.',
+  'Rien à exporter dans ce salon.': 'Nothing to export in this channel.',
+  'Rien à déclencher (salon ou consigne vide).': 'Nothing to trigger (empty channel or instruction).',
+  'La conversation est déjà vide.': 'The conversation is already empty.',
+  'La carte n\'a pas pu être chargée.': 'The map could not be loaded.',
+  'Les skills d\'Hermes ne sont pas visibles d\'ici.': 'Hermes\'s skills are not visible from here.',
+
+  // messages courts
+  'Trop de tentatives. Réessaie dans un instant.': 'Too many attempts. Try again in a moment.',
+  'Les deux mots de passe ne correspondent pas.': 'The two passwords do not match.',
+  'La confirmation ne correspond pas.': 'The confirmation does not match.',
+  'Accès créé. Ton mot de passe est enregistré.': 'Access created. Your password is saved.',
+  'URL copiée. Traite-la comme un mot de passe.': 'URL copied. Treat it like a password.',
+  'Serveur injoignable — vérifie ta connexion.': 'Server unreachable — check your connection.',
+  'Copie refusée par le navigateur.': 'The browser refused to copy.',
+  'Copie refusée — voici la commande': 'Copy refused — here is the command',
+  'Déclencheur créé — copie son URL.': 'Trigger created — copy its URL.',
+  'Le navigateur a refusé les notifications.': 'The browser refused notifications.',
+  'Une URL de base est nécessaire.': 'A base URL is required.',
+  'La consigne ne peut pas être vide.': 'The instruction cannot be empty.',
+  'Garde au moins un calque affiché.': 'Keep at least one layer visible.',
+  'Génération d\'images désactivée.': 'Image generation turned off.',
+  'Tes agents peuvent maintenant dessiner.': 'Your agents can now draw.',
+  'Tes agents peuvent créer des images.': 'Your agents can create images.',
+  'Les agents ne produisent plus que du texte.': 'Agents now produce text only.',
+  'Les agents écrivent directement en mémoire.': 'Agents write straight to memory.',
+  'Les notes des agents attendront ta validation.': 'Agent notes will wait for your approval.',
+  'Rien n\'entre en mémoire sans ton accord.': 'Nothing enters memory without your approval.',
+  'Un agent porte déjà ce nom — les @mentions seraient ambiguës.':
+    'An agent already has this name — @mentions would be ambiguous.',
+  'Cette instance vient d\'être configurée. Recharge la page.':
+    'This instance has just been set up. Reload the page.',
+  'Cette information disparaîtra du contexte de tous tes agents.':
+    'This information will disappear from every agent\'s context.',
+  'Son URL cessera immédiatement de fonctionner.': 'Its URL will stop working immediately.',
+
+  // microphone
+  'Microphone': 'Microphone',
+  'Entrée audio': 'Audio input',
+  'Tester le micro': 'Test the microphone',
+  'Arrêter le test': 'Stop the test',
+  'Recherche des entrées…': 'Looking for inputs…',
+  'Vérification…': 'Checking…',
+  'Indisponible': 'Unavailable',
+  'Aucune entrée détectée': 'No input detected',
+  'Entrée par défaut du système': 'System default input',
+  'Ouverture du micro…': 'Opening the microphone…',
+  'Parle : le niveau doit bouger.': 'Speak: the level should move.',
+  'Aucun son détecté. Parle plus fort, ou choisis une autre entrée.':
+    'No sound detected. Speak louder, or choose another input.',
+  'Ce navigateur ne donne pas accès aux entrées audio.':
+    'This browser gives no access to audio inputs.',
+  'Autorisation refusée. Ouvre les réglages du site dans ton navigateur et autorise le micro.':
+    'Permission refused. Open this site\'s settings in your browser and allow the microphone.',
+  'Aucun micro branché — le système n\'en voit aucun.':
+    'No microphone plugged in — the system sees none.',
+  'Le micro est occupé par une autre application.':
+    'The microphone is busy in another application.',
+  'Cette entrée a disparu. Relance un test pour rafraîchir la liste.':
+    'This input is gone. Run a test again to refresh the list.',
+  'La dictée utilise l\'entrée par défaut du système.':
+    'Dictation uses the system default input.',
+  'Ton choix sert au test : l\'API de dictée du navigateur ne permet pas d\'en changer.':
+    'Your choice is for the test: the browser\'s dictation API does not allow changing it.',
+  'Lance un test : le navigateur demandera l\'autorisation, et les noms des entrées apparaîtront.':
+    'Run a test: the browser will ask for permission, and the input names will appear.',
+  'Le micro est refusé pour ce site : autorise-le dans les réglages du navigateur.':
+    'The microphone is blocked for this site: allow it in your browser settings.',
+  'Le micro est refusé pour ce site. Autorise-le dans les réglages du navigateur.':
+    'The microphone is blocked for this site. Allow it in your browser settings.',
+  'Le navigateur a bloqué la dictée alors que le micro est autorisé. Recharge la page, puis teste ton micro dans Réglages.':
+    'The browser blocked dictation even though the microphone is allowed. Reload the page, then test your microphone in Settings.',
+  'La dictée a besoin du micro. Réessaie et accepte la demande du navigateur.':
+    'Dictation needs the microphone. Try again and accept the browser prompt.',
+  'Le service de reconnaissance vocale du navigateur a refusé. Sous Windows, active la reconnaissance vocale en ligne.':
+    'The browser\'s speech recognition service refused. On Windows, turn on online speech recognition.',
+  'Aucun micro détecté. Teste-le dans Réglages → Microphone.':
+    'No microphone detected. Test it in Settings → Microphone.',
+  'La reconnaissance vocale n\'a pas pu joindre son service.':
+    'Speech recognition could not reach its service.',
+
+  // libellés de formulaire et explications courtes
+  'Nom (un seul mot, sert aux @mentions)': 'Name (one word, used for @mentions)',
+  'Rôle / instructions (system prompt)': 'Role / instructions (system prompt)',
+  'Ton nom (affiché dans « Salut … »)': 'Your name (shown in “Hi …”)',
+  'Alerte de dépense quotidienne (€)': 'Daily spend alert (€)',
+  'Mémoire injectée à chaque appel': 'Memory injected on every call',
+  'Enregistrer le mot de passe en base': 'Save the password in the database',
+  'Ce que tous tes agents doivent savoir…': 'What all your agents need to know…',
+  'ex: Contexte de l\'organisation': 'e.g. Organisation context',
+  'ex : Fais-moi la veille du secteur, 5 points maximum, avec les sources.':
+    'e.g. Give me the sector news, 5 bullets max, with sources.',
+  'Séparés par des virgules. Servent à filtrer, pas au contexte des agents.':
+    'Comma-separated. Used for filtering, not for agent context.',
+  'Décris sa mission, son ton et ses limites. C\'est ce qui définit l\'agent.':
+    'Describe its mission, tone and limits. This is what defines the agent.',
+  'Stockée sur ton serveur uniquement, jamais renvoyée au navigateur.':
+    'Stored on your server only, never sent back to the browser.',
+  'Heure du serveur, pas celle de ton navigateur.': 'Server time, not your browser\'s.',
+  'Chiffres renvoyés directement par le fournisseur.': 'Figures reported directly by the provider.',
+  'Les modèles de ce service dont le nom évoque une image.':
+    'The models of this service whose name suggests images.',
+  'La liste se remplit quand la connexion aboutit.': 'The list fills in once the connection succeeds.',
+  'Trouvé chez tes services déjà connectés': 'Found among your connected services',
+  'Seulement lorsque l\'onglet est en arrière-plan.': 'Only when the tab is in the background.',
+  'M\'avertir dans le navigateur quand un long traitement se termine':
+    'Notify me in the browser when a long run finishes',
+  'Ce qui apparaît dans la galaxie': 'What appears in the galaxy',
+  'Changer le modèle de cette conversation': 'Change this conversation\'s model',
+  'Retour aux modèles de chaque agent.': 'Back to each agent\'s own model.',
+  'Revenir aux réglages des agents': 'Back to the agents\' settings',
+  'Vérification de la configuration': 'Checking the configuration',
+  'Chargement de la consommation': 'Loading usage',
+  'Épingler — cette note passe en premier dans le contexte':
+    'Pin — this note comes first in the context',
+  'Un agent lancé à heure fixe dans un salon.': 'An agent run at a fixed time in a channel.',
+  'Une fois créé, poste dessus :': 'Once created, post to it:',
+  'CEO — pilote tout, délègue aux managers': 'CEO — runs everything, delegates to managers',
+  'Manager — délègue aux workers': 'Manager — delegates to workers',
+  'Le membre le plus haut placé reçoit les messages du salon et délègue aux autres.':
+    'The most senior member receives the channel messages and delegates to the others.',
+  'Le message arrive dans le salon et les agents répondent comme si tu l\'avais écrit.':
+    'The message lands in the channel and the agents reply as if you had written it.',
+  'Le message est retiré de la conversation et du contexte envoyé aux agents.':
+    'The message is removed from the conversation and from the context sent to agents.',
+  'Ce que ton Hermes sait faire.': 'What your Hermes can do.',
+  'Ce que tes agents ont réellement consommé auprès des fournisseurs.':
+    'What your agents actually spent with the providers.',
+  'Tout ce que ton organisation a fait, du plus récent au plus ancien.':
+    'Everything your organisation has done, newest first.',
+  'Du plus récemment utilisé au plus ancien — une note remonte quand tu l\'ouvres ou qu\'un agent s\'en sert.':
+    'Most recently used first — a note rises when you open it or an agent uses it.',
+  'Ta session actuelle est conservée. Utile si tu as ouvert AgentHub sur une machine que tu ne contrôles plus.':
+    'Your current session is kept. Useful if you left AgentHub open on a machine you no longer control.',
+  'Les agents qui l\'utilisaient basculeront sur un autre fournisseur disponible.':
+    'Agents using it will switch to another available provider.',
+  'Laisse vide pour ne pas être prévenu. L\'alerte n\'arrête rien, elle avertit.':
+    'Leave empty for no warning. The alert stops nothing, it warns.',
+  'glisser pour tourner · molette pour zoomer · clic sur une étoile · double-clic met en pause':
+    'drag to rotate · wheel to zoom · click a star · double-click pauses',
+  'Tous les messages et toutes les tâches de ce salon seront définitivement effacés. Les agents, eux, sont conservés.':
+    'Every message and task in this channel will be permanently erased. The agents themselves are kept.',
+
+  // assistant de première ouverture
+  'Choisis ton mot de passe pour prendre la main.': 'Choose your password to take control.',
+  'Quatre étapes pour que ton organisation d\'agents se mette au travail. Compte trois minutes.':
+    'Four steps to get your agent organisation working. Allow three minutes.',
+  'Chaque agent pourra ensuite utiliser le service et le modèle de ton choix. Il en faut au moins un pour continuer.':
+    'Each agent can then use the service and model you choose. At least one is required to continue.',
+  'Il sera appliqué à tes agents existants. Tu pourras toujours en changer agent par agent depuis sa fiche.':
+    'It will apply to your existing agents. You can still change it agent by agent from its card.',
+  'Ce service n\'a listé aucun modèle. Retourne à l\'étape précédente et teste la connexion.':
+    'This service listed no model. Go back a step and test the connection.',
+  'Une seule clé pour le texte et les images. C\'est la voie que je recommande.':
+    'One key for both text and images. This is the route I recommend.',
+  'Clé gratuite sur Google AI Studio.': 'Free key on Google AI Studio.',
+  'Clé gratuite sur Google AI Studio, avec un quota de départ confortable.':
+    'Free key on Google AI Studio, with a generous starting quota.',
+  'Crée une clé sur ton tableau de bord OpenRouter.': 'Create a key on your OpenRouter dashboard.',
+  'Crée une clé dans la console OpenAI.': 'Create a key in the OpenAI console.',
+  'Crée une clé dans la console Groq.': 'Create a key in the Groq console.',
+  'Crée une clé dans les réglages Together AI.': 'Create a key in the Together AI settings.',
+  'Si tu veux qu\'ils produisent des illustrations, des logos ou des maquettes dans les conversations, il leur faut un modèle d\'image. C\'est facultatif — tout le reste fonctionne sans.':
+    'If you want them to produce illustrations, logos or mock-ups in conversations, they need an image model. It is optional — everything else works without it.',
+  'L\'outil de dessin restera indisponible, et tes agents le diront au lieu de promettre une image qui n\'arrivera pas.':
+    'The drawing tool will stay unavailable, and your agents will say so instead of promising an image that never comes.',
+
+  // Hermes
+  'Recherche d\'Hermes sur ton serveur…': 'Looking for Hermes on your server…',
+  'Hermes enregistré, mais sa passerelle ne répond pas. Diagnostic…':
+    'Hermes saved, but its gateway is not responding. Diagnosing…',
+  'C\'est la seule chose qui manque.': 'That is the only thing missing.',
+  'Les deux conteneurs partagent-ils un réseau ?': 'Do the two containers share a network?',
+  'Lance plutôt ceci sur ton serveur — c\'est exactement ce qu\'AgentHub ferait :':
+    'Run this on your server instead — it is exactly what AgentHub would do:',
+  'Tu peux aussi passer cette étape : AgentHub marche très bien sans Hermes, avec n\'importe quel autre service.':
+    'You can also skip this step: AgentHub works fine without Hermes, with any other service.',
+  'Hermes apporte la continuité de session, ses outils et sa mémoire persistante. AgentHub fonctionne sans, mais c\'est mieux avec.':
+    'Hermes brings session continuity, its tools and its persistent memory. AgentHub works without it, but it is better with.',
+  'AgentHub peut la démarrer pour toi. C\'est instantané, et sans effet sur la configuration d\'Hermes.':
+    'AgentHub can start it for you. It is instant, and leaves Hermes\'s configuration untouched.',
+  'L\'installation se fait côté Hermes, qui applique ses propres contrôles (analyse de sécurité, provenance, épinglage). AgentHub ne touche pas à ses fichiers.':
+    'Installation happens on the Hermes side, which applies its own checks (security scan, provenance, pinning). AgentHub does not touch its files.',
+  'Ce skill est déjà actif : tes agents branchés sur Hermes peuvent s\'en servir.':
+    'This skill is already active: your agents connected to Hermes can use it.',
+  'Skills invisibles : les dossiers d\'Hermes ne sont pas montés dans le conteneur.':
+    'Skills not visible: Hermes\'s folders are not mounted in the container.',
 };
 
 const DICTS = { en: { ...CORE_EN } };
@@ -226,11 +422,19 @@ const state = {
 
 const dict = () => DICTS[state.lang] || null;
 
-/** Traduction d'une chaîne, ou null si inconnue. */
+/**
+ * Traduction d'une chaîne, ou null si inconnue.
+ *
+ * Les blancs sont ramenés à un espace simple. Sans ça, une phrase écrite sur
+ * deux lignes dans un gabarit arrive avec son retour à la ligne et son
+ * indentation au milieu, et ne correspond à aucune clé — ce qui laissait en
+ * français la plupart des textes longs de l'assistant, les seuls qu'on prend
+ * vraiment le temps de lire.
+ */
 function lookup(raw) {
   const d = dict();
   if (!d) return null;
-  const text = raw.trim();
+  const text = raw.trim().replace(/\s+/g, ' ');
   if (text.length < 2) return null;
   if (d[text] !== undefined) return d[text];
 
@@ -245,7 +449,7 @@ function lookup(raw) {
 }
 
 // Contenus qui n'appartiennent pas à l'interface : jamais touchés.
-const SKIP_CLOSEST = '.msg-content, .msg-image, .reasoning-body, .tr-text, .scan-log, '
+const SKIP_CLOSEST = '.msg-content, .msg-image, .reasoning-body, .scan-log, '
   + '.note-preview, .recent-prev, .skill-desc, pre, code, textarea, input, .galaxy-wrap';
 const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'TEXTAREA', 'CODE', 'PRE', 'CANVAS']);
 
@@ -254,10 +458,13 @@ function translateNode(node) {
     const parent = node.parentElement;
     if (!parent || SKIP_TAGS.has(parent.tagName)) return;
     if (parent.closest(SKIP_CLOSEST)) return;
-    const t = lookup(node.nodeValue);
-    if (t !== null && t !== node.nodeValue.trim()) {
-      node.nodeValue = node.nodeValue.replace(node.nodeValue.trim(), t);
-    }
+    const raw = node.nodeValue;
+    const trimmed = raw.trim();
+    if (!trimmed) return;
+    // On cherche sur la forme normalisée, mais on remplace le texte tel qu'il
+    // est écrit : l'indentation autour reste intacte.
+    const t = lookup(raw);
+    if (t !== null && t !== trimmed) node.nodeValue = raw.replace(trimmed, t);
     return;
   }
   if (node.nodeType !== Node.ELEMENT_NODE) return;

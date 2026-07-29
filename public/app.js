@@ -3518,6 +3518,19 @@ function renderSettings(v) {
       </div>
 
       <div class="agent-card">
+        <h3 style="margin:0 0 14px;font-size:14px">Microphone</h3>
+        <div class="field">
+          <label for="set-mic">Entrée audio</label>
+          <select id="set-mic" disabled><option>Recherche des entrées…</option></select>
+        </div>
+        <div class="mic-test">
+          <button class="btn" id="mic-test" type="button">Tester le micro</button>
+          <div class="mic-meter"><span id="mic-level"></span></div>
+        </div>
+        <div class="field-hint" id="mic-state">Vérification…</div>
+      </div>
+
+      <div class="agent-card">
         <h3 style="margin:0 0 14px;font-size:14px">Notifications et sessions</h3>
         <label class="checklist-item" style="padding:0">
           <input type="checkbox" id="set-notif" ${S.notifyOn ? 'checked' : ''}>
@@ -3620,6 +3633,8 @@ function renderSettings(v) {
     localStorage.setItem('ah_notify', '1');
     toast('Notifications activées.', { kind: 'success' });
   };
+
+  initMicPanel(v);
 
   $('#revoke-sessions', v).onclick = async (e) => {
     e.currentTarget.disabled = true;
@@ -4005,12 +4020,229 @@ function closeLangMenu(pop, btn) {
   if (pop._outside) { document.removeEventListener('mousedown', pop._outside); pop._outside = null; }
 }
 
+// ---- microphone -------------------------------------------------------------
+// L'API de dictée du navigateur ne laisse pas choisir l'entrée audio : elle
+// prend celle du système. On ne peut donc pas la détourner — mais on peut dire
+// laquelle elle prendra, essayer n'importe quelle autre, et montrer un niveau
+// qui bouge. C'est ce qui manquait pour savoir si le silence venait du micro,
+// de l'autorisation, ou d'ailleurs.
+
+const MIC_KEY = 'ah_mic';
+
+/** État de l'autorisation, ou null quand le navigateur refuse de le dire. */
+async function micPermission() {
+  try {
+    return (await navigator.permissions.query({ name: 'microphone' })).state;
+  } catch { return null; }
+}
+
+const audioInputs = async () => {
+  try {
+    return (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audioinput');
+  } catch { return []; }
+};
+
+/**
+ * L'entrée que la dictée utilisera réellement.
+ *
+ * Chrome expose une pseudo-entrée « default » qui suit le réglage système ; son
+ * groupId désigne le matériel derrière. C'est par là qu'on peut nommer l'appareil
+ * que la dictée prendra, et prévenir quand ce n'est pas celui qu'on a choisi.
+ */
+function defaultInput(list) {
+  const def = list.find((d) => d.deviceId === 'default');
+  if (!def) return list[0] || null;
+  return list.find((d) => d.deviceId !== 'default' && d.groupId === def.groupId) || def;
+}
+
+function micErrorText(err) {
+  switch (err?.name) {
+    case 'NotAllowedError':
+      return 'Autorisation refusée. Ouvre les réglages du site dans ton navigateur et autorise le micro.';
+    case 'NotFoundError':
+      return 'Aucun micro branché — le système n\'en voit aucun.';
+    case 'NotReadableError':
+      return 'Le micro est occupé par une autre application.';
+    case 'OverconstrainedError':
+      return 'Cette entrée a disparu. Relance un test pour rafraîchir la liste.';
+    default:
+      return `Le micro n'a pas pu s'ouvrir : ${err?.message || err?.name || 'raison inconnue'}.`;
+  }
+}
+
+let micTestStop = null;
+
+/**
+ * Huit secondes d'écoute avec un niveau qui suit la voix. Le verdict porte sur
+ * le maximum atteint : un micro branché mais muet donne un niveau plat, ce
+ * qu'aucun message d'erreur n'aurait signalé.
+ */
+function runMicMeter(stream, level, say, btn) {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  const ctx = new Ctx();
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 1024;
+  ctx.createMediaStreamSource(stream).connect(analyser);
+
+  const buf = new Uint8Array(analyser.fftSize);
+  const until = performance.now() + 8000;
+  let peak = 0, raf = 0;
+
+  const stop = () => {
+    micTestStop = null;
+    cancelAnimationFrame(raf);
+    stream.getTracks().forEach((t) => t.stop());
+    ctx.close().catch(() => { /* déjà fermé */ });
+    level.style.width = '0%';
+    btn.textContent = 'Tester le micro';
+    say(peak >= 0.03
+      ? `Micro entendu — niveau maximum ${Math.round(Math.min(1, peak * 3) * 100)} %.`
+      : 'Aucun son détecté. Parle plus fort, ou choisis une autre entrée.');
+  };
+
+  micTestStop = stop;
+  btn.textContent = 'Arrêter le test';
+  say('Parle : le niveau doit bouger.');
+
+  const tick = () => {
+    analyser.getByteTimeDomainData(buf);
+    let sum = 0;
+    for (let i = 0; i < buf.length; i++) {
+      const x = (buf[i] - 128) / 128;
+      sum += x * x;
+    }
+    const rms = Math.sqrt(sum / buf.length);
+    peak = Math.max(peak, rms);
+    level.style.width = Math.min(100, Math.round(rms * 300)) + '%';
+    if (performance.now() >= until) { stop(); return; }
+    raf = requestAnimationFrame(tick);
+  };
+  raf = requestAnimationFrame(tick);
+}
+
+function initMicPanel(v) {
+  const sel = $('#set-mic', v);
+  const btn = $('#mic-test', v);
+  const level = $('#mic-level', v);
+  const state = $('#mic-state', v);
+  if (!sel || !btn) return;
+
+  const say = (msg) => { state.textContent = msg; };
+
+  if (!navigator.mediaDevices?.getUserMedia) {
+    sel.innerHTML = '<option>Indisponible</option>';
+    btn.disabled = true;
+    say('Ce navigateur ne donne pas accès aux entrées audio.');
+    return;
+  }
+
+  // Sans autorisation, le navigateur masque les noms et les identifiants : la
+  // liste existe mais ne dit rien. Le premier test la débloque.
+  const fill = async () => {
+    const list = await audioInputs();
+    const usable = list.filter((d) =>
+      d.deviceId && d.deviceId !== 'default' && d.deviceId !== 'communications');
+    if (!usable.length) {
+      sel.innerHTML = `<option value="">${
+        list.length ? 'Entrée par défaut du système' : 'Aucune entrée détectée'}</option>`;
+      sel.disabled = true;
+      return list;
+    }
+    const saved = localStorage.getItem(MIC_KEY) || '';
+    const chosen = usable.some((d) => d.deviceId === saved)
+      ? saved
+      : (defaultInput(list)?.deviceId || usable[0].deviceId);
+    sel.innerHTML = usable.map((d, i) => `<option value="${escapeAttr(d.deviceId)}"${
+      d.deviceId === chosen ? ' selected' : ''}>${escapeHtml(d.label || `Micro ${i + 1}`)}</option>`).join('');
+    sel.disabled = false;
+    return list;
+  };
+
+  const describe = async (list) => {
+    const perm = await micPermission();
+    const def = defaultInput(list);
+    const parts = [];
+    if (perm === 'denied') {
+      parts.push('Le micro est refusé pour ce site : autorise-le dans les réglages du navigateur.');
+    } else if (perm !== 'granted') {
+      parts.push('Lance un test : le navigateur demandera l\'autorisation, et les noms des entrées apparaîtront.');
+    }
+    parts.push(def?.label
+      ? `La dictée utilise l'entrée par défaut du système : ${def.label}.`
+      : 'La dictée utilise l\'entrée par défaut du système.');
+    if (!sel.disabled && def && sel.value !== def.deviceId) {
+      parts.push('Ton choix sert au test : l\'API de dictée du navigateur ne permet pas d\'en changer.');
+    }
+    say(parts.join(' '));
+  };
+
+  fill().then(describe);
+
+  sel.onchange = () => {
+    localStorage.setItem(MIC_KEY, sel.value);
+    audioInputs().then(describe);
+  };
+
+  btn.onclick = async () => {
+    if (micTestStop) { micTestStop(); return; }
+    const id = sel.value;
+    btn.disabled = true;
+    say('Ouverture du micro…');
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: id ? { deviceId: { exact: id } } : true,
+      });
+    } catch (err) {
+      btn.disabled = false;
+      say(micErrorText(err));
+      return;
+    }
+    btn.disabled = false;
+    localStorage.setItem(MIC_KEY, id);
+    await fill();                         // les noms sont lisibles maintenant
+    runMicMeter(stream, level, say, btn);
+  };
+}
+
 // ---- dictée ----------------------------------------------------------------
 // L'API de reconnaissance vocale du navigateur, sans dépendance ni service à
 // configurer. Elle n'existe pas partout : le bouton n'apparaît que si elle est
 // réellement disponible, plutôt que d'échouer au clic.
 const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
 const SPEECH_OK = Boolean(SpeechRec);
+
+/**
+ * Pourquoi la dictée s'est arrêtée, en distinguant ce qui se ressemble.
+ *
+ * « not-allowed » ne veut pas dire que l'utilisateur a refusé : il tombe aussi
+ * quand la page elle-même n'a pas le droit d'ouvrir un micro, ce qui est
+ * exactement ce qui se passait ici. On interroge donc l'autorisation réelle
+ * avant d'accuser qui que ce soit. Et « service-not-allowed » ne parle pas du
+ * micro du tout : c'est le service de reconnaissance vocale qui décline.
+ */
+async function dictationProblem(code) {
+  if (code === 'not-allowed') {
+    const perm = await micPermission();
+    if (perm === 'denied') {
+      return 'Le micro est refusé pour ce site. Autorise-le dans les réglages du navigateur.';
+    }
+    if (perm === 'granted') {
+      return 'Le navigateur a bloqué la dictée alors que le micro est autorisé. Recharge la page, puis teste ton micro dans Réglages.';
+    }
+    return 'La dictée a besoin du micro. Réessaie et accepte la demande du navigateur.';
+  }
+  if (code === 'service-not-allowed') {
+    return 'Le service de reconnaissance vocale du navigateur a refusé. Sous Windows, active la reconnaissance vocale en ligne.';
+  }
+  if (code === 'audio-capture') {
+    return 'Aucun micro détecté. Teste-le dans Réglages → Microphone.';
+  }
+  if (code === 'network') {
+    return 'La reconnaissance vocale n\'a pas pu joindre son service.';
+  }
+  return `Dictée interrompue : ${code}`;
+}
 
 let dictation = null;
 
@@ -4053,9 +4285,7 @@ function toggleDictation(input, btn) {
   rec.onerror = (e) => {
     // « no-speech » arrive dès qu'on marque une pause : ce n'est pas une panne.
     if (e.error === 'no-speech' || e.error === 'aborted') return;
-    toast(e.error === 'not-allowed'
-      ? "Le micro a été refusé. Autorise-le dans les réglages du navigateur."
-      : `Dictée interrompue : ${e.error}`, { kind: 'warn' });
+    dictationProblem(e.error).then((m) => toast(m, { kind: 'warn' }));
   };
 
   rec.onend = () => {

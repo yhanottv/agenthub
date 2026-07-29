@@ -1942,6 +1942,23 @@ select:disabled {
   color: var(--muted); background: var(--surface-2); cursor: not-allowed;
 }
 
+/* ------------------------------------------------------------------ micro */
+/* Un niveau qui suit la voix repond en une seconde a la seule question qui
+   compte — est-ce qu'on t'entend ? Aucun message ne le dirait aussi vite. */
+.mic-test {
+  display: flex; align-items: center; gap: var(--sp-3); margin-top: var(--sp-3);
+}
+.mic-meter {
+  flex: 1; min-width: 70px; max-width: 240px; height: 8px; overflow: hidden;
+  border-radius: var(--r-pill); background: var(--line-soft);
+}
+.mic-meter span {
+  display: block; width: 0; height: 100%;
+  border-radius: inherit; background: var(--accent);
+  transition: width 80ms linear;
+}
+#mic-state { margin-top: 10px; line-height: 1.7; }
+
 /* ------------------------------------------- detection / installation Hermes */
 .btn-row { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
 

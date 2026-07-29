@@ -96,7 +96,12 @@ app.use((_req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  // `microphone=()` interdit le micro à tout le monde, nous compris — et c'est
+  // exactement ce qui se passait : l'utilisateur autorisait le micro dans son
+  // navigateur, la page était quand même bloquée, et la dictée annonçait un
+  // refus qui ne venait pas de lui. La dictée a besoin de `self`. La caméra et
+  // la géolocalisation restent fermées : rien ici ne s'en sert.
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(self), geolocation=()');
   res.setHeader(
     'Content-Security-Policy',
     "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
@@ -902,6 +907,15 @@ app.delete('/api/notes/:id', requireAuth, (req, res) => {
 const I18N_LANGS = { en: 'anglais', fr: 'français' };
 const MAX_I18N_BATCH = 60;
 
+// Le vocabulaire maison — sans ces équivalences, le modèle traduit « pôle » par
+// « hub » ici et par « division » là, et l'interface se contredit d'un écran à
+// l'autre. Les mêmes choix que le noyau écrit à la main dans public/i18n.js.
+const I18N_GLOSSARY = {
+  en: 'pôle = unit, salon = channel, second cerveau = second brain, '
+    + 'tâche déléguée = delegated task, consommation = usage, '
+    + 'fournisseur = provider, clé API = API key, agent et skill ne changent pas',
+};
+
 app.get('/api/i18n/:lang', requireAuth, (req, res) => {
   const lang = I18N_LANGS[req.params.lang] ? req.params.lang : 'fr';
   res.json({ lang, translations: lang === 'fr' ? {} : Translations.all(lang) });
@@ -934,7 +948,8 @@ app.post('/api/i18n/:lang', requireAuth, async (req, res) => {
           + 'Règles : garde la ponctuation, les majuscules initiales et les emoji tels quels ; '
           + 'ne traduis pas les noms propres, les noms de produits ni le contenu entre backticks ; '
           + 'reste concis, c\'est de l\'interface, pas de la prose ; aucun commentaire, aucun texte '
-          + 'autour du tableau.',
+          + 'autour du tableau.'
+          + (I18N_GLOSSARY[lang] ? `\nVocabulaire imposé : ${I18N_GLOSSARY[lang]}.` : ''),
       },
       { role: 'user', content: JSON.stringify(todo) },
     ],
