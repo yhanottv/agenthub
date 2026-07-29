@@ -37,12 +37,21 @@ peut emprunter un worker à un autre pôle.
 
 **Un second cerveau, et une carte pour s'y retrouver.** Des notes que tu écris une
 fois et qui sont injectées dans le prompt de *tous* tes agents, quel que soit leur
-fournisseur. Relie-les entre elles avec des `[[doubles crochets]]` et la vue **Graph**
-les affiche en galaxie navigable : une note est une étoile, un lien une ligne, et plus
-une étoile est claire plus elle a servi récemment. Une note citée mais pas encore
-écrite apparaît en pointillé — un clic la crée. L'onglet **Récent** montre ce qui a
-bougé en dernier ; tes agents peuvent eux-mêmes proposer des notes, qui attendent ta
-validation avant d'entrer en mémoire.
+fournisseur. Relie-les entre elles avec des `[[doubles crochets]]`.
+
+La vue **Graph** cartographie tout l'espace de travail en bulles : une catégorie, un
+cercle, ses éléments dedans. Notes groupées par tag, agents, pôles, tâches, et les
+**skills Hermes** — chaque famille s'allume ou s'éteint. Rien ne bouge tout seul, tout
+est visible d'emblée, un clic ouvre une bulle pour la lire de près, un survol montre
+les liens réels. Une note citée mais pas encore écrite apparaît en pointillé : un clic
+la crée. L'onglet **Récent** montre ce qui a bougé en dernier ; tes agents alimentent
+eux-mêmes la mémoire, et tu peux exiger de valider chaque ajout.
+
+**Les skills d'Hermes, visibles depuis AgentHub.** Monte les dossiers de skills de ton
+Hermes en lecture seule (voir `docker-compose.yml`) et le catalogue officiel Nous
+Research apparaît sur la carte, groupé par catégorie, les skills actifs cerclés. Rien
+ne s'installe depuis ici : l'installation écrit chez Hermes et passe par ses propres
+contrôles — la fiche te donne la commande exacte.
 
 **Des agents qui agissent.** Recherche web, lecture de pages, fouille de la mémoire et
 de l'historique, calcul exact, lecture des fichiers déposés dans le salon. Chaque appel
@@ -338,7 +347,9 @@ navigateur ──REST──▶ server.js ──▶ orchestrator.js ──▶ llm
 | `orchestrator.js` | Routage, délégation, boucle d'outils, tâches, sérialisation et annulation par salon |
 | `llm.js` | Client SSE, retry, registre des fournisseurs, découverte de modèles |
 | `tools.js` | Outils exécutables par les agents, et les garde-fous réseau qui vont avec |
-| `db.js` | Schéma SQLite, dépôts, graphe de la mémoire, index de recherche |
+| `skills.js` | Lecture du catalogue de skills Hermes (SKILL.md), en lecture seule |
+| `graph.js` | Assemblage des groupes et des liens affichés par la carte |
+| `db.js` | Schéma SQLite, dépôts, index de recherche |
 | `public/` | Le front, sans build ni dépendance |
 
 ### Choix qui méritent une explication
@@ -355,10 +366,12 @@ reste collée à la ligne de base au lieu de plonger dessous.
 Enregistrer un fournisseur sans retaper la clé conserve celle stockée : le formulaire
 n'a jamais besoin de la détenir.
 
-**Le graphe est déterministe.** Le placement des étoiles part d'une spirale de
-Fibonacci puis d'un modèle à ressorts : deux visites donnent la même carte. Une
-disposition aléatoire serait plus jolie une fois et inutilisable ensuite — on ne se
-repère pas dans un espace qui bouge à chaque ouverture.
+**La carte est calculée une fois, puis figée.** L'empilement des cercles est écrit à la
+main — le projet n'a pas de dépendance et sa politique de sécurité interdit d'aller
+chercher d3 sur un CDN. Aucune animation, aucune physique qui continue de tourner : on
+ne se repère pas dans un espace qui bouge à chaque ouverture. En SVG plutôt qu'en
+canvas, pour que les titres restent nets à tous les zooms et que chaque cercle soit
+atteignable au clavier.
 
 **Aucune adresse interne n'est joignable par un outil.** `tools.js` résout le nom
 lui-même, refuse boucle locale, RFC 1918, link-local, CGNAT et ULA, et revalide chaque
