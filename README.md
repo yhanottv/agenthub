@@ -8,10 +8,14 @@ regroupes en **pôles**. Quand tu écris dans un pôle, le membre le plus haut p
 répond, et il peut **déléguer** le travail vers le bas, y compris à des agents d'un
 autre pôle. Chaque tâche déléguée est suivie, chaque réponse arrive en streaming.
 
+Tes agents ne se contentent pas d'écrire : ils cherchent sur le web, lisent des pages,
+fouillent leur propre mémoire, calculent, lisent tes fichiers et créent des images.
+
 Aucune étape de build : Node, du JavaScript vanilla, et SQLite.
 
 ![Node](https://img.shields.io/badge/node-%E2%89%A520-3e5faf)
 ![Docker](https://img.shields.io/badge/docker-compose-3e5faf)
+![Dépendances](https://img.shields.io/badge/d%C3%A9pendances-3-3e5faf)
 ![License](https://img.shields.io/badge/license-MIT-3e5faf)
 
 ---
@@ -22,6 +26,7 @@ Aucune étape de build : Node, du JavaScript vanilla, et SQLite.
 - [Installation](#installation)
 - [Premier démarrage](#premier-démarrage)
 - [Configuration](#configuration)
+- [Sécurité](#sécurité)
 - [Mise à jour, sauvegarde, dépannage](#mise-à-jour)
 - [Architecture](#architecture)
 - [Tests](#tests)
@@ -35,61 +40,48 @@ peut déléguer qu'à des agents strictement moins gradés, jamais à lui-même,
 boucle. La chaîne CEO → manager → worker fonctionne sur trois niveaux, et un manager
 peut emprunter un worker à un autre pôle.
 
-**Un second cerveau, et une carte pour s'y retrouver.** Des notes que tu écris une
-fois et qui sont injectées dans le prompt de *tous* tes agents, quel que soit leur
-fournisseur. Relie-les entre elles avec des `[[doubles crochets]]`.
-
-La vue **Graph** cartographie tout l'espace de travail en bulles : une catégorie, un
-cercle, ses éléments dedans. Notes groupées par tag, agents, pôles, tâches, et les
-**skills Hermes** — chaque famille s'allume ou s'éteint. Rien ne bouge tout seul, tout
-est visible d'emblée, un clic ouvre une bulle pour la lire de près, un survol montre
-les liens réels. Une note citée mais pas encore écrite apparaît en pointillé : un clic
-la crée. L'onglet **Récent** montre ce qui a bougé en dernier ; tes agents alimentent
-eux-mêmes la mémoire, et tu peux exiger de valider chaque ajout.
-
-**Les skills d'Hermes, visibles depuis AgentHub.** Monte les dossiers de skills de ton
-Hermes en lecture seule (voir `docker-compose.yml`) et le catalogue officiel Nous
-Research apparaît sur la carte, groupé par catégorie, les skills actifs cerclés. Rien
-ne s'installe depuis ici : l'installation écrit chez Hermes et passe par ses propres
-contrôles — la fiche te donne la commande exacte.
-
 **Des agents qui agissent.** Recherche web, lecture de pages, fouille de la mémoire et
-de l'historique, calcul exact, lecture des fichiers déposés dans le salon. Chaque appel
-d'outil est affiché au-dessus de la réponse : une affirmation appuyée sur une vraie
-recherche ne se confond pas avec la même phrase inventée. Les appels sortants sont
-restreints à l'Internet public — une adresse interne est refusée, redirections
-comprises.
+de l'historique, calcul exact, lecture des fichiers déposés dans le salon, création
+d'images. Chaque appel d'outil est affiché au-dessus de la réponse : une affirmation
+appuyée sur une vraie recherche ne se confond pas avec la même phrase inventée.
 
-**Plusieurs fournisseurs, au choix par agent.** Hermes, AgentRouter, OpenRouter,
-OpenAI, Groq, Together, Ollama, ou n'importe quel endpoint compatible OpenAI. Chaque
-agent a son service et son modèle — et tu peux surcharger le tout **pour une seule
-conversation**, effort de raisonnement compris, sans toucher aux fiches.
+**Un second cerveau, et une carte pour s'y retrouver.** Des notes écrites une fois,
+injectées dans le prompt de *tous* tes agents. Relie-les avec des `[[doubles crochets]]`
+et la vue **Graph** cartographie tout l'espace de travail en galaxie navigable : notes,
+agents, pôles, tâches et **skills Hermes**, groupés en amas, chaque famille activable.
+Tes agents alimentent eux-mêmes cette mémoire — automatiquement, ou après ta validation
+si tu préfères.
+
+**Les skills de ton Hermes, visibles depuis AgentHub.** Le catalogue officiel Nous
+Research au complet, groupé par catégorie, avec ce qui est déjà actif chez toi.
+Recherche, filtres, et la commande exacte pour activer ce qui t'intéresse.
+
+**Plusieurs fournisseurs, au choix par agent.** Hermes, AgentRouter, OpenRouter, OpenAI,
+Google Gemini, Groq, Together, Ollama, ou n'importe quel endpoint compatible OpenAI.
+Chaque agent a son service et son modèle — et tu peux surcharger le tout **pour une
+seule conversation**, effort de raisonnement compris.
 
 **Une consommation qui ne ment pas.** Une ligne par appel modèle, tokens entrants et
-sortants, **coût en euros**, répartition par modèle, par agent et par salon, courbe
-d'évolution au survol. Quand le fournisseur renvoie un décompte réel il est utilisé ;
-sinon c'est une estimation, explicitement étiquetée comme telle. Un modèle dont tu n'as
-pas renseigné le tarif n'est pas compté zéro en silence : il est signalé, et le total
-s'annonce comme un plancher. Tu peux fixer un seuil de dépense quotidien — il prévient,
-il ne coupe rien.
+sortants, **coût en euros**, répartition par modèle, par agent et par salon. Un modèle
+sans tarif renseigné n'est pas compté zéro en silence : il est signalé, et le total
+s'annonce comme un plancher. Seuil d'alerte quotidien qui prévient sans rien couper.
 
 **Retrouver.** Recherche plein texte (SQLite FTS5) sur les conversations et la mémoire,
-depuis la palette `Ctrl K`, avec les termes surlignés dans l'extrait.
+depuis la palette `Ctrl K`, termes surlignés.
 
-**Des fichiers.** Dépôt par bouton ou glisser-déposer dans un salon, jusqu'à 10 Mo. Les
-fichiers texte sont réellement lisibles par les agents. Export d'une conversation en
-Markdown.
+**Des fichiers.** Dépôt par bouton ou glisser-déposer, jusqu'à 10 Mo. Les fichiers texte
+sont réellement lisibles par les agents. Export d'une conversation en Markdown.
 
-**Ça tourne tout seul.** Sauvegardes automatiques de la base, déclenchements programmés
-(« tous les matins à 8 h 30, Chercheur me fait la veille »), webhooks entrants pour
-lancer un agent depuis l'extérieur, notifications navigateur en fin de traitement long.
+**Ça tourne tout seul.** Sauvegardes automatiques, déclenchements programmés (« tous les
+matins à 8 h 30, Chercheur me fait la veille »), webhooks entrants, notifications
+navigateur en fin de traitement long.
 
 **Temps réel.** WebSocket avec reconnexion et resynchronisation, streaming
 token-par-token, raisonnement du modèle affiché à part et replié, statut des agents,
 arrêt d'un run en cours.
 
-**Soigné.** Thème clair et sombre, contraste WCAG AA vérifié sur les deux, navigation
-au clavier, mobile, `prefers-reduced-motion`.
+**Soigné.** Thème clair et sombre, contraste WCAG AA vérifié sur les deux, navigation au
+clavier, mobile, `prefers-reduced-motion`.
 
 ---
 
@@ -97,39 +89,33 @@ au clavier, mobile, `prefers-reduced-motion`.
 
 ### Ce qu'il te faut
 
-- **Ton propre serveur** — un VPS, une machine locale, peu importe. AgentHub
-  s'installe chez toi et ne dépend d'aucun service hébergé par qui que ce soit.
+- **Ton propre serveur** — un VPS, une machine locale, peu importe. AgentHub s'installe
+  chez toi et ne dépend d'aucun service hébergé par qui que ce soit.
 - **Docker** avec Compose (la voie recommandée) — ou Node ≥ 20 en direct.
-- **Un service de modèles** compatible OpenAI :
-  - [Nous Hermes Agent](https://github.com/NousResearch/hermes-agent) sur le même
-    serveur — le compagnon pour lequel AgentHub est pensé ;
-  - ou une clé [OpenRouter](https://openrouter.ai), OpenAI, Groq, Together… ;
-  - ou [Ollama](https://ollama.com) en local, sans clé ni connexion sortante.
-
-Hermes n'est pas obligatoire, mais c'est lui qui apporte la continuité de session,
-ses outils et sa mémoire persistante. Le reste du guide part du principe que tu l'as
-déjà sur ton serveur.
+- **Au moins une clé API.** Une seule clé [OpenRouter](https://openrouter.ai) couvre à
+  la fois le texte et les images : c'est le chemin le plus court. Une clé
+  [Google Gemini](https://aistudio.google.com/apikey), gratuite, fait aussi les deux.
+  [Ollama](https://ollama.com) fonctionne en local, sans clé ni connexion sortante.
 
 ### En deux commandes
 
 ```bash
 git clone https://github.com/yhanottv/agenthub.git
-cd agenthub
-docker compose up -d --build
+cd agenthub && docker compose up -d --build
 ```
 
 C'est tout. **Aucun fichier de configuration à créer.**
 
-Ouvre **http://localhost:8090** : le site te demande de choisir ton mot de passe, puis
-un assistant te fait brancher ton service de modèles. Le secret de session est généré
-tout seul au premier démarrage et conservé dans la base.
+Ouvre **http://localhost:8090** : le site te demande de choisir ton mot de passe, puis un
+assistant en cinq étapes te fait tout brancher. Le secret de session est généré au
+premier démarrage et conservé dans la base.
 
-#### Si tu installes sur un serveur distant
+#### Sur un serveur distant
 
 AgentHub n'écoute que sur la boucle locale (`127.0.0.1:8090`). Ce n'est pas une
 limitation à contourner : tant que personne n'a choisi de mot de passe, le premier
-visiteur peut le faire, et un port ouvert sur Internet pendant cette fenêtre laisse
-un inconnu s'emparer de l'instance — avec tes conversations et tes clés API.
+visiteur peut le faire, et un port ouvert sur Internet pendant cette fenêtre laisse un
+inconnu s'emparer de l'instance — avec tes conversations et tes clés API.
 
 Monte donc un tunnel depuis ta machine :
 
@@ -137,32 +123,39 @@ Monte donc un tunnel depuis ta machine :
 ssh -L 8090:localhost:8090 utilisateur@ton-serveur
 ```
 
-puis ouvre **http://localhost:8090** dans ton navigateur. Le tunnel n'est nécessaire
-que pour cette première prise en main ; pour un accès permanent, passe par un nom de
-domaine (voir plus bas), ce qui te donne aussi HTTPS.
+puis ouvre **http://localhost:8090**. Le tunnel n'est nécessaire que pour la première
+prise en main ; pour un accès permanent, passe par un nom de domaine (voir plus bas),
+ce qui te donne aussi HTTPS.
 
-### Si Hermes tourne déjà sur ce serveur
+### Hermes Agent
 
-C'est le cas le plus courant, et **la seule étape qui demande un peu d'attention**.
-Les deux conteneurs doivent partager un réseau Docker, sinon AgentHub ne peut pas
-joindre Hermes par son nom.
+[Hermes Agent](https://github.com/NousResearch/hermes-agent) apporte la continuité de
+session, ses outils et sa mémoire persistante, plus un catalogue de skills. **Il n'est
+pas obligatoire** — AgentHub fonctionne très bien avec n'importe quel autre service.
 
-Trouve le réseau d'Hermes :
+L'assistant s'en occupe : à l'étape 2, un bouton **Détecter Hermes automatiquement**.
 
-```bash
-docker inspect <conteneur-hermes> \
-  --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}'
-```
+- **Hermes est déjà là** → AgentHub le trouve sur le réseau Docker, et si le socket
+  Docker lui est accessible, il lit même sa clé `API_SERVER_KEY` directement dans sa
+  configuration. Un clic, c'est branché.
+- **Hermes n'est pas là** → AgentHub propose de l'installer (voir
+  [Sécurité](#installer-hermes-depuis-agenthub)), ou te donne le fichier `compose` et
+  les commandes exactes à lancer toi-même.
 
-Décommente ensuite les deux blocs `networks:` de `docker-compose.yml` en y mettant ce
-nom, puis relance `docker compose up -d`.
+Pour voir les **skills** d'Hermes dans AgentHub, monte ses dossiers en lecture seule —
+`docker-compose.yml` contient le bloc tout prêt, il n'y a que le nom du volume à
+ajuster.
 
-Il te faudra aussi la clé du gateway Hermes : c'est la valeur de `API_SERVER_KEY`
-dans sa configuration. L'assistant te la demande à l'étape 2, teste la connexion et
-liste les modèles disponibles.
+### Derrière un nom de domaine (HTTPS)
 
-> Si le nom de ton conteneur n'est pas `hermes-agent` ou si son port n'est pas 8642,
-> corrige simplement l'URL depuis l'assistant — rien n'est figé dans le code.
+C'est la bonne façon d'y accéder au quotidien : ton mot de passe ne circule plus en
+clair, et le tunnel SSH n'est plus nécessaire.
+
+Mets un reverse proxy devant, **retire la section `ports:`** (le proxy joint le
+conteneur par le réseau Docker) et ajoute `TRUST_PROXY=1` à ton `.env` pour que le
+verrouillage après huit tentatives voie la vraie adresse des visiteurs. Le
+`docker-compose.yml` contient les labels [Traefik](https://traefik.io) prêts à
+décommenter ; avec Caddy ou nginx, fais pointer le proxy sur le port 8090 du conteneur.
 
 ### Sans Docker
 
@@ -171,27 +164,14 @@ npm install
 DATA_DIR=./data node server.js
 ```
 
-`better-sqlite3` se compile à l'installation ; il te faut Python 3 et un compilateur
-C++ si aucun binaire précompilé ne correspond à ta plateforme.
-
-### Derrière un nom de domaine (HTTPS)
-
-C'est la bonne façon d'y accéder au quotidien : tu obtiens HTTPS, donc ton mot de
-passe ne circule plus en clair, et tu n'as plus besoin du tunnel SSH.
-
-Mets un reverse proxy devant, **retire la section `ports:`** (elle ne sert plus à
-rien : le proxy joint le conteneur par le réseau Docker) et ajoute `TRUST_PROXY=1` à
-ton `.env` pour que le verrouillage après huit tentatives voie la vraie adresse des
-visiteurs. Le `docker-compose.yml` contient les labels [Traefik](https://traefik.io)
-prêts à décommenter ; avec Caddy ou nginx, fais pointer le proxy sur le port 8090 du
-conteneur.
+`better-sqlite3` se compile à l'installation ; il te faut Python 3 et un compilateur C++
+si aucun binaire précompilé ne correspond à ta plateforme.
 
 ### Où vivent tes données
 
 Tout reste chez toi : la base SQLite dans un volume Docker, les clés API dans cette
-base, les conversations aussi. AgentHub ne contacte que les services de modèles que
-tu as toi-même configurés. Aucune télémétrie, aucun serveur central, rien qui
-remonte à l'auteur du projet.
+base, les conversations et les fichiers déposés aussi. AgentHub ne contacte que les
+services que tu as toi-même configurés. Aucune télémétrie, aucun serveur central.
 
 ---
 
@@ -199,136 +179,168 @@ remonte à l'auteur du projet.
 
 Tout se passe sur le site, rien en ligne de commande.
 
-**Ton mot de passe d'abord.** Le premier écran te le fait choisir et confirmer — huit
-caractères minimum. Il est haché avant d'être stocké : il n'apparaît en clair nulle
-part, ni dans un fichier, ni dans la base. Il n'y a donc **aucune récupération
-possible**, note-le. Tu pourras le changer plus tard depuis Réglages.
+**Ton mot de passe d'abord.** Huit caractères minimum, haché avant d'être stocké : il
+n'apparaît en clair nulle part. Il n'y a donc **aucune récupération possible**, note-le.
 
-**Puis l'assistant**, en quatre étapes :
+**Puis l'assistant**, en cinq étapes :
 
-1. **Bienvenue** — ce qui va être configuré.
-2. **Hermes** — il sonde réellement le gateway et affiche le verdict, avec l'erreur
-   exacte et des pistes si ça ne répond pas. Tu peux passer cette étape si tu
-   n'utilises pas Hermes.
+1. **Bienvenue** — ce qu'il te faut avoir sous la main.
+2. **Hermes** — détection automatique, installation ou configuration manuelle. Passable.
 3. **Services** — connecte au moins un fournisseur. Tu colles la clé, tu cliques
    **Tester**, et AgentHub interroge `/v1/models` pour lister ce qui est réellement
-   disponible. Tu choisis dans la liste plutôt que de taper un nom au hasard.
+   disponible. Chaque service indique où trouver sa clé, avec un lien direct.
 4. **Modèle par défaut** — appliqué d'un coup à tous tes agents.
+5. **Images** — le modèle qui dessinera. Facultatif, avec des couples service + modèle
+   connus pour fonctionner et leur prix à l'image.
 
-L'organisation par défaut est créée au premier lancement : un CEO, deux managers,
-cinq workers, trois pôles et un salon Hermes. Tout est modifiable, rien n'est figé.
+L'organisation par défaut est créée au premier lancement : un CEO, deux managers, cinq
+workers, trois pôles et un salon Hermes. Tout est modifiable.
 
 > **À propos du test de connexion.** Certains services — OpenRouter par exemple —
 > publient leur catalogue **sans authentification**. Obtenir une liste de modèles ne
-> prouve donc pas que ta clé est valide. AgentHub refuse de tester un service qui
-> exige une clé quand aucune n'est fournie, et quand le catalogue s'avère public il te
-> le dit franchement au lieu d'afficher une coche verte trompeuse.
+> prouve donc pas que ta clé est valide. AgentHub refuse de tester un service qui exige
+> une clé quand aucune n'est fournie, et quand le catalogue s'avère public il te le dit
+> franchement au lieu d'afficher une coche verte trompeuse.
 
 ---
 
 ## Configuration
 
-Tout se règle depuis l'interface : mot de passe, services, modèles, identité de
-l'organisation. La base de données fait foi.
+Tout se règle depuis l'interface : mot de passe, services, modèles, images, mémoire,
+tarifs, sauvegardes, planification. La base de données fait foi.
 
 ### Variables d'environnement (toutes facultatives)
 
-Tu n'en as besoin **que** si tu veux scripter une installation sans passer par les
-écrans. Copie alors `.env.example` en `.env` et remplis ce qui t'intéresse.
+Tu n'en as besoin **que** pour scripter une installation sans passer par les écrans.
+Copie alors `.env.example` en `.env`.
 
-| Variable (`.env`) | Lue par le serveur sous le nom | Rôle |
-|---|---|---|
-| `AGENTHUB_PASSWORD` | `APP_PASSWORD` | Fige le mot de passe. **Le rend non modifiable depuis l'interface.** |
-| `AGENTHUB_SECRET` | `APP_SECRET` | Fige la clé de signature des sessions. Sinon générée et conservée en base. |
-| `HERMES_API_URL` / `HERMES_API_KEY` / `HERMES_MODEL` | identiques | Pré-remplit le fournisseur Hermes. |
-| `AGENTROUTER_API_URL` / `AGENTROUTER_API_KEY` / `AGENTROUTER_MODEL` | identiques | Pré-remplit le fournisseur AgentRouter. |
-| `OWNER_NAME` / `ORG_NAME` | identiques | Ton nom et celui de l'organisation, au tout premier démarrage. |
-| `TRUST_PROXY` | identique | À mettre à `1` **uniquement** derrière un reverse proxy. Voir plus bas. |
-| `DATA_DIR` | identique | Emplacement de la base SQLite. Défaut : `/data` en Docker, `./data` sinon. |
-| `PORT` | identique | Port d'écoute. Défaut : `8090`. |
-| `TRAEFIK_HOST` | — | Domaine servi, utilisé par les labels Traefik du compose. |
+| Variable (`.env`) | Rôle |
+|---|---|
+| `AGENTHUB_PASSWORD` | Mot de passe d'amorçage. Remplaçable depuis Réglages, puis retirable. |
+| `AGENTHUB_SECRET` | Clé de signature des sessions. Sinon générée et conservée en base. |
+| `HERMES_API_URL` / `HERMES_API_KEY` / `HERMES_MODEL` | Pré-remplit le fournisseur Hermes. |
+| `AGENTROUTER_API_URL` / `AGENTROUTER_API_KEY` / `AGENTROUTER_MODEL` | Pré-remplit AgentRouter. |
+| `HERMES_SKILLS_DIR` / `HERMES_OPTIONAL_SKILLS_DIR` | Où lire les skills d'Hermes. |
+| `OWNER_NAME` / `ORG_NAME` | Ton nom et celui de l'organisation, au premier démarrage. |
+| `TRUST_PROXY` | À mettre à `1` **uniquement** derrière un reverse proxy. |
+| `DATA_DIR` | Emplacement de la base. Défaut : `/data` en Docker, `./data` sinon. |
+| `PORT` | Port d'écoute. Défaut : `8090`. |
+| `TRAEFIK_HOST` | Domaine servi, utilisé par les labels Traefik du compose. |
 
-Les noms `AGENTHUB_*` sont ceux de ton `.env` : c'est `docker-compose.yml` qui les
-traduit. **Si tu lances `node server.js` à la main, exporte directement
-`APP_PASSWORD` et `APP_SECRET`** — sinon tes variables ne servent à rien et
-l'instance reste ouverte au premier visiteur.
-
-Il n'existe pas de variable pour choisir le fournisseur par défaut : quand celui d'un
-agent n'est pas utilisable, AgentHub retombe sur le premier fournisseur configuré et
-actif.
-
-Elles ne servent qu'au **tout premier démarrage** : ensuite les réglages vivent en
-base et l'interface prend le dessus.
-
-### `TRUST_PROXY`
-
-Par défaut AgentHub ne fait **pas** confiance à l'en-tête `X-Forwarded-For`. C'est
-volontaire : cet en-tête est la seule clé du verrouillage après huit tentatives, et
-tant que rien ne filtre devant, n'importe qui peut le forger pour deviner ton mot de
-passe sans jamais être bloqué.
-
-Si — et seulement si — un reverse proxy est réellement devant, mets `TRUST_PROXY=1`
-pour que les journaux et le verrouillage voient la vraie adresse du client. Le
-drapeau `Secure` du cookie ne dépend pas de ce réglage : il est posé dès que la
-requête arrive en HTTPS, proxy ou pas.
+Elles ne servent qu'au **premier démarrage** : ensuite les réglages vivent en base.
 
 ### Changer de mot de passe
 
 **Réglages → Mot de passe.** L'ancien est demandé.
 
-Si ton mot de passe vient de `APP_PASSWORD` (via `AGENTHUB_PASSWORD` dans ton `.env`
-avec Compose), **fais-le passer en base sans attendre** : donne la valeur de la
-variable comme mot de passe actuel, choisis-en un nouveau, et retire la variable
-ensuite. L'écran te le rappelle tant que ce n'est pas fait.
+Si ton mot de passe vient de `AGENTHUB_PASSWORD`, **fais-le passer en base sans
+attendre** : donne la valeur de la variable comme mot de passe actuel, choisis-en un
+nouveau, et retire la variable ensuite. L'écran te le rappelle tant que ce n'est pas
+fait.
 
-> ⚠️ Pourquoi c'est important : une instance protégée par la seule variable est
-> marquée comme revendiquée sans stocker aucun hash. Perdre ce `.env` — rotation,
-> redéploiement, machine réinstallée — la verrouillerait **définitivement** : elle se
-> sait revendiquée, refuse de rouvrir la revendication, et n'a plus rien à vérifier.
-> Un mot de passe enregistré en base l'emporte sur la variable, ce qui rend celle-ci
-> retirable sans risque.
+> ⚠️ Pourquoi c'est important : une instance protégée par la seule variable est marquée
+> comme revendiquée sans stocker aucun hash. Perdre ce `.env` la verrouillerait
+> **définitivement**. Un mot de passe enregistré en base l'emporte sur la variable, ce
+> qui rend celle-ci retirable sans risque.
 
-### Changer de modèle en cours de conversation
+### La mémoire partagée
 
-La pastille sous le champ de saisie indique sur quoi tourne la conversation. Un clic
-permet de choisir un autre service, un autre modèle, et un **effort de raisonnement**
-(rapide / équilibré / approfondi). Le réglage ne vaut que pour ce salon et ne modifie
-aucune fiche d'agent.
+**Second cerveau → Notes.** Le budget injecté dans chaque prompt est réglable, 60 000
+caractères par défaut (environ 15 000 tokens), jusqu'à 400 000. Cette mémoire part avec
+**chaque** message de **chaque** agent : la doubler double la part de contexte facturée
+à chaque tour.
 
-L'effort est envoyé au service sous le nom `reasoning_effort`. Tous ne le gèrent pas :
-si le tien le refuse, tu obtiens une erreur explicite et il suffit de revenir sur
-« automatique ».
+---
+
+## Sécurité
+
+Ce projet s'installe sur ta machine et manipule tes clés API. Voici ce qu'il fait pour
+les protéger, et les deux endroits où c'est à toi de décider.
+
+**Les clés ne transitent jamais.** L'API expose `keyConfigured` et un indice masqué.
+Enregistrer un fournisseur sans retaper la clé conserve celle stockée : le formulaire
+n'a jamais besoin de la détenir.
+
+**Aucune adresse interne n'est joignable par un outil.** Les agents peuvent lire des
+pages web ; `tools.js` résout le nom lui-même, refuse boucle locale, RFC 1918,
+link-local, CGNAT et ULA, et revalide chaque redirection. Sans ça, « lis
+http://<voisin>:8318 » suffirait à faire recracher la configuration des conteneurs
+voisins, clés comprises.
+
+**Les images générées ne s'exécutent pas.** Seuls PNG, JPEG, WebP et GIF sont servis en
+ligne, et le type est déduit des octets, jamais de ce que le service annonce. SVG est
+volontairement exclu : c'est un document exécutable, l'afficher le ferait tourner sur
+ton origine.
+
+**Le reste** : CSP stricte, cookie signé `HttpOnly` `SameSite=Lax`, sessions en base
+avec expiration et révocation, protection CSRF, vérification d'origine sur le WebSocket,
+verrouillage après huit tentatives, mot de passe haché en scrypt.
+
+### Le port publié
+
+Par défaut AgentHub n'écoute que sur `127.0.0.1`. Publier `8090:8090` ouvrirait le port
+sur toutes les interfaces — **en passant devant ufw**, car Docker écrit ses propres
+règles iptables. Passe par un reverse proxy plutôt que par un port publié.
+
+### Installer Hermes depuis AgentHub
+
+L'assistant peut installer Hermes en un clic, mais cela demande de monter le socket
+Docker dans le conteneur. **Ce n'est pas « un accès à Docker »** : qui peut parler à ce
+socket peut démarrer un conteneur privilégié qui monte `/`. Le donner à AgentHub revient
+à lui donner les droits root sur la machine.
+
+C'est pour ça que le montage est **commenté par défaut** dans `docker-compose.yml`. Sans
+lui, AgentHub sait quand même détecter Hermes et te donne les commandes exactes — la
+même installation, à un copier-coller près. Ne l'active que sur une machine dont tu es
+seul maître.
+
+### ufw et Docker
+
+Si tu actives `ufw`, vérifie d'abord `/etc/default/ufw` :
+
+```
+DEFAULT_FORWARD_POLICY="ACCEPT"
+```
+
+Avec la valeur `DROP` par défaut d'Ubuntu, activer ufw peut couper le trafic **entre
+conteneurs et vers l'extérieur**, donc l'accès de tes agents à leurs fournisseurs.
 
 ---
 
 ## Mise à jour
 
 ```bash
-git pull
-docker compose up -d --build
+git pull && docker compose up -d --build
 ```
 
-Tes données vivent dans un volume Docker, elles survivent aux reconstructions. Le
-schéma se met à jour tout seul au démarrage.
+Tes données vivent dans un volume Docker, elles survivent aux reconstructions. Le schéma
+se met à jour tout seul au démarrage.
 
 ### Sauvegarder
 
-Toute la base tient dans un fichier SQLite :
+AgentHub prend un instantané au démarrage puis une fois par jour, en conserve quatorze,
+et les propose au téléchargement depuis **Réglages → Sauvegardes**.
+
+Pour une copie manuelle, passe par l'API de SQLite et non par une copie de fichier : en
+mode WAL, l'essentiel des écritures récentes vit dans le journal, et copier
+`agenthub.db` seul peut ne restaurer presque rien.
 
 ```bash
-docker run --rm -v agenthub_agenthub-data:/data -v "$PWD":/backup alpine \
-  tar czf /backup/agenthub-$(date +%F).tar.gz -C /data .
+docker exec agenthub node -e "import('/app/db.js').then(m => m.db.backup('/data/backup.db'))"
+docker cp agenthub:/data/backup.db ./agenthub-$(date +%F).db
 ```
 
 ### Dépannage
 
 | Symptôme | Piste |
 |---|---|
-| Le conteneur redémarre en boucle | `docker logs agenthub` — en général le volume `/data` n'est pas inscriptible, ou la compilation de `better-sqlite3` a échoué |
+| Le conteneur redémarre en boucle | `docker logs agenthub` — souvent le volume `/data` non inscriptible, ou la compilation de `better-sqlite3` |
 | « Aucun fournisseur configuré » | Réglages → Fournisseurs, ou relance l'assistant |
-| Les agents répondent « clé refusée » | La clé est invalide ou expirée côté service |
+| « … refuse cette clé » | La clé vient d'un autre service : elles ne sont pas interchangeables |
+| Un modèle disparaît | Le fournisseur l'a retiré de son catalogue. AgentHub le rafraîchit toutes les six heures et bascule les agents concernés |
 | L'interface semble figée après une mise à jour | Recharge de force (`Ctrl+Shift+R`) |
-| Hermes injoignable | Vérifie que les deux conteneurs partagent un réseau Docker |
+| Hermes injoignable | Les deux conteneurs partagent-ils un réseau Docker ? |
+| Les skills n'apparaissent pas | Les volumes d'Hermes ne sont pas montés — voir `docker-compose.yml` |
 
 ---
 
@@ -336,51 +348,50 @@ docker run --rm -v agenthub_agenthub-data:/data -v "$PWD":/backup alpine \
 
 ```
 navigateur ──REST──▶ server.js ──▶ orchestrator.js ──▶ llm.js ──▶ fournisseur
-     ▲                   │              (délégation)      (SSE)
-     └──── WebSocket ────┘
-                         └──▶ db.js (SQLite/WAL)
+     ▲                   │           (délégation,        (SSE)
+     └──── WebSocket ────┘            outils)
+                         ├──▶ tools.js   (web, mémoire, images)
+                         ├──▶ skills.js  (catalogue Hermes)
+                         ├──▶ hermes.js  (détection, installation)
+                         └──▶ db.js      (SQLite/WAL, FTS5)
 ```
 
 | Fichier | Rôle |
 |---|---|
-| `server.js` | API REST, WebSocket, auth par cookie signé, planificateur, sauvegardes, assets versionnés |
-| `orchestrator.js` | Routage, délégation, boucle d'outils, tâches, sérialisation et annulation par salon |
-| `llm.js` | Client SSE, retry, registre des fournisseurs, découverte de modèles |
-| `tools.js` | Outils exécutables par les agents, et les garde-fous réseau qui vont avec |
-| `skills.js` | Lecture du catalogue de skills Hermes (SKILL.md), en lecture seule |
-| `graph.js` | Assemblage des groupes et des liens affichés par la carte |
+| `server.js` | API REST, WebSocket, auth, planificateur, sauvegardes, assets versionnés |
+| `orchestrator.js` | Routage, délégation, boucle d'outils, tâches, annulation par salon |
+| `llm.js` | Client SSE, retry, fournisseurs, découverte de modèles, images |
+| `tools.js` | Outils exécutables par les agents, et les garde-fous réseau |
+| `skills.js` | Lecture du catalogue de skills Hermes |
+| `hermes.js` | Détection et installation d'Hermes |
+| `graph.js` | Groupes et liens de la carte |
 | `db.js` | Schéma SQLite, dépôts, index de recherche |
 | `public/` | Le front, sans build ni dépendance |
+
+Trois dépendances en tout : `express`, `ws`, `better-sqlite3`.
 
 ### Choix qui méritent une explication
 
 **Interpolation cubique monotone** pour la courbe de consommation, plutôt qu'un
-Catmull-Rom : elle ne peut mathématiquement pas dépasser, donc une plage de zéros
-reste collée à la ligne de base au lieu de plonger dessous.
+Catmull-Rom : elle ne peut mathématiquement pas dépasser, donc une plage de zéros reste
+collée à la ligne de base au lieu de plonger dessous.
 
 **Assets versionnés par empreinte.** Le serveur calcule un hash de `app.js` et
-`styles.css` au démarrage et réécrit le shell HTML pour pointer dessus. Sans ça, un
-`max-age` laisse un déploiement live mais invisible pendant une heure.
+`styles.css` au démarrage et réécrit le shell HTML. Sans ça, un `max-age` laisse un
+déploiement live mais invisible pendant une heure.
 
-**Les clés ne transitent jamais.** L'API expose `keyConfigured` et un indice masqué.
-Enregistrer un fournisseur sans retaper la clé conserve celle stockée : le formulaire
-n'a jamais besoin de la détenir.
+**La carte est calculée une fois, puis figée.** L'empilement des amas est écrit à la
+main — aucune dépendance, et la politique de sécurité interdit de charger three.js
+depuis un CDN. Le placement est déterministe : on ne se repère pas dans un espace qui
+change à chaque ouverture.
 
-**La carte est calculée une fois, puis figée.** L'empilement des cercles est écrit à la
-main — le projet n'a pas de dépendance et sa politique de sécurité interdit d'aller
-chercher d3 sur un CDN. Aucune animation, aucune physique qui continue de tourner : on
-ne se repère pas dans un espace qui bouge à chaque ouverture. En SVG plutôt qu'en
-canvas, pour que les titres restent nets à tous les zooms et que chaque cercle soit
-atteignable au clavier.
+**Le délai avant le premier octet est à 90 secondes.** Mesuré en production sur une
+passerelle multi-fournisseurs : 2,7 s, 3,2 s, 15,4 s, 3,2 s sur des requêtes quasi
+identiques. Un modèle à raisonnement peut légitimement réfléchir longtemps ; 30 s
+coupait des requêtes saines.
 
-**Aucune adresse interne n'est joignable par un outil.** `tools.js` résout le nom
-lui-même, refuse boucle locale, RFC 1918, link-local, CGNAT et ULA, et revalide chaque
-redirection. Sans ça, « lis http://agentrouter-proxy:8318 » suffirait à faire recracher
-la configuration des conteneurs voisins, clés comprises.
-
-**`APP_PASSWORD` n'est qu'un mot de passe d'amorçage.** Un hash en base l'emporte
-toujours sur la variable. C'est ce qui rend la variable retirable sans se verrouiller
-dehors.
+**Le coût est figé sur chaque appel.** Re-tarifer un modèle plus tard ne doit pas
+réécrire ce que le mois dernier a coûté. Seuls les appels jamais tarifés sont rattrapés.
 
 ---
 
@@ -392,20 +403,16 @@ Quatre suites, à lancer contre l'image construite :
 docker build -t agenthub:latest . && npm test
 ```
 
-`boot-test` démarre réellement le serveur et exerce HTTP et WebSocket — il attrape
-les erreurs qu'une simple vérification de syntaxe ne voit pas. `integration-test`
-monte un faux gateway SSE et fait tourner l'orchestrateur pour de vrai : délégation
-sur trois niveaux, refus des délégations illégales, annulation, mémoire partagée,
-comptabilité des tokens, surcharge de modèle par conversation.
+`boot-test` démarre réellement le serveur et exerce HTTP et WebSocket.
+`integration-test` monte un faux gateway SSE et fait tourner l'orchestrateur pour de
+vrai : délégation sur trois niveaux, refus des délégations illégales, annulation,
+mémoire partagée, comptabilité des tokens, surcharge de modèle par conversation.
+`password-test` vérifie qu'un mot de passe posé dans l'environnement peut passer en base
+et que l'ancien cesse alors de fonctionner. `search-test` reconstruit l'index de
+recherche sur une base déjà remplie — le cas où le défaut se cache.
 
-`password-test` vérifie qu'un mot de passe posé dans `APP_PASSWORD` peut être
-transféré en base et que l'ancien cesse alors de fonctionner — sans quoi retirer la
-variable ne changerait rien. `search-test` reconstruit l'index de recherche sur une
-base déjà remplie : le cas où le défaut se cache, puisqu'une base neuve remplit son
-index toute seule au fil des insertions.
-
-> Lance-les **dans le conteneur**, pas sur ta machine : l'image tourne sur Node 20, et
-> du code accepté par Node 24 peut y échouer.
+> Lance-les **dans le conteneur**, pas sur ta machine : l'image tourne sur Node 20, et du
+> code accepté par Node 24 peut y échouer.
 
 ---
 
@@ -413,9 +420,7 @@ index toute seule au fil des insertions.
 
 - **Un seul utilisateur, un seul mot de passe.** Pas de multi-comptes ni de rôles.
 - Un cookie volé reste valide jusqu'à son expiration si personne ne se déconnecte.
-  Les sessions vivent en base, elles expirent au bout de trente jours, et
-  « Déconnecter les autres navigateurs » les révoque toutes d'un coup — mais rien ne
-  détecte un vol.
+  « Déconnecter les autres navigateurs » les révoque toutes, mais rien ne détecte un vol.
 - La recherche web passe par le HTML de DuckDuckGo, sans clé : pas de quota, mais un
   balisage qui peut changer sans prévenir. Quand ça arrive, l'outil renvoie une liste
   vide et le dit, au lieu d'inventer.
@@ -426,4 +431,4 @@ index toute seule au fil des insertions.
 
 ## Licence
 
-MIT
+MIT — voir [LICENSE](LICENSE).
