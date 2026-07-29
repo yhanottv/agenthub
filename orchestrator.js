@@ -7,7 +7,7 @@
 
 import { Agents, Channels, Messages, Tasks, Notes, Usage, Attachments, Settings, notesBudget } from './db.js';
 import { streamChat } from './llm.js';
-import { TOOL_DEFS, runTool, describeCall } from './tools.js';
+import { activeToolDefs, runTool, describeCall } from './tools.js';
 
 const MAX_HISTORY = 30;           // messages of context sent to each agent
 const MAX_DELEGATION_DEPTH = 3;   // ceo -> manager -> worker
@@ -228,7 +228,7 @@ export class Orchestrator {
 
     try {
       for (;;) {
-        result = await streamChat({ ...common, messages: convo, tools: useTools ? TOOL_DEFS : null });
+        result = await streamChat({ ...common, messages: convo, tools: useTools ? activeToolDefs() : null });
 
         // Book the cost of every round whatever its outcome — a failed call
         // still burned prompt tokens upstream, and hiding that would make the
@@ -292,6 +292,17 @@ export class Orchestrator {
           const r = await runTool(call.name, call.args, {
             agent,
             channel,
+            // Une image produite pendant ce tour appartient à ce message-là :
+            // sans cet identifiant elle flotterait sans attache et le nettoyage
+            // des dépôts abandonnés l'emporterait au bout de six heures.
+            messageId: msg.id,
+            signal: ctx.signal,
+            onImage: (a) => this.broadcast({
+              type: 'message.attachment',
+              id: msg.id,
+              channelId: channel.id,
+              attachment: { id: a.id, name: a.name, mime: a.mime, bytes: a.bytes },
+            }),
             onProposal: (r) => {
               if (r.auto && r.note) {
                 // Entrée directe en mémoire : le graphe et la liste des notes
@@ -584,6 +595,9 @@ function buildSystemPrompt(channel, agent, members, canDelegate, chain = []) {
     lines.push('- `chercher_memoire` avant de dire que tu ignores quelque chose : c\'est peut-être déjà écrit.');
     lines.push('- `calculer` pour tout calcul, même simple.');
     lines.push('- `proposer_note` quand tu apprends un fait durable sur l\'organisation. Jamais pour un détail de la conversation.');
+    if (activeToolDefs().some((t) => t.function.name === 'generer_image')) {
+      lines.push("- `generer_image` dès qu'on te demande un visuel. L'image apparaît seule dans la conversation : ne la décris pas après coup, commente-la.");
+    }
     lines.push('Ne prétends jamais avoir utilisé un outil que tu n\'as pas appelé.');
   }
 

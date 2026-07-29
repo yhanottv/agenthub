@@ -1541,9 +1541,53 @@ button.tag.on { background: var(--accent); color: var(--on-accent); }
 
 .skill-toolbar {
   display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap;
-  margin: var(--sp-4) 0;
+  margin: var(--sp-4) 0 var(--sp-2);
 }
-.skill-toolbar input[type="search"] { flex: 1; min-width: 200px; }
+
+/* Un champ de recherche, pas une zone de saisie nue : la loupe annonce ce
+   qu'on attend, la croix permet de revenir en arriere sans tout effacer a la
+   main, et la largeur est bornee — un champ qui traverse l'ecran donne
+   l'impression qu'on doit y ecrire un paragraphe. */
+.search-field {
+  position: relative; display: flex; align-items: center;
+  flex: 1 1 260px; max-width: 420px;
+}
+.search-field > svg {
+  position: absolute; left: 12px; width: 15px; height: 15px;
+  color: var(--muted); pointer-events: none;
+}
+.search-field input {
+  width: 100%; padding: 9px 34px 9px 35px;
+  border: 1px solid var(--line); border-radius: var(--r-pill);
+  background: var(--surface); color: var(--text);
+  font-family: inherit; font-size: var(--fs-base);
+  transition: border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
+}
+.search-field input::placeholder { color: var(--muted); }
+.search-field input:hover { border-color: var(--muted-2); }
+.search-field input:focus {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+/* Chrome ajoute sa propre croix, qui doublerait la notre. */
+.search-field input::-webkit-search-cancel-button { display: none; }
+
+.search-clear {
+  position: absolute; right: 9px;
+  display: grid; place-items: center; width: 20px; height: 20px;
+  border: 0; border-radius: 50%; cursor: pointer;
+  background: var(--line-soft); color: var(--muted);
+  font-size: 15px; line-height: 1; font-family: inherit;
+  transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+}
+.search-clear:hover { background: var(--line); color: var(--text); }
+.search-clear:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.search-clear.hidden { display: none; }
+
+.skill-result {
+  color: var(--muted); font-size: var(--fs-sm);
+  min-height: 18px; margin-bottom: var(--sp-2);
+}
 
 .seg {
   display: inline-flex; padding: 3px; gap: 2px;
@@ -1775,3 +1819,32 @@ a.attach-chip:hover { border-color: var(--accent); color: var(--accent-ink); }
 }
 .budget-tune .muted { color: var(--muted); }
 .budget-tune strong { color: var(--text); font-weight: 600; }
+
+/* ------------------------------------------------ images dans le fil ---
+   Une image produite par un agent s'affiche, elle ne se telecharge pas. Elle
+   reste bornee en hauteur : une illustration en pleine page pousserait la
+   conversation hors de l'ecran a chaque fois. */
+.msg-images {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--sp-2); margin-bottom: 7px; max-width: 620px;
+}
+.msg-image { margin: 0; border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden;
+  background: var(--surface-2); }
+.msg-image img {
+  display: block; width: 100%; height: auto; max-height: 420px;
+  object-fit: contain; background: var(--surface-2);
+}
+.msg-image figcaption {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2);
+  padding: 6px 10px; font-size: var(--fs-xs); color: var(--muted);
+  border-top: 1px solid var(--line-soft);
+}
+.msg-image figcaption span {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.msg-image figcaption a { color: var(--muted); text-decoration: none; white-space: nowrap; }
+.msg-image figcaption a:hover { color: var(--accent); text-decoration: underline; }
+
+@media (max-width: 560px) {
+  .msg-images { grid-template-columns: minmax(0, 1fr); }
+}

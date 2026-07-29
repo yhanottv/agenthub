@@ -13,7 +13,13 @@
 
 import dns from 'node:dns/promises';
 import net from 'node:net';
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
 import { Notes, NoteProposals, Search, Attachments } from './db.js';
+import { generateImage, imageProvider } from './llm.js';
+
+const UPLOAD_DIR = path.join(process.env.DATA_DIR || './data', 'uploads');
 
 const FETCH_TIMEOUT_MS = Number(process.env.TOOL_FETCH_TIMEOUT_MS || 15000);
 const MAX_PAGE_BYTES = 2 * 1024 * 1024;
@@ -378,6 +384,27 @@ export const TOOL_DEFS = [
   {
     type: 'function',
     function: {
+      name: 'generer_image',
+      description: "Crée une image à partir d'une description et la publie dans la conversation. "
+        + "À utiliser quand on te demande une illustration, un visuel, un logo, une maquette ou un schéma. "
+        + "Décris la scène précisément : cadrage, style, couleurs, ambiance.",
+      parameters: {
+        type: 'object',
+        properties: {
+          description: { type: 'string', description: "Ce que l'image doit montrer, en une à trois phrases détaillées." },
+          format: {
+            type: 'string',
+            enum: ['carré', 'paysage', 'portrait'],
+            description: 'Proportions voulues. Défaut : carré.',
+          },
+        },
+        required: ['description'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'lire_piece_jointe',
       description: "Lit le contenu texte d'un fichier déposé dans ce salon.",
       parameters: {
@@ -389,14 +416,38 @@ export const TOOL_DEFS = [
   },
 ];
 
+/**
+ * Les outils réellement proposés au modèle.
+ *
+ * `generer_image` est retiré tant qu'aucun service d'images n'est configuré :
+ * décrire au modèle une capacité qu'il n'a pas, c'est l'inviter à promettre
+ * une illustration qui n'arrivera jamais.
+ */
+export function activeToolDefs() {
+  const canDraw = Boolean(imageProvider().provider);
+  return TOOL_DEFS.filter((t) => canDraw || t.function.name !== 'generer_image');
+}
+
 export const TOOL_LABELS = {
   recherche_web: 'recherche sur le web',
   lire_url: 'lit une page',
   chercher_memoire: 'fouille la mémoire',
   proposer_note: 'propose une note',
   calculer: 'calcule',
+  generer_image: 'dessine',
   lire_piece_jointe: 'lit un fichier',
 };
+
+// L'API attend des dimensions, l'agent raisonne en cadrage.
+const IMAGE_SIZES = { 'carré': '1024x1024', carre: '1024x1024', paysage: '1536x1024', portrait: '1024x1536' };
+
+/** Nom de fichier lisible tiré de la description, sans rien laisser passer. */
+const slugName = (s) => String(s || 'image')
+  .toLowerCase()
+  .normalize('NFD').replace(/[̀-ͯ]/g, '')
+  .replace(/[^a-z0-9]+/g, '-')
+  .replace(/^-|-$/g, '')
+  .slice(0, 48) || 'image';
 
 /** Court résumé de l'appel, affiché dans le fil de la conversation. */
 export function describeCall(name, args) {
@@ -406,6 +457,7 @@ export function describeCall(name, args) {
   if (name === 'chercher_memoire') return `${label} : « ${String(args.requete || '').slice(0, 80)} »`;
   if (name === 'proposer_note') return `${label} : « ${String(args.titre || '').slice(0, 80)} »`;
   if (name === 'calculer') return `${label} : ${String(args.expression || '').slice(0, 80)}`;
+  if (name === 'generer_image') return `${label} : « ${String(args.description || '').slice(0, 70)} »`;
   if (name === 'lire_piece_jointe') return `${label} : ${String(args.nom || '').slice(0, 80)}`;
   return label;
 }
@@ -509,6 +561,54 @@ export async function runTool(name, rawArgs, ctx = {}) {
         const expr = String(args.expression || '');
         const v = evalMath(expr);
         return { ok: true, text: `${expr} = ${v}` };
+      }
+
+      case 'generer_image': {
+        const desc = String(args.description || '').trim();
+        if (!desc) return { ok: false, text: 'Décris ce que doit montrer l\'image.' };
+        if (!ctx.channel?.id) return { ok: false, text: 'Aucun salon en contexte.' };
+
+        const { provider } = imageProvider();
+        if (!provider) {
+          return {
+            ok: false,
+            text: "Aucun service d'images n'est configuré dans AgentHub. Dis-le à l'utilisateur : "
+                + 'il doit en choisir un dans Réglages → Images. Ne prétends pas avoir créé une image.',
+          };
+        }
+
+        const r = await generateImage({
+          prompt: desc,
+          size: IMAGE_SIZES[String(args.format || '').toLowerCase()] || IMAGE_SIZES['carré'],
+          signal: ctx.signal,
+        });
+        if (!r.ok) return { ok: false, text: r.error };
+
+        // Le fichier est écrit sous un identifiant que nous choisissons, avec
+        // l'extension déduite des octets — jamais d'un nom venu du modèle.
+        const ext = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' }[r.mime] || 'png';
+        const id = 'at_' + crypto.randomBytes(8).toString('hex');
+        fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+        const diskPath = path.join(UPLOAD_DIR, id);
+        fs.writeFileSync(diskPath, r.buffer);
+
+        const a = Attachments.create({
+          id,
+          channel_id: ctx.channel.id,
+          message_id: ctx.messageId || null,
+          name: `${slugName(desc)}.${ext}`,
+          mime: r.mime,
+          bytes: r.buffer.length,
+          path: diskPath,
+        });
+        ctx.onImage?.(a);
+
+        return {
+          ok: true,
+          text: `Image créée et publiée dans la conversation (${Math.round(a.bytes / 1024)} Ko).`
+            + `${r.revised ? ` Le service a reformulé la demande en : « ${r.revised.slice(0, 300)} ».` : ''}`
+            + ' Elle est déjà visible : ne la décris pas à nouveau, commente-la si besoin.',
+        };
       }
 
       case 'lire_piece_jointe': {

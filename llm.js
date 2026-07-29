@@ -4,7 +4,7 @@
 // added and re-keyed from the UI at runtime. Environment variables are only
 // used to seed the table on first boot.
 
-import { Providers } from './db.js';
+import { Providers, Settings } from './db.js';
 
 const IDLE_TIMEOUT_MS = Number(process.env.LLM_IDLE_TIMEOUT_MS || 120000);
 
@@ -439,6 +439,119 @@ async function attemptStream({ provider, model, headers, body, onDelta, onReason
     retryable: empty,
     usage: reportedUsage || estimateUsage(messages, text, reasoning, toolCalls),
   });
+}
+
+// ---- génération d'images ---------------------------------------------------
+
+const IMAGE_TIMEOUT_MS = Number(process.env.LLM_IMAGE_TIMEOUT_MS || 180000);
+const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+
+/** Le service et le modèle choisis pour les images, s'ils sont utilisables. */
+export function imageProvider() {
+  const id = Settings.get('image_provider', '');
+  const model = Settings.get('image_model', '');
+  if (!id || !model) return { provider: null, model: '', reason: 'non configuré' };
+  const provider = Providers.get(id);
+  if (!provider) return { provider: null, model: '', reason: `le service « ${id} » n'existe plus` };
+  if (!usable(provider)) return { provider: null, model: '', reason: `le service ${provider.label} n'est pas utilisable (clé ou URL manquante)` };
+  return { provider, model, reason: '' };
+}
+
+/**
+ * Génère une image via l'endpoint OpenAI `/v1/images/generations`.
+ *
+ * Le format b64 est demandé explicitement : une URL signée expire, et il
+ * faudrait la retélécharger avant qu'elle ne meure. Les services qui ignorent
+ * ce paramètre et renvoient quand même une URL sont gérés en second recours.
+ *
+ * @returns {Promise<{ok:boolean, buffer?:Buffer, mime?:string, error?:string}>}
+ */
+export async function generateImage({ prompt, size = '1024x1024', signal } = {}) {
+  const { provider, model, reason } = imageProvider();
+  if (!provider) {
+    return { ok: false, error: `Aucun service d'images configuré (${reason}). Réglages → Images.` };
+  }
+
+  const headers = { 'Content-Type': 'application/json', Accept: 'application/json' };
+  if (provider.api_key) headers.Authorization = `Bearer ${provider.api_key}`;
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort('timeout'), IMAGE_TIMEOUT_MS);
+  const onAbort = () => ctrl.abort('caller');
+  signal?.addEventListener('abort', onAbort, { once: true });
+
+  let resp;
+  try {
+    resp = await fetch(endpoint(provider.base_url, 'images/generations'), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ model, prompt, n: 1, size, response_format: 'b64_json' }),
+      signal: ctrl.signal,
+    });
+  } catch (err) {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+    if (signal?.aborted) return { ok: false, error: 'Génération interrompue.' };
+    return { ok: false, error: `${provider.label} injoignable : ${err.message}` };
+  }
+  clearTimeout(timer);
+  signal?.removeEventListener('abort', onAbort);
+
+  if (!resp.ok) {
+    let detail = '';
+    try { detail = (await resp.text()).slice(0, 300); } catch { /* corps illisible */ }
+    if (resp.status === 404) {
+      return { ok: false, error: `${provider.label} n'expose pas de génération d'images, ou ne connaît pas le modèle « ${model} ».` };
+    }
+    return { ok: false, error: describeHttpError(provider, resp.status, detail) };
+  }
+
+  let payload;
+  try { payload = await resp.json(); } catch { return { ok: false, error: 'Réponse illisible (JSON attendu).' }; }
+  const first = payload?.data?.[0];
+  if (!first) {
+    const msg = payload?.error?.message ? summariseUpstream(payload.error.message) : 'réponse sans image';
+    return { ok: false, error: `${provider.label} n'a renvoyé aucune image (${msg}).` };
+  }
+
+  if (first.b64_json) {
+    const buffer = Buffer.from(first.b64_json, 'base64');
+    if (!buffer.length) return { ok: false, error: 'Image vide.' };
+    if (buffer.length > MAX_IMAGE_BYTES) return { ok: false, error: 'Image trop lourde.' };
+    return { ok: true, buffer, mime: sniffImage(buffer) || 'image/png', revised: first.revised_prompt || '' };
+  }
+
+  if (first.url) {
+    try {
+      const img = await fetch(first.url, { signal });
+      if (!img.ok) return { ok: false, error: `Image inaccessible (HTTP ${img.status}).` };
+      const buffer = Buffer.from(await img.arrayBuffer());
+      if (buffer.length > MAX_IMAGE_BYTES) return { ok: false, error: 'Image trop lourde.' };
+      const mime = sniffImage(buffer);
+      if (!mime) return { ok: false, error: "Le fichier renvoyé n'est pas une image reconnue." };
+      return { ok: true, buffer, mime, revised: first.revised_prompt || '' };
+    } catch (err) {
+      return { ok: false, error: `Téléchargement de l'image impossible : ${err.message}` };
+    }
+  }
+
+  return { ok: false, error: "Réponse sans image exploitable." };
+}
+
+/**
+ * Type déduit des octets, jamais de ce que le service annonce.
+ *
+ * C'est ce qui garantit qu'un fichier stocké en `image/png` en est vraiment
+ * un : le serveur le rend ensuite en ligne dans la conversation, et se fier à
+ * une étiquette fournie par un tiers serait exactement la mauvaise idée.
+ */
+export function sniffImage(buf) {
+  if (!buf || buf.length < 12) return null;
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'image/png';
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
+  if (buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') return 'image/webp';
+  if (buf.toString('ascii', 0, 3) === 'GIF') return 'image/gif';
+  return null;
 }
 
 /**

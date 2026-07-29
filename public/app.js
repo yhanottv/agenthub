@@ -1025,14 +1025,20 @@ function renderSkills(v) {
     </p>
 
     <div class="skill-toolbar">
-      <input id="skill-q" type="search" placeholder="Chercher un skill…" value="${escapeAttr(S.skillQuery)}"
-             aria-label="Chercher un skill">
-      <div class="seg">
+      <div class="search-field">
+        ${IC.search}
+        <input id="skill-q" type="search" placeholder="Chercher par nom, description ou tag…"
+               value="${escapeAttr(S.skillQuery)}" aria-label="Chercher un skill" autocomplete="off">
+        <button class="search-clear ${S.skillQuery ? '' : 'hidden'}" id="skill-clear" type="button"
+                aria-label="Effacer la recherche">×</button>
+      </div>
+      <div class="seg" role="group" aria-label="Filtrer par état">
         <button class="seg-btn ${S.skillOnly === '' ? 'on' : ''}" data-only="" type="button">Tous <small>${data.counts.total}</small></button>
         <button class="seg-btn ${S.skillOnly === 'installed' ? 'on' : ''}" data-only="installed" type="button">Actifs <small>${data.counts.installed}</small></button>
         <button class="seg-btn ${S.skillOnly === 'available' ? 'on' : ''}" data-only="available" type="button">À installer <small>${data.counts.available}</small></button>
       </div>
     </div>
+    <div class="skill-result" id="skill-result" aria-live="polite"></div>
 
     <div class="tag-filter">
       <button class="tag ${S.skillCat ? '' : 'on'}" type="button" data-cat="">toutes</button>
@@ -1041,14 +1047,16 @@ function renderSkills(v) {
     </div>
 
     ${shown.length ? `<div class="skill-grid">${shown.map(skillCardHTML).join('')}</div>`
-      : '<div class="empty">Aucun skill ne correspond.</div>'}
+      : '<div class="empty skill-empty">Aucun skill ne correspond.</div>'}
   </div>`;
 
   const input = $('#skill-q', v);
-  input.oninput = () => {
-    S.skillQuery = input.value;
-    // Re-rendre à chaque frappe ferait perdre le focus : on ne repeint que la grille.
-    const list = $('.skill-grid', v) || $('.empty', v);
+  const clear = $('#skill-clear', v);
+  const result = $('#skill-result', v);
+
+  // Re-rendre la page à chaque frappe ferait perdre le focus et la position du
+  // curseur : seule la grille est repeinte.
+  const repaint = () => {
     const qq = S.skillQuery.toLowerCase().trim();
     const next = data.skills.filter((s) => {
       if (S.skillOnly === 'installed' && !s.installed) return false;
@@ -1058,13 +1066,28 @@ function renderSkills(v) {
       return s.name.toLowerCase().includes(qq) || s.description.toLowerCase().includes(qq)
         || s.tags.some((t) => t.toLowerCase().includes(qq));
     });
+    const list = $('.skill-grid', v) || $('.skill-empty', v);
     if (list) {
       list.outerHTML = next.length
         ? `<div class="skill-grid">${next.map(skillCardHTML).join('')}</div>`
-        : '<div class="empty">Aucun skill ne correspond.</div>';
+        : `<div class="empty skill-empty">Aucun skill ne correspond à « ${escapeHtml(S.skillQuery)} ».</div>`;
       wireSkillCards(v, data);
     }
+    clear.classList.toggle('hidden', !S.skillQuery);
+    result.textContent = qq || S.skillCat || S.skillOnly
+      ? `${next.length} skill${next.length > 1 ? 's' : ''} sur ${data.counts.total}`
+      : '';
   };
+
+  input.oninput = () => { S.skillQuery = input.value; repaint(); };
+  input.onkeydown = (e) => {
+    if (e.key === 'Escape' && S.skillQuery) {
+      e.preventDefault();
+      S.skillQuery = ''; input.value = ''; repaint();
+    }
+  };
+  clear.onclick = () => { S.skillQuery = ''; input.value = ''; input.focus(); repaint(); };
+  repaint();
 
   $$('[data-only]', v).forEach((b) => b.onclick = () => { S.skillOnly = b.dataset.only; renderView(); });
   $$('[data-cat]', v).forEach((b) => b.onclick = () => { S.skillCat = b.dataset.cat; renderView(); });
@@ -2910,6 +2933,32 @@ function renderSettings(v) {
       </div>
 
       <div class="agent-card">
+        <h3 style="margin:0 0 4px;font-size:14px">Images</h3>
+        <div class="field-hint" style="margin-bottom:14px;line-height:1.7">
+          Quel service tes agents utilisent pour <strong>créer une image</strong> dans une conversation.
+          Il faut un service compatible OpenAI exposant <code>/v1/images/generations</code>.
+          Sans ça, l'outil de dessin reste indisponible et les agents le disent au lieu de faire semblant.
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="img-provider">Service</label>
+            <select id="img-provider">
+              <option value="">— aucun —</option>
+              ${S.providers.map((p) => `<option value="${escapeAttr(p.id)}" ${S.settings.image_provider === p.id ? 'selected' : ''}
+                ${p.enabled ? '' : 'disabled'}>${escapeHtml(p.label)}${p.enabled ? '' : ' (inactif)'}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field">
+            <label for="img-model">Modèle d'image</label>
+            <input id="img-model" maxlength="120" value="${escapeAttr(S.settings.image_model || '')}"
+                   placeholder="ex : gpt-image-1, dall-e-3">
+            <div class="field-hint">Le nom exact attendu par ce service.</div>
+          </div>
+        </div>
+        <button class="btn" id="save-image" type="button" style="margin-top:14px">Enregistrer</button>
+      </div>
+
+      <div class="agent-card">
         <h3 style="margin:0 0 4px;font-size:14px">Sauvegardes</h3>
         <div class="field-hint" style="margin-bottom:12px;line-height:1.7">
           Instantané cohérent de la base, pris au démarrage puis une fois par jour, ${'' /* */}
@@ -2999,6 +3048,21 @@ function renderSettings(v) {
   };
 
   $('#open-prices', v).onclick = () => openPricesModal();
+
+  $('#save-image', v).onclick = async (e) => {
+    e.currentTarget.disabled = true;
+    const res = await tryApi(api('PUT', '/api/settings', {
+      image_provider: $('#img-provider', v).value,
+      image_model: $('#img-model', v).value.trim(),
+    }), 'Enregistrement');
+    e.currentTarget.disabled = false;
+    if (res) {
+      S.settings = res;
+      toast(res.image_provider && res.image_model
+        ? 'Tes agents peuvent maintenant créer des images.'
+        : 'Génération d\'images désactivée.', { kind: 'success' });
+    }
+  };
 
   $('#set-tools', v).onchange = async (e) => {
     const on = e.currentTarget.checked;
@@ -3416,14 +3480,61 @@ function wireAttachments(root, channel) {
   });
 }
 
-/** Les fichiers portés par un message, sous son contenu. */
+// Formats que le serveur accepte de rendre en ligne. SVG en est absent des deux
+// côtés : c'est un document exécutable, pas une image inerte.
+const INLINE_MIME = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+
+/** Les fichiers portés par un message : les images s'affichent, le reste se télécharge. */
 function attachmentsHTML(m) {
   const files = m.attachments || [];
   if (!files.length) return '';
-  return `<div class="msg-files">${files.map((f) =>
-    `<a class="attach-chip" href="/api/attachments/${escapeAttr(f.id)}" download>
+  const images = files.filter((f) => INLINE_MIME.has(f.mime));
+  const others = files.filter((f) => !INLINE_MIME.has(f.mime));
+
+  return `<div class="msg-files" data-files="${escapeAttr(m.id)}">
+    ${images.length ? `<div class="msg-images">${images.map(imageHTML).join('')}</div>` : ''}
+    ${others.map((f) => `<a class="attach-chip" href="/api/attachments/${escapeAttr(f.id)}?download=1" download>
       ${IC.clip}<span>${escapeHtml(f.name)}</span><small>${fmtBytes(f.bytes)}</small>
-    </a>`).join('')}</div>`;
+    </a>`).join('')}
+  </div>`;
+}
+
+const imageHTML = (f) => `<figure class="msg-image">
+  <img src="/api/attachments/${escapeAttr(f.id)}" alt="${escapeAttr(f.name)}" loading="lazy" decoding="async">
+  <figcaption>
+    <span>${escapeHtml(f.name)}</span>
+    <a href="/api/attachments/${escapeAttr(f.id)}?download=1" download>${fmtBytes(f.bytes)} · télécharger</a>
+  </figcaption>
+</figure>`;
+
+/**
+ * Une image arrivée pendant que le message s'écrit.
+ * Le message est encore en streaming : le re-rendre entièrement effacerait le
+ * texte déjà affiché, on greffe donc l'image dans la zone des fichiers.
+ */
+function appendAttachment(id, att) {
+  const m = S.messages.find((x) => x.id === id);
+  if (m) m.attachments = [...(m.attachments || []).filter((f) => f.id !== att.id), att];
+
+  const body = $('#messages')?.querySelector(`[data-id="${CSS.escape(id)}"] .msg-body`);
+  if (!body) return;
+  let zone = body.querySelector('.msg-files');
+  if (!zone) {
+    zone = el('div', 'msg-files');
+    body.appendChild(zone);
+  }
+  if (zone.querySelector(`[src$="/${att.id}"]`)) return;      // déjà greffée
+
+  if (INLINE_MIME.has(att.mime)) {
+    let grid = zone.querySelector('.msg-images');
+    if (!grid) { grid = el('div', 'msg-images'); zone.prepend(grid); }
+    grid.insertAdjacentHTML('beforeend', imageHTML(att));
+  } else {
+    zone.insertAdjacentHTML('beforeend',
+      `<a class="attach-chip" href="/api/attachments/${escapeAttr(att.id)}?download=1" download>
+        ${IC.clip}<span>${escapeHtml(att.name)}</span><small>${fmtBytes(att.bytes)}</small></a>`);
+  }
+  if (isNearBottom()) scrollToBottom();
 }
 
 // Consecutive messages from the same author within this window are visually
@@ -4136,6 +4247,10 @@ function handleEvent(e) {
 
     case 'tool.call':
       if (inChat(e.channelId)) showToolActivity(e.id, e.label);
+      break;
+
+    case 'message.attachment':
+      if (inChat(e.channelId)) appendAttachment(e.id, e.attachment);
       break;
 
     case 'message.notice':

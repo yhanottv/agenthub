@@ -443,6 +443,7 @@ app.put('/api/settings', requireAuth, (req, res) => {
   const ALLOWED = [
     'owner_name', 'org_name', 'theme', 'daily_budget', 'tools_enabled',
     'notes_auto', 'notes_budget', 'context_budget',
+    'image_provider', 'image_model',
   ];
   const FLAGS = ['tools_enabled', 'notes_auto'];
   for (const [k, v] of Object.entries(patch)) {
@@ -828,14 +829,26 @@ app.post('/api/channels/:id/attachments',
     res.json({ id: a.id, name: a.name, mime: a.mime, bytes: a.bytes, readable: Boolean(a.text) });
   });
 
+/**
+ * Formats matriciels servis tels quels, pour qu'une image s'affiche dans la
+ * conversation au lieu de se télécharger.
+ *
+ * La liste est courte et fermée, et SVG en est volontairement absent : un SVG
+ * est un document exécutable, et le servir en ligne le ferait tourner sur
+ * notre propre origine — exactement ce que la CSP existe pour empêcher.
+ */
+const INLINE_MIME = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+
 app.get('/api/attachments/:id', requireAuth, (req, res) => {
   const a = Attachments.get(req.params.id);
   if (!a || !fs.existsSync(a.path)) return res.status(404).json({ error: 'not found' });
-  // Never inline: this content is user-supplied and an inline SVG or HTML would
-  // execute on our own origin, which is exactly what the CSP exists to prevent.
-  res.setHeader('Content-Type', 'application/octet-stream');
+
+  const inline = INLINE_MIME.has(a.mime) && !req.query.download;
+  res.setHeader('Content-Type', inline ? a.mime : 'application/octet-stream');
   res.setHeader('Content-Disposition',
-    `attachment; filename*=UTF-8''${encodeURIComponent(a.name)}`);
+    `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(a.name)}`);
+  // Avec nosniff, un fichier déclaré image/png qui n'en serait pas ne sera pas
+  // réinterprété par le navigateur : il ne s'affichera simplement pas.
   res.setHeader('X-Content-Type-Options', 'nosniff');
   fs.createReadStream(a.path).pipe(res);
 });

@@ -385,6 +385,8 @@ export const PUBLIC_SETTINGS = [
   'notes_auto',        // une note d'agent entre-t-elle seule en mémoire
   'notes_budget',      // caractères de mémoire partagée injectés par prompt
   'context_budget',    // plafond total du prompt, en caractères
+  'image_provider',    // service utilisé pour générer les images
+  'image_model',       // et son modèle
 ];
 
 export const Settings = {
