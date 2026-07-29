@@ -4597,9 +4597,26 @@ function attachmentsHTML(m) {
 
   return `<div class="msg-files" data-files="${escapeAttr(m.id)}">
     ${images.length ? `<div class="msg-images">${images.map(imageHTML).join('')}</div>` : ''}
-    ${others.map((f) => `<a class="attach-chip" href="/api/attachments/${escapeAttr(f.id)}?download=1" download>
+    ${others.map(fileChipHTML).join('')}
+  </div>`;
+}
+
+/**
+ * Une archive porte souvent un site entier.
+ *
+ * Quand un agent juge le projet gros, il livre un .zip et ne laisse aucun bloc
+ * de code : sans bouton ici, le site restait invisible alors qu'il était complet.
+ * Le bouton est proposé sur toute archive — c'est le serveur qui dira s'il y a
+ * une page dedans, plutôt que de deviner d'après le nom.
+ */
+function fileChipHTML(f) {
+  const isZip = f.mime === 'application/zip' || /\.zip$/i.test(f.name);
+  return `<div class="attach-row">
+    <a class="attach-chip" href="/api/attachments/${escapeAttr(f.id)}?download=1" download>
       ${IC.clip}<span>${escapeHtml(f.name)}</span><small>${fmtBytes(f.bytes)}</small>
-    </a>`).join('')}
+    </a>
+    ${isZip ? `<button class="code-act" type="button" data-zip-preview="${escapeAttr(f.id)}"
+       data-zip-name="${escapeAttr(f.name)}">Prévisualiser</button>` : ''}
   </div>`;
 }
 
@@ -4802,14 +4819,15 @@ function previewMax(chat) {
 
 function previewDockHTML() {
   if (!S.preview) return '';
-  const { url, name, count } = S.preview;
+  const { url, name, count, archive } = S.preview;
+  const label = archive ? `${archive} → ${name}` : name;
   return `
     <div class="preview-grip" id="preview-grip" role="separator" aria-orientation="vertical"
          aria-label="Largeur de la prévisualisation" tabindex="0"></div>
     <aside class="preview-dock" aria-label="Prévisualisation">
       <div class="preview-bar">
         <span class="preview-title">Aperçu</span>
-        <span class="preview-file">${escapeHtml(name)}${count > 1 ? ` +${count - 1}` : ''}</span>
+        <span class="preview-file" title="${escapeAttr(label)}">${escapeHtml(label)}${count > 1 ? ` +${count - 1}` : ''}</span>
         <button class="icon-btn" type="button" id="preview-reload"
                 aria-label="Relancer" title="Relancer">${IC.reload}</button>
         <button class="icon-btn" type="button" id="preview-full"
@@ -4820,7 +4838,7 @@ function previewDockHTML() {
       <iframe class="preview-frame" id="preview-frame" src="${escapeAttr(url)}"
               sandbox="allow-scripts allow-pointer-lock allow-modals"
               title="Site produit par un agent"></iframe>
-      <div class="preview-foot">exécuté hors ligne, isolé de ton compte</div>
+      <div class="preview-foot">isolé de ton compte · bibliothèques publiques chargées, aucun autre appel</div>
     </aside>`;
 }
 
@@ -4850,6 +4868,26 @@ async function openCodePreview(block, code) {
   S.preview = { url: r.url, name: site.entry, count: r.files?.length || site.files.length };
   if ($('.chat')) renderView();
   else openPreviewFullscreen();
+}
+
+/**
+ * Ouvre le site contenu dans une archive.
+ *
+ * L'archive est lue côté serveur : elle est déjà sur son disque, et la
+ * décompresser dans le navigateur pour la renvoyer aussitôt serait un aller-
+ * retour pour rien.
+ */
+async function openArchivePreview(id, name, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Ouverture…'; }
+  try {
+    const r = await tryApi(api('POST', `/api/preview/attachment/${id}`), 'Aperçu de l\'archive');
+    if (!r) return;
+    S.preview = { url: r.url, name: r.entry || name, count: r.files?.length || 1, archive: name };
+    if ($('.chat')) renderView();
+    else openPreviewFullscreen();
+  } finally {
+    if (btn?.isConnected) { btn.disabled = false; btn.textContent = 'Prévisualiser'; }
+  }
 }
 
 function closeCodePreview() {
@@ -4924,7 +4962,7 @@ function openPreviewFullscreen() {
   box.innerHTML = `
     <div class="preview-bar">
       <span class="preview-title">Aperçu</span>
-      <span class="preview-note">exécuté hors ligne, isolé de ton compte</span>
+      <span class="preview-note">isolé de ton compte · bibliothèques publiques chargées, aucun autre appel</span>
       <button type="button" class="btn ghost" data-full-reload>Relancer</button>
       <button type="button" class="btn ghost" data-full-x>Réduire</button>
     </div>
@@ -5111,6 +5149,13 @@ function wireMessageActions(box) {
       head.setAttribute('aria-expanded', String(open));
       const label = head.querySelector('.code-open');
       if (label) label.textContent = open ? 'Masquer' : 'Afficher';
+      return;
+    }
+
+    // Prévisualiser un site livré en archive.
+    const zip = e.target.closest('[data-zip-preview]');
+    if (zip) {
+      openArchivePreview(zip.dataset.zipPreview, zip.dataset.zipName, zip);
       return;
     }
 

@@ -13,7 +13,7 @@ import {
 } from './db.js';
 import { buildGraph, layerCounts, GRAPH_LAYERS, LAYER_META } from './graph.js';
 import { skillsCatalogue, invalidateSkills } from './skills.js';
-import { safeEntryPath } from './archive.js';
+import { safeEntryPath, readZip } from './archive.js';
 import {
   discover as discoverHermes, installHermes, installPlan, dockerStatus, connectToNetwork,
   diagnoseGateway, startGateway,
@@ -1194,6 +1194,31 @@ const PREVIEW_MIME = {
 };
 const previewMime = (p) => PREVIEW_MIME[p.split('.').pop().toLowerCase()] || 'application/octet-stream';
 
+/*
+ * Bibliothèques publiques autorisées dans un aperçu.
+ *
+ * Sans cette liste, un site produit par un agent s'ouvre vide : ils écrivent
+ * `<script src="https://cdn.jsdelivr.net/npm/three...">` parce que c'est ainsi
+ * qu'on écrit une page, et une politique qui n'autorise que nos propres fichiers
+ * bloque Three.js, GSAP et le reste. L'aperçu s'afficherait sans rien de ce qui
+ * fait le site.
+ *
+ * Ce que ça ouvre reste borné : la page tourne dans une origine opaque, sans
+ * accès à la session ni au DOM parent, et `connect-src 'none'` lui interdit
+ * toujours d'émettre le moindre appel — donc de faire sortir quoi que ce soit.
+ * Elle peut charger du code public ; elle ne peut rien renvoyer.
+ */
+const PREVIEW_CDNS = [
+  'https://cdn.jsdelivr.net',
+  'https://unpkg.com',
+  'https://cdnjs.cloudflare.com',
+  'https://esm.sh',
+  'https://cdn.skypack.dev',
+  'https://cdn.tailwindcss.com',
+  'https://fonts.googleapis.com',
+  'https://fonts.gstatic.com',
+].join(' ');
+
 const dropStalePreviews = () => {
   const cutoff = Date.now() - PREVIEW_TTL_MS;
   for (const [id, p] of previews) if (p.at < cutoff) previews.delete(id);
@@ -1212,24 +1237,25 @@ const dropStalePreviews = () => {
  * fichiers, servi sous un préfixe commun pour que les chemins relatifs tombent
  * juste — `href="a-propos.html"` doit mener quelque part.
  */
-app.post('/api/preview', requireAuth, (req, res) => {
-  const raw = Array.isArray(req.body?.files) && req.body.files.length
-    ? req.body.files
-    : [{ path: 'index.html', content: String(req.body?.html || '') }];
-
+/**
+ * Retient un jeu de fichiers et renvoie de quoi l'afficher.
+ *
+ * @param {Array<{path:string, data:Buffer}>} entries
+ * @returns {{id:string, url:string, entry:string, files:string[]}|{error:string}}
+ */
+function registerPreview(entries) {
   const files = new Map();
   let bytes = 0;
-  for (const f of raw.slice(0, MAX_PREVIEW_FILES)) {
+  for (const f of entries.slice(0, MAX_PREVIEW_FILES)) {
     const p = safeEntryPath(f?.path);
     if (!p || files.has(p)) continue;
-    const body = Buffer.from(String(f?.content ?? ''), 'utf8');
-    bytes += body.length;
+    bytes += f.data.length;
     if (bytes > MAX_PREVIEW_BYTES) {
-      return res.status(413).json({ error: 'Site trop lourd pour la prévisualisation (4 Mo maximum).' });
+      return { error: `Site trop lourd pour la prévisualisation (${Math.round(MAX_PREVIEW_BYTES / 1048576)} Mo maximum).` };
     }
-    files.set(p, body);
+    files.set(p, f.data);
   }
-  if (!files.size) return res.status(400).json({ error: 'Rien à prévisualiser.' });
+  if (!files.size) return { error: 'Rien à prévisualiser.' };
 
   // Point d'entrée : index.html s'il existe, sinon la première page trouvée,
   // sinon le premier fichier — mieux vaut afficher quelque chose que rien.
@@ -1241,7 +1267,54 @@ app.post('/api/preview', requireAuth, (req, res) => {
   const id = 'pv_' + crypto.randomBytes(9).toString('hex');
   previews.set(id, { files, entry, at: Date.now() });
   dropStalePreviews();
-  res.json({ id, url: `/api/preview/${id}/${entry}`, entry, files: names, expiresIn: PREVIEW_TTL_MS });
+  return { id, url: `/api/preview/${id}/${entry}`, entry, files: names };
+}
+
+app.post('/api/preview', requireAuth, (req, res) => {
+  const raw = Array.isArray(req.body?.files) && req.body.files.length
+    ? req.body.files
+    : [{ path: 'index.html', content: String(req.body?.html || '') }];
+
+  const r = registerPreview(raw.map((f) => ({
+    path: f?.path, data: Buffer.from(String(f?.content ?? ''), 'utf8'),
+  })));
+  if (r.error) return res.status(r.error.startsWith('Rien') ? 400 : 413).json(r);
+  res.json({ ...r, expiresIn: PREVIEW_TTL_MS });
+});
+
+/**
+ * Prévisualise un site livré en archive.
+ *
+ * Un agent qui juge le projet gros appelle `creer_archive` et ne laisse aucun
+ * bloc de code : sans cette route, un site parfaitement complet restait
+ * invisible, alors qu'il ne manquait qu'un lecteur de ZIP.
+ */
+app.post('/api/preview/attachment/:id', requireAuth, (req, res) => {
+  const a = Attachments.get(req.params.id);
+  if (!a || !fs.existsSync(a.path)) return res.status(404).json({ error: 'Fichier introuvable.' });
+  if (a.mime !== 'application/zip' && !/\.zip$/i.test(a.name)) {
+    return res.status(415).json({ error: `« ${a.name} » n'est pas une archive.` });
+  }
+
+  let entries;
+  try {
+    entries = readZip(fs.readFileSync(a.path));
+  } catch (err) {
+    return res.status(422).json({ error: err.message });
+  }
+
+  const pages = entries.filter((e) => /\.html?$/i.test(e.path));
+  if (!pages.length) {
+    return res.status(422).json({
+      error: `« ${a.name} » ne contient aucune page web à afficher `
+        + `(${entries.length} fichier(s) : ${entries.slice(0, 6).map((e) => e.path).join(', ')}).`,
+    });
+  }
+
+  const r = registerPreview(entries);
+  if (r.error) return res.status(413).json(r);
+  console.log(`Aperçu de « ${a.name} » : ${r.files.length} fichier(s), entrée ${r.entry}.`);
+  res.json({ ...r, name: a.name, expiresIn: PREVIEW_TTL_MS });
 });
 
 /**
@@ -1267,9 +1340,12 @@ app.get('/api/preview/:id/*', requireAuth, (req, res) => {
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('Content-Security-Policy',
     "default-src 'none'; "
-    + `script-src 'unsafe-inline' blob: ${base}; `
-    + `style-src 'unsafe-inline' ${base}; `
-    + `img-src data: blob: ${base}; media-src data: blob: ${base}; font-src data: ${base}; `
+    + `script-src 'unsafe-inline' blob: ${base} ${PREVIEW_CDNS}; `
+    + `style-src 'unsafe-inline' ${base} ${PREVIEW_CDNS}; `
+    + `img-src data: blob: ${base} ${PREVIEW_CDNS}; `
+    + `media-src data: blob: ${base}; font-src data: ${base} ${PREVIEW_CDNS}; `
+    // Rien ne sort : ni fetch, ni XHR, ni WebSocket, ni formulaire. C'est ce qui
+    // rend acceptable d'exécuter du code écrit par un modèle.
     + "connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self';");
 
   if (body === undefined) {

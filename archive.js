@@ -142,6 +142,78 @@ export function makeZip(entries, now = new Date()) {
 }
 
 /**
+ * Relit une archive.
+ *
+ * Écrire un ZIP suffisait tant que l'archive ne servait qu'à être téléchargée.
+ * Mais un agent qui livre un site en archive ne laisse aucun bloc de code dans
+ * la conversation, donc rien à prévisualiser : pour afficher ce site, il faut
+ * savoir rouvrir ce qu'on a fermé.
+ *
+ * La lecture passe par le répertoire central, jamais par un balayage des
+ * en-têtes locaux : c'est le répertoire qui fait autorité sur ce que contient
+ * une archive, et un en-tête local peut mentir sur les tailles.
+ *
+ * @returns {Array<{path: string, data: Buffer}>}
+ */
+export function readZip(buf, { maxEntries = MAX_ENTRIES, maxTotal = 12 * 1024 * 1024 } = {}) {
+  if (!Buffer.isBuffer(buf) || buf.length < 22) throw new Error('Fichier trop court pour être une archive.');
+
+  const eocd = buf.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  if (eocd === -1 || eocd + 22 > buf.length) throw new Error("Ce n'est pas une archive ZIP.");
+
+  const count = buf.readUInt16LE(eocd + 10);
+  let p = buf.readUInt32LE(eocd + 16);
+  if (count === 0xffff || p === 0xffffffff) throw new Error('Archive Zip64 : non prise en charge.');
+  if (p >= buf.length) throw new Error('Archive tronquée (répertoire hors du fichier).');
+
+  const out = [];
+  let total = 0;
+  for (let i = 0; i < Math.min(count, maxEntries); i++) {
+    if (p + 46 > buf.length || buf.readUInt32LE(p) !== 0x02014b50) {
+      throw new Error(`Archive corrompue à l'entrée ${i + 1}.`);
+    }
+    const method = buf.readUInt16LE(p + 10);
+    const packed = buf.readUInt32LE(p + 20);
+    const plain = buf.readUInt32LE(p + 24);
+    const nameLen = buf.readUInt16LE(p + 28);
+    const extraLen = buf.readUInt16LE(p + 30);
+    const commentLen = buf.readUInt16LE(p + 32);
+    const at = buf.readUInt32LE(p + 42);
+    const rawName = buf.toString('utf8', p + 46, p + 46 + nameLen);
+    p += 46 + nameLen + extraLen + commentLen;
+
+    // Un dossier est une entrée de taille nulle dont le nom finit par « / ».
+    if (rawName.endsWith('/')) continue;
+    // Le nom vient du fichier, donc d'ailleurs : on le rassainit comme à
+    // l'écriture, sinon rouvrir une archive rouvrirait aussi ses pièges.
+    const path = safeEntryPath(rawName);
+    if (!path) continue;
+
+    if (at + 30 > buf.length || buf.readUInt32LE(at) !== 0x04034b50) {
+      throw new Error(`Entrée « ${path} » introuvable dans l'archive.`);
+    }
+    const start = at + 30 + buf.readUInt16LE(at + 26) + buf.readUInt16LE(at + 28);
+    if (start + packed > buf.length) throw new Error(`Entrée « ${path} » tronquée.`);
+
+    // Une archive peut annoncer une taille décompressée énorme pour un tout
+    // petit contenu : on refuse avant de décompresser, pas après.
+    total += plain;
+    if (total > maxTotal) throw new Error(`Archive trop volumineuse (plus de ${Math.round(maxTotal / 1048576)} Mo décompressés).`);
+
+    const body = buf.subarray(start, start + packed);
+    let data;
+    if (method === 0) data = Buffer.from(body);
+    else if (method === 8) {
+      try { data = zlib.inflateRawSync(body, { maxOutputLength: maxTotal }); }
+      catch { throw new Error(`Entrée « ${path} » illisible (décompression échouée).`); }
+    } else continue;   // méthode exotique : on l'ignore plutôt que d'échouer
+
+    out.push({ path, data });
+  }
+  return out;
+}
+
+/**
  * Prépare une liste de fichiers venue d'un modèle.
  *
  * Renvoie les entrées retenues et ce qui a été écarté, pour que l'agent puisse

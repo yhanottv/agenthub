@@ -13,7 +13,7 @@
  */
 import zlib from 'node:zlib';
 import {
-  makeZip, prepareEntries, safeEntryPath,
+  makeZip, readZip, prepareEntries, safeEntryPath,
   MAX_ENTRIES, MAX_ENTRY_BYTES, MAX_TOTAL_BYTES,
 } from '/app/archive.js';
 
@@ -36,8 +36,14 @@ const crc32 = (b) => {
   return (c ^ -1) >>> 0;
 };
 
-/** Relit une archive par son répertoire central, comme le fait un vrai outil. */
-function readZip(buf) {
+/**
+ * Un lecteur ecrit pour ce test seulement.
+ *
+ * Il ne faut surtout pas verifier `makeZip` avec `readZip` du meme fichier : une
+ * erreur symetrique passerait inapercue. Celui-ci relit l'archive independamment,
+ * et c'est lui qui juge l'ecriture.
+ */
+function relireZip(buf) {
   const eocd = buf.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
   if (eocd === -1) throw new Error('fin d\'archive introuvable');
   const count = buf.readUInt16LE(eocd + 10);
@@ -141,7 +147,7 @@ const { kept } = prepareEntries([
 const zip = makeZip(kept, new Date(Date.UTC(2026, 6, 29, 14, 30, 20)));
 
 let lu;
-try { lu = readZip(zip); } catch (err) { lu = null; console.log(`    lecture impossible : ${err.message}`); }
+try { lu = relireZip(zip); } catch (err) { lu = null; console.log(`    lecture impossible : ${err.message}`); }
 ok('L\'ARCHIVE SE RELIT ENTIÈREMENT', Array.isArray(lu) && lu.length === 4, `${lu ? lu.length : 'echec'} entrée(s)`);
 
 if (lu) {
@@ -167,8 +173,72 @@ if (lu) {
 // Une archive vide reste une archive valide : mieux vaut un fichier qu'un lecteur
 // ouvre et trouve vide qu'un fichier tronqué.
 const vide = makeZip([]);
-ok('une archive sans fichier reste lisible', readZip(vide).length === 0 && vide.length === 22,
+ok('une archive sans fichier reste lisible', relireZip(vide).length === 0 && vide.length === 22,
   `${vide.length} octets`);
+
+// ---- relire une archive ----------------------------------------------------
+// Un agent qui livre un site en archive ne laisse aucun bloc de code : sans
+// lecteur, le site est complet et pourtant invisible. C'est la lecture qui rend
+// la prévisualisation possible.
+const relu = readZip(zip);
+ok('LE LECTEUR RETROUVE TOUS LES FICHIERS', relu.length === 4, `${relu.length} entrée(s)`);
+ok('avec leurs chemins', relu.map((e) => e.path).join('|') === 'index.html|src/jeu.js|notes/été-2026.md|alea.bin',
+  relu.map((e) => e.path).join('|'));
+ok('LE CONTENU REVIENT OCTET POUR OCTET',
+  relu.find((e) => e.path === 'src/jeu.js').data.toString('utf8') === REPETE);
+ok('un fichier stocké se relit aussi',
+  relu.find((e) => e.path === 'alea.bin').data.toString('utf8') === INCOMPRESSIBLE);
+ok('les accents survivent à l\'aller-retour',
+  /Accents é à ç/.test(relu.find((e) => e.path === 'notes/été-2026.md').data.toString('utf8')));
+
+// Les dossiers sont des entrées à part dans un ZIP : les rendre casserait la
+// prévisualisation, qui les prendrait pour des fichiers vides.
+const avecDossier = makeZip([
+  { path: 'site/', data: Buffer.alloc(0) },
+  { path: 'site/index.html', data: '<h1>ok</h1>' },
+]);
+const sansDossier = readZip(avecDossier);
+ok('une entrée de dossier est ignorée',
+  sansDossier.length === 1 && sansDossier[0].path === 'site/index.html',
+  sansDossier.map((e) => e.path).join('|'));
+
+// Une archive dont un chemin remonte doit être assainie à la lecture aussi :
+// rouvrir ne doit pas rouvrir les pièges.
+const piege = Buffer.from(makeZip([{ path: 'a.txt', data: 'x' }]));
+ok('les chemins sont réassainis à la lecture', readZip(piege)[0].path === 'a.txt');
+
+const refus = (buf, motif, label) => {
+  try { readZip(buf); ok(label, false, 'aucune erreur levée'); }
+  catch (err) { ok(label, motif.test(err.message), err.message); }
+};
+refus(Buffer.alloc(4), /trop court/i, 'un fichier trop court est refusé clairement');
+refus(Buffer.alloc(64), /pas une archive/i, 'un fichier qui n\'est pas un ZIP est refusé clairement');
+refus(zip.subarray(0, zip.length - 40), /pas une archive|corrompue|tronqu/i,
+  'une archive tronquée est refusée clairement');
+
+// Une bombe de décompression : petite archive, taille annoncée énorme.
+const bombe = makeZip([{ path: 'gros.txt', data: Buffer.alloc(3 * 1024 * 1024, 0x61) }]);
+try {
+  readZip(bombe, { maxTotal: 64 * 1024 });
+  ok('UNE ARCHIVE TROP VOLUMINEUSE EST REFUSÉE AVANT DÉCOMPRESSION', false, 'aucune erreur');
+} catch (err) {
+  ok('UNE ARCHIVE TROP VOLUMINEUSE EST REFUSÉE AVANT DÉCOMPRESSION',
+    /volumineuse/i.test(err.message), err.message);
+}
+
+// Le cas exact rencontré en production : un site complet, livré en archive.
+const site = makeZip(prepareEntries([
+  { chemin: 'index.html', contenu: '<!doctype html><link rel="stylesheet" href="css/styles.css">' },
+  { chemin: 'css/styles.css', contenu: 'body{margin:0}' },
+  { chemin: 'js/app.js', contenu: 'console.log(1)' },
+  { chemin: 'README.md', contenu: '# Nova' },
+]).kept);
+const lu2 = readZip(site);
+const pages = lu2.filter((e) => /\.html?$/i.test(e.path));
+ok('UN SITE LIVRÉ EN ARCHIVE EXPOSE SA PAGE D\'ENTRÉE',
+  pages.length === 1 && pages[0].path === 'index.html', lu2.map((e) => e.path).join('|'));
+ok('et ses fichiers voisins gardent leur arborescence',
+  lu2.some((e) => e.path === 'css/styles.css') && lu2.some((e) => e.path === 'js/app.js'));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

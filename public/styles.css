@@ -1828,6 +1828,12 @@ button.tag.on { background: var(--accent); color: var(--on-accent); }
 .attach-btn { flex: none; align-self: flex-end; margin-bottom: 3px; }
 .attach-tray { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: var(--sp-2); }
 .attach-tray.hidden { display: none; }
+/* Une archive porte souvent un site : son bouton d'apercu vit a cote de la
+   pastille, pas dedans — un bouton dans un lien n'est pas du HTML valide et se
+   comporte mal au clavier. */
+.attach-row { display: inline-flex; align-items: center; gap: 6px; }
+.attach-row .code-act { border: 1px solid var(--line); background: var(--surface-2); }
+
 .attach-chip {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 4px 9px; border-radius: var(--r-pill);
