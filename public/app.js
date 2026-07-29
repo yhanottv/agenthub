@@ -38,7 +38,7 @@ const S = {
   drafts: {},               // channelId -> composer text (survives re-render)
   ws: null, wsState: 'connecting', wsTries: 0, wsTimer: null,
   loading: true,
-  sidebarOpen: false, railOpen: false,
+  sidebarOpen: false, railOpen: false, preview: null,
   booted: false,
   pendingFiles: [], pendingChannel: null,
   // Les notifications restent un choix explicite : la permission n'est demandée
@@ -219,6 +219,8 @@ const IC = {
   edit: svg('<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z"/>'),
   clock: svg('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
   expand: svg('<path d="M9 4H4v5M15 4h5v5M15 20h5v-5M9 20H4v-5"/>'),
+  reload: svg('<path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/>'),
+  x: svg('<path d="M18 6 6 18M6 6l12 12"/>'),
   mic: svg('<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>'),
   globe: svg('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18a15 15 0 0 1 0-18"/>'),
   copy: svg('<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>'),
@@ -3889,7 +3891,7 @@ function renderChat(v) {
   const canEdit = c.kind === 'pole';
 
   v.innerHTML = `
-    <div class="chat">
+    <div class="chat ${S.preview ? 'with-preview' : ''}" style="--preview-w:${previewWidth()}px">
       <div class="chat-main">
         <div class="chat-head">
           <div style="min-width:0">
@@ -3935,6 +3937,8 @@ function renderChat(v) {
         </div>
       </div>
 
+      ${previewDockHTML()}
+
       <aside class="chat-rail ${S.railOpen ? 'open' : ''}" aria-label="Tâches déléguées">
         <div class="rail-title"><span>Tâches déléguées</span><span>${S.tasks.length || ''}</span></div>
         <div class="task-list" id="task-list"></div>
@@ -3950,6 +3954,7 @@ function renderChat(v) {
   wireMessageActions(box);
   renderThinking();
   renderTasks();
+  wirePreviewDock(v);
   wireComposer();
 
   const ep = $('#edit-pole', v);
@@ -4689,32 +4694,77 @@ function downloadCode(block, code) {
 }
 
 /**
- * Assemble la page à prévisualiser.
+ * Le nom de fichier d'un bloc.
  *
- * Un agent répond souvent en trois blocs — la page, la feuille de style, le
- * script. Prévisualiser le premier seul donnerait une page nue, alors que
- * l'intention était évidemment de les assembler. On injecte donc les blocs CSS
- * et JS voisins quand la page n'en porte pas déjà.
+ * Dans l'ordre : celui annoncé après le langage (```html:index.html), celui
+ * qu'un modèle écrit souvent en commentaire de première ligne, puis un nom par
+ * défaut tiré du langage. Sans ça, `<link href="style.css">` ne trouverait rien
+ * et le site s'afficherait nu.
  */
-function assemblePage(block, code) {
+function blockFileName(block, code) {
+  const declared = (block?.dataset.file || '').trim();
+  if (declared) return safeRelPath(declared);
+
+  const inComment = code.slice(0, 400)
+    .match(/^[ \t]*(?:\/\/|#|<!--|\/\*)[ \t]*([\w.\-/]+\.[a-z0-9]{1,6})/im);
+  if (inComment) return safeRelPath(inComment[1]);
+
+  const lang = block?.dataset.lang || '';
+  if (['html', 'htm'].includes(lang)) return 'index.html';
+  if (['css', 'scss'].includes(lang)) return 'style.css';
+  if (['js', 'javascript', 'mjs'].includes(lang)) return 'script.js';
+  return `fichier.${CODE_EXT[lang] || 'txt'}`;
+}
+
+/** Chemin relatif sans remontée ni racine — le serveur refait le contrôle. */
+const safeRelPath = (p) => String(p)
+  .replace(/\\/g, '/')
+  .split('/')
+  .filter((s) => s && s !== '.' && s !== '..')
+  .slice(0, 8)
+  .join('/');
+
+/**
+ * Rassemble le site contenu dans un message.
+ *
+ * Un site n'est presque jamais un seul bloc : c'est une page, une feuille de
+ * style, un script, parfois une seconde page. On envoie donc tous les blocs
+ * nommables comme un jeu de fichiers, ce qui fait fonctionner les chemins
+ * relatifs — y compris un lien vers une autre page.
+ *
+ * Une exception utile : quand la page d'entrée ne référence rien du tout — ni
+ * `<link>`, ni `<script src>`, ni style en ligne — l'intention était clairement
+ * d'assembler les blocs voisins, et on les injecte.
+ */
+function collectSite(block, code) {
   const scope = block.closest('.msg-content');
-  if (!scope) return code;
+  const entryName = blockFileName(block, code);
+  if (!scope) return { files: [{ path: entryName, content: code }], entry: entryName };
 
-  const grab = (langs) => [...scope.querySelectorAll('.codeblock')]
-    .filter((b) => b !== block && langs.includes(b.dataset.lang || ''))
-    .map((b) => b.querySelector('pre code')?.textContent || '')
-    .filter((t) => t.trim());
+  const files = [];
+  const seen = new Set();
+  for (const b of scope.querySelectorAll('.codeblock')) {
+    const text = b.querySelector('pre code')?.textContent || '';
+    if (!text.trim()) continue;
+    const name = b === block ? entryName : blockFileName(b, text);
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    files.push({ path: name, content: text, lang: b.dataset.lang || '' });
+  }
 
-  let html = code;
-  if (!/<style[\s>]/i.test(html)) {
-    const css = grab(['css', 'scss']);
-    if (css.length) html = injectBefore(html, '</head>', `<style>\n${css.join('\n\n')}\n</style>\n`);
+  const entry = files.find((f) => f.path === entryName) || files[0];
+  const refs = /<link[\s>]|<script[\s\S]*?src=|<style[\s>]|<script>/i.test(entry.content);
+  if (!refs) {
+    const join = (langs) => files
+      .filter((f) => f !== entry && langs.includes(f.lang))
+      .map((f) => f.content).join('\n\n');
+    const css = join(['css', 'scss']);
+    const js = join(['js', 'javascript', 'mjs']);
+    if (css) entry.content = injectBefore(entry.content, '</head>', `<style>\n${css}\n</style>\n`);
+    if (js) entry.content = injectBefore(entry.content, '</body>', `<script>\n${js}\n</script>\n`);
   }
-  if (!/<script[\s>]/i.test(html)) {
-    const js = grab(['js', 'javascript', 'mjs']);
-    if (js.length) html = injectBefore(html, '</body>', `<script>\n${js.join('\n\n')}\n</script>\n`);
-  }
-  return html;
+
+  return { files: files.map(({ path, content }) => ({ path, content })), entry: entry.path };
 }
 
 /** Insère avant une balise fermante, ou à la fin si elle n'existe pas. */
@@ -4723,60 +4773,181 @@ function injectBefore(html, closing, snippet) {
   return i === -1 ? html + '\n' + snippet : html.slice(0, i) + snippet + html.slice(i);
 }
 
-let previewClose = null;
+// ---- le panneau de prévisualisation ----------------------------------------
+// Il occupe la moitié droite de la conversation plutôt que tout l'écran : on
+// regarde le site en continuant à parler à l'agent, ce qui est exactement le
+// geste qu'on répète — corriger, relancer, regarder.
+
+const PREVIEW_MIN = 320;
+const PREVIEW_DEFAULT = 560;
+// La conversation ne descend pas sous cette largeur : en dessous, les messages
+// se réduisent à deux mots par ligne et parler à l'agent devient pénible.
+const CHAT_MIN = 400;
+
+const previewWidth = () => Number(localStorage.getItem('ah_preview_w')) || PREVIEW_DEFAULT;
 
 /**
- * Ouvre la page dans une iframe cloisonnée.
+ * La largeur maximale du panneau, mesurée et non devinée.
  *
- * Le code vient d'un modèle : il est exécuté sans `allow-same-origin`, donc dans
- * une origine opaque qui ne voit ni notre cookie de session ni notre DOM, et le
- * serveur lui sert une politique qui lui interdit tout accès réseau. Ni sortie
- * de l'iframe, ni navigation de la page parente.
+ * Le rail des tâches vit dans la même grille et la barre latérale mange déjà de
+ * la place : partir de la largeur de la fenêtre écrasait la conversation à son
+ * plancher. On part donc de la largeur réelle de la zone de conversation.
+ */
+function previewMax(chat) {
+  const rail = chat?.querySelector('.chat-rail');
+  const total = chat?.clientWidth || window.innerWidth;
+  const taken = (rail?.offsetWidth || 0) + 5 + CHAT_MIN;
+  return Math.max(PREVIEW_MIN, total - taken);
+}
+
+function previewDockHTML() {
+  if (!S.preview) return '';
+  const { url, name, count } = S.preview;
+  return `
+    <div class="preview-grip" id="preview-grip" role="separator" aria-orientation="vertical"
+         aria-label="Largeur de la prévisualisation" tabindex="0"></div>
+    <aside class="preview-dock" aria-label="Prévisualisation">
+      <div class="preview-bar">
+        <span class="preview-title">Aperçu</span>
+        <span class="preview-file">${escapeHtml(name)}${count > 1 ? ` +${count - 1}` : ''}</span>
+        <button class="icon-btn" type="button" id="preview-reload"
+                aria-label="Relancer" title="Relancer">${IC.reload}</button>
+        <button class="icon-btn" type="button" id="preview-full"
+                aria-label="Plein écran" title="Plein écran">${IC.expand}</button>
+        <button class="icon-btn" type="button" id="preview-close"
+                aria-label="Fermer l'aperçu" title="Fermer l'aperçu">${IC.x}</button>
+      </div>
+      <iframe class="preview-frame" id="preview-frame" src="${escapeAttr(url)}"
+              sandbox="allow-scripts allow-pointer-lock allow-modals"
+              title="Site produit par un agent"></iframe>
+      <div class="preview-foot">exécuté hors ligne, isolé de ton compte</div>
+    </aside>`;
+}
+
+/**
+ * Ouvre le site dans une iframe cloisonnée.
+ *
+ * Le code vient d'un modèle : il tourne sans `allow-same-origin`, donc dans une
+ * origine opaque qui ne voit ni notre cookie de session ni notre DOM, et le
+ * serveur lui sert une politique qui lui interdit tout accès réseau.
  */
 async function openCodePreview(block, code) {
   const isSvg = (block?.dataset.lang || '') === 'svg';
-  const page = isSvg
-    ? `<!doctype html><meta charset="utf-8"><style>html,body{margin:0;height:100%;display:grid;place-items:center;background:#fff}svg{max-width:100%;max-height:100%}</style>${code}`
-    : assemblePage(block, code);
+  const site = isSvg
+    ? {
+      entry: 'index.html',
+      files: [{
+        path: 'index.html',
+        content: '<!doctype html><meta charset="utf-8"><style>html,body{margin:0;height:100%;'
+          + 'display:grid;place-items:center;background:#fff}svg{max-width:100%;max-height:100%}</style>' + code,
+      }],
+    }
+    : collectSite(block, code);
 
-  const r = await tryApi(api('POST', '/api/preview', { html: page }), 'Prévisualisation');
+  const r = await tryApi(api('POST', '/api/preview', { files: site.files }), 'Prévisualisation');
   if (!r) return;
 
-  closeCodePreview();
+  S.preview = { url: r.url, name: site.entry, count: r.files?.length || site.files.length };
+  if ($('.chat')) renderView();
+  else openPreviewFullscreen();
+}
+
+function closeCodePreview() {
+  if (!S.preview) return;
+  S.preview = null;
+  closePreviewFullscreen();
+  if ($('.chat')) renderView();
+}
+
+function wirePreviewDock(root) {
+  const dock = $('.preview-dock', root);
+  if (!dock) return;
+
+  $('#preview-close', root).onclick = closeCodePreview;
+  $('#preview-full', root).onclick = openPreviewFullscreen;
+  // Relancer sans refermer le panneau. Reaffecter `f.src = f.src` marcherait,
+  // mais remplacerait le chemin relatif par une URL absolue a chaque clic.
+  $('#preview-reload', root).onclick = () => reloadFrame($('#preview-frame', root));
+
+  // Un site lourd a besoin de place, un site étroit n'en a pas besoin : la
+  // largeur est à l'utilisateur, et elle est retenue d'une fois sur l'autre.
+  const grip = $('#preview-grip', root);
+  const chat = $('.chat', root);
+  const setW = (px) => {
+    const w = Math.min(Math.max(Math.round(px), PREVIEW_MIN), previewMax(chat));
+    chat.style.setProperty('--preview-w', `${w}px`);
+    localStorage.setItem('ah_preview_w', String(w));
+  };
+  // La largeur retenue vient d'une autre taille de fenêtre : on la ramène à ce
+  // qui tient ici, maintenant que la grille est mesurable.
+  setW(previewWidth());
+
+  grip.onpointerdown = (e) => {
+    e.preventDefault();
+    grip.setPointerCapture(e.pointerId);
+    const rect = dock.getBoundingClientRect();
+    const move = (ev) => setW(rect.right - ev.clientX);
+    const up = () => {
+      grip.removeEventListener('pointermove', move);
+      grip.removeEventListener('pointerup', up);
+      document.body.classList.remove('resizing');
+    };
+    document.body.classList.add('resizing');
+    grip.addEventListener('pointermove', move);
+    grip.addEventListener('pointerup', up);
+  };
+  grip.onkeydown = (e) => {
+    const step = e.shiftKey ? 80 : 24;
+    if (e.key === 'ArrowLeft') { e.preventDefault(); setW(dock.getBoundingClientRect().width + step); }
+    if (e.key === 'ArrowRight') { e.preventDefault(); setW(dock.getBoundingClientRect().width - step); }
+  };
+}
+
+/** Recharge l'iframe en conservant son chemin relatif. */
+function reloadFrame(f) {
+  if (!f) return;
+  const src = f.getAttribute('src');
+  f.removeAttribute('src');
+  f.setAttribute('src', src);
+}
+
+// ---- le même aperçu, en plein écran ----------------------------------------
+let fullClose = null;
+
+function openPreviewFullscreen() {
+  if (!S.preview) return;
+  closePreviewFullscreen();
   const box = el('div', 'preview-wrap');
   box.setAttribute('role', 'dialog');
   box.setAttribute('aria-modal', 'true');
   box.setAttribute('aria-label', 'Prévisualisation');
   box.innerHTML = `
     <div class="preview-bar">
-      <span class="preview-title">Prévisualisation</span>
-      <span class="preview-note">exécutée hors ligne, isolée de ton compte</span>
-      <button type="button" class="btn ghost" data-preview-reload>Relancer</button>
-      <button type="button" class="btn ghost" data-preview-x>Fermer</button>
+      <span class="preview-title">Aperçu</span>
+      <span class="preview-note">exécuté hors ligne, isolé de ton compte</span>
+      <button type="button" class="btn ghost" data-full-reload>Relancer</button>
+      <button type="button" class="btn ghost" data-full-x>Réduire</button>
     </div>
-    <iframe class="preview-frame" src="${escapeAttr(r.url)}"
+    <iframe class="preview-frame" src="${escapeAttr(S.preview.url)}"
             sandbox="allow-scripts allow-pointer-lock allow-modals"
-            title="Page produite par un agent"></iframe>`;
+            title="Site produit par un agent"></iframe>`;
   document.body.appendChild(box);
   document.body.classList.add('no-scroll');
 
-  const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); closeCodePreview(); } };
+  const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); closePreviewFullscreen(); } };
   document.addEventListener('keydown', onKey, true);
-  box.querySelector('[data-preview-x]').onclick = closeCodePreview;
-  box.querySelector('[data-preview-reload]').onclick = () => {
-    const f = box.querySelector('.preview-frame');
-    f.src = f.src;                      // un jeu se relance sans rouvrir la fenêtre
-  };
-  box.querySelector('[data-preview-x]').focus();
+  box.querySelector('[data-full-x]').onclick = closePreviewFullscreen;
+  box.querySelector('[data-full-reload]').onclick = () => reloadFrame(box.querySelector('.preview-frame'));
+  box.querySelector('[data-full-x]').focus();
 
-  previewClose = () => {
+  fullClose = () => {
     document.removeEventListener('keydown', onKey, true);
     box.remove();
     document.body.classList.remove('no-scroll');
-    previewClose = null;
+    fullClose = null;
   };
 }
-function closeCodePreview() { if (previewClose) previewClose(); }
+function closePreviewFullscreen() { if (fullClose) fullClose(); }
 
 document.addEventListener('click', (e) => {
   const btn = e.target.closest('[data-lightbox]');
@@ -5322,7 +5493,7 @@ function codeStats(code) {
 
 function renderCodeBlock(fence) {
   if (!fence) return '';
-  const { code = '', lang = '', open = false } = fence;
+  const { code = '', lang = '', file = '', open = false } = fence;
   const { add, del, diff } = codeStats(code);
 
   if (open) {
@@ -5335,11 +5506,11 @@ function renderCodeBlock(fence) {
   }
 
   const label = lang ? lang.toLowerCase() : 'code';
-  return `<div class="codeblock" data-lang="${escapeAttr(label)}">
+  return `<div class="codeblock" data-lang="${escapeAttr(label)}"${file ? ` data-file="${escapeAttr(file)}"` : ''}>
     <div class="code-top">
       <button class="code-head" type="button" data-code-toggle aria-expanded="false">
         <span class="code-caret" aria-hidden="true">${IC.chev}</span>
-        <span class="code-lang">${escapeHtml(label)}</span>
+        <span class="code-lang">${escapeHtml(file || label)}</span>
         <span class="code-counts">
           <span class="code-add">+${add}</span>${del ? `<span class="code-del">−${del}</span>` : ''}
         </span>
@@ -5403,8 +5574,12 @@ function renderMarkdown(src) {
   const links = [];
 
   // 1. fenced code blocks (closed)
-  let s = raw.replace(/```[ \t]*([\w+#.-]*)[ \t]*\r?\n?([\s\S]*?)```/g, (_, lang, code) => {
-    fences.push({ code: code.replace(/\n$/, ''), lang, open: false });
+  //    Le nom de fichier ecrit apres le langage — ```html:index.html — est
+  //    capture : c'est ce qui permet de servir un site a plusieurs fichiers, et
+  //    sans cette capture il finissait dans le code affiche.
+  let s = raw.replace(/```[ \t]*([\w+#.-]*)(?:[ \t]*[:\uFF1A][ \t]*([^\n`]+))?[ \t]*\r?\n?([\s\S]*?)```/g,
+    (_, lang, file, code) => {
+    fences.push({ code: code.replace(/\n$/, ''), lang, file: (file || '').trim(), open: false });
     return `\n\n\u0000F${fences.length - 1}\u0000\n\n`;
   });
 

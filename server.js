@@ -13,6 +13,7 @@ import {
 } from './db.js';
 import { buildGraph, layerCounts, GRAPH_LAYERS, LAYER_META } from './graph.js';
 import { skillsCatalogue, invalidateSkills } from './skills.js';
+import { safeEntryPath } from './archive.js';
 import {
   discover as discoverHermes, installHermes, installPlan, dockerStatus, connectToNetwork,
   diagnoseGateway, startGateway,
@@ -1175,47 +1176,110 @@ app.post('/api/channels/:id/attachments',
  *   n'est pas un document.
  */
 const PREVIEW_TTL_MS = 30 * 60 * 1000;
-const MAX_PREVIEWS = 24;
-const MAX_PREVIEW_BYTES = 2 * 1024 * 1024;
+const MAX_PREVIEWS = 16;
+const MAX_PREVIEW_FILES = 60;
+const MAX_PREVIEW_BYTES = 4 * 1024 * 1024;
 const previews = new Map();
+
+const PREVIEW_MIME = {
+  html: 'text/html; charset=utf-8', htm: 'text/html; charset=utf-8',
+  css: 'text/css; charset=utf-8',
+  js: 'text/javascript; charset=utf-8', mjs: 'text/javascript; charset=utf-8',
+  json: 'application/json; charset=utf-8', map: 'application/json; charset=utf-8',
+  svg: 'image/svg+xml', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+  gif: 'image/gif', webp: 'image/webp', ico: 'image/x-icon',
+  txt: 'text/plain; charset=utf-8', md: 'text/plain; charset=utf-8',
+  woff: 'font/woff', woff2: 'font/woff2', ttf: 'font/ttf',
+  mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', webm: 'video/webm', mp4: 'video/mp4',
+};
+const previewMime = (p) => PREVIEW_MIME[p.split('.').pop().toLowerCase()] || 'application/octet-stream';
 
 const dropStalePreviews = () => {
   const cutoff = Date.now() - PREVIEW_TTL_MS;
   for (const [id, p] of previews) if (p.at < cutoff) previews.delete(id);
-  // Une fenêtre laissée ouverte ne doit pas faire grossir la mémoire sans fin :
-  // au-delà du plafond, les plus anciennes partent (Map itère dans l'ordre
-  // d'insertion, donc la première est la plus ancienne).
+  // Un panneau laissé ouvert ne doit pas faire grossir la mémoire sans fin :
+  // au-delà du plafond, les plus anciens partent (Map itère dans l'ordre
+  // d'insertion, donc la première clé est la plus ancienne).
   while (previews.size > MAX_PREVIEWS) previews.delete(previews.keys().next().value);
 };
 
+/**
+ * Enregistre un site à prévisualiser.
+ *
+ * Un site n'est pas une page : il a une feuille de style à côté, un script, une
+ * seconde page derrière un lien. Servir un seul document interdirait tout ça, et
+ * « prévisualiser un site » ne voudrait plus rien dire. On garde donc un jeu de
+ * fichiers, servi sous un préfixe commun pour que les chemins relatifs tombent
+ * juste — `href="a-propos.html"` doit mener quelque part.
+ */
 app.post('/api/preview', requireAuth, (req, res) => {
-  const html = String(req.body?.html || '');
-  if (!html.trim()) return res.status(400).json({ error: 'Rien à prévisualiser.' });
-  if (Buffer.byteLength(html, 'utf8') > MAX_PREVIEW_BYTES) {
-    return res.status(413).json({ error: 'Page trop lourde pour la prévisualisation (2 Mo maximum).' });
+  const raw = Array.isArray(req.body?.files) && req.body.files.length
+    ? req.body.files
+    : [{ path: 'index.html', content: String(req.body?.html || '') }];
+
+  const files = new Map();
+  let bytes = 0;
+  for (const f of raw.slice(0, MAX_PREVIEW_FILES)) {
+    const p = safeEntryPath(f?.path);
+    if (!p || files.has(p)) continue;
+    const body = Buffer.from(String(f?.content ?? ''), 'utf8');
+    bytes += body.length;
+    if (bytes > MAX_PREVIEW_BYTES) {
+      return res.status(413).json({ error: 'Site trop lourd pour la prévisualisation (4 Mo maximum).' });
+    }
+    files.set(p, body);
   }
+  if (!files.size) return res.status(400).json({ error: 'Rien à prévisualiser.' });
+
+  // Point d'entrée : index.html s'il existe, sinon la première page trouvée,
+  // sinon le premier fichier — mieux vaut afficher quelque chose que rien.
+  const names = [...files.keys()];
+  const entry = names.find((n) => /(^|\/)index\.html?$/i.test(n))
+    || names.find((n) => /\.html?$/i.test(n))
+    || names[0];
+
   const id = 'pv_' + crypto.randomBytes(9).toString('hex');
-  previews.set(id, { html, at: Date.now() });
+  previews.set(id, { files, entry, at: Date.now() });
   dropStalePreviews();
-  res.json({ id, url: `/api/preview/${id}`, expiresIn: PREVIEW_TTL_MS });
+  res.json({ id, url: `/api/preview/${id}/${entry}`, entry, files: names, expiresIn: PREVIEW_TTL_MS });
 });
 
-app.get('/api/preview/:id', requireAuth, (req, res) => {
+/**
+ * Sert un fichier du site prévisualisé.
+ *
+ * La politique est reconstruite à chaque réponse parce qu'elle doit nommer notre
+ * propre origine : l'iframe tourne en `sandbox` sans `allow-same-origin`, donc
+ * son origine est opaque et `'self'` n'y désigne rien. Sans ça, une page ne
+ * pourrait pas charger sa feuille de style voisine. Le chemin autorisé est
+ * limité à ce site-ci : le reste du serveur reste hors de portée, et
+ * `connect-src 'none'` interdit toujours le moindre appel réseau.
+ */
+app.get('/api/preview/:id/*', requireAuth, (req, res) => {
   dropStalePreviews();
   const p = previews.get(req.params.id);
-  if (!p) return res.status(404).type('html').send('<p>Prévisualisation expirée.</p>');
+  const wanted = safeEntryPath(decodeURIComponent(req.params[0] || ''));
+  const body = p?.files.get(wanted) ?? (wanted ? undefined : p?.files.get(p.entry));
 
-  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  const base = `${isSecureRequest(req) ? 'https' : 'http'}://${req.headers.host}/api/preview/${req.params.id}/`;
   res.setHeader('Cache-Control', 'no-store');
   // L'en-tête global est DENY : il faut le desserrer ici, sinon notre propre
   // iframe se ferait refuser par notre propre page.
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('Content-Security-Policy',
     "default-src 'none'; "
-    + "script-src 'unsafe-inline' blob:; style-src 'unsafe-inline'; "
-    + 'img-src data: blob:; media-src data: blob:; font-src data:; '
+    + `script-src 'unsafe-inline' blob: ${base}; `
+    + `style-src 'unsafe-inline' ${base}; `
+    + `img-src data: blob: ${base}; media-src data: blob: ${base}; font-src data: ${base}; `
     + "connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self';");
-  res.send(p.html);
+
+  if (body === undefined) {
+    return res.status(404).type('html').send(p
+      ? `<p style="font:14px system-ui;padding:24px">Fichier absent du site : <code>${
+        wanted.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))}</code></p>`
+      : '<p style="font:14px system-ui;padding:24px">Prévisualisation expirée.</p>');
+  }
+  res.setHeader('Content-Type', previewMime(wanted || p.entry));
+  res.send(body);
 });
 
 // ---- dictée ----------------------------------------------------------------

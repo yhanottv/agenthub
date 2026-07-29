@@ -2073,7 +2073,59 @@ select:disabled {
 .lightbox-x:focus-visible { outline: 2px solid #8fa8ff; outline-offset: 2px; }
 body.no-scroll { overflow: hidden; }
 
-/* --- previsualisation d'une page produite par un agent --- */
+/* --- apercu d'un site produit par un agent --- */
+/* Le panneau prend la moitie droite de la conversation, qui reste utilisable :
+   on regarde le site en continuant a parler a l'agent. C'est le geste qu'on
+   repete — corriger, relancer, regarder — et une fenetre plein ecran le
+   couperait a chaque fois. */
+/* Le rail des taches cede la place a l'apercu : a 1280 px de large, garder les
+   deux laissait 300 px a la conversation, soit deux mots par ligne. Les taches
+   restent a un clic — il suffit de refermer l'apercu. Au-dela de 1600 px il y a
+   de la place pour tout le monde. */
+.chat.with-preview {
+  grid-template-columns: minmax(400px, 1fr) 5px var(--preview-w, 560px);
+}
+@media (min-width: 901px) {
+  .chat.with-preview > .chat-rail { display: none; }
+}
+@media (min-width: 1600px) {
+  .chat.with-preview { grid-template-columns: minmax(400px, 1fr) 5px var(--preview-w, 560px) var(--rail-w); }
+  .chat.with-preview > .chat-rail { display: block; }
+}
+.preview-grip {
+  cursor: col-resize; background: var(--line); position: relative;
+  transition: background var(--fast) var(--ease);
+}
+.preview-grip:hover, .preview-grip:focus-visible, body.resizing .preview-grip { background: var(--accent); outline: none; }
+/* La poignee ne fait que 5 px : sans cette zone elargie, on la manque. */
+.preview-grip::after { content: ''; position: absolute; inset: 0 -5px; }
+body.resizing { cursor: col-resize; user-select: none; }
+/* Pendant le glissement, l'iframe avalerait les evenements de la souris. */
+body.resizing .preview-frame { pointer-events: none; }
+
+.preview-dock {
+  display: flex; flex-direction: column; min-width: 0; min-height: 0;
+  background: var(--surface); border-left: 1px solid var(--line);
+}
+.preview-dock .preview-bar { padding: 8px var(--sp-3); }
+.preview-file {
+  flex: 1; min-width: 0; font-size: 11.5px; color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.preview-foot {
+  flex: none; padding: 5px var(--sp-3); font-size: 10.5px; color: var(--muted-2);
+  border-top: 1px solid var(--line); background: var(--surface);
+}
+
+/* Sous cette largeur un partage en deux ne laisse de place a personne : le
+   panneau reprend tout l'ecran, et la poignee ne sert plus a rien. */
+@media (max-width: 900px) {
+  .chat.with-preview { grid-template-columns: 1fr var(--rail-w); }
+  .preview-grip { display: none; }
+  .preview-dock { position: fixed; inset: 0; z-index: 95; border-left: 0; }
+}
+
 .preview-wrap {
   position: fixed; inset: 0; z-index: 95; display: flex; flex-direction: column;
   background: var(--bg);
