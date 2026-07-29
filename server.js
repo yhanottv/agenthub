@@ -13,7 +13,10 @@ import {
 } from './db.js';
 import { buildGraph, layerCounts, GRAPH_LAYERS, LAYER_META } from './graph.js';
 import { skillsCatalogue, invalidateSkills } from './skills.js';
-import { discover as discoverHermes, installHermes, installPlan, dockerStatus, connectToNetwork } from './hermes.js';
+import {
+  discover as discoverHermes, installHermes, installPlan, dockerStatus, connectToNetwork,
+  diagnoseGateway, startGateway,
+} from './hermes.js';
 import { providerCatalog, probeProvider, seedProvidersFromEnv, PRESETS } from './llm.js';
 import { Orchestrator } from './orchestrator.js';
 
@@ -542,6 +545,42 @@ app.post('/api/hermes/install', requireAuth, async (req, res) => {
   } catch (err) {
     console.error('hermes install:', err);
     send({ type: 'error', error: err.message });
+  }
+  res.end();
+});
+
+/** Pourquoi la passerelle se tait, et peut-on la démarrer d'ici ? */
+app.get('/api/hermes/diagnose', requireAuth, async (req, res) => {
+  const name = String(req.query.name || '');
+  if (!name) return res.status(400).json({ error: 'name requis' });
+  try { res.json(await diagnoseGateway(name)); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+/** Démarre la passerelle d'Hermes, en flux : elle met une dizaine de secondes. */
+app.post('/api/hermes/start-gateway', requireAuth, async (req, res) => {
+  const name = String(req.body?.name || '');
+  if (!name) return res.status(400).json({ error: 'name requis' });
+
+  res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.flushHeaders?.();
+  const send = (o) => { try { res.write(JSON.stringify(o) + '\n'); } catch { /* client parti */ } };
+
+  try {
+    const r = await startGateway(name, { onProgress: (m) => send({ type: 'progress', message: m }) });
+    if (r.ok) {
+      // La passerelle répond : on retente la sonde pour lister les modèles.
+      const probe = await probeProvider(Providers.get('hermes'));
+      if (probe.ok) Providers.setModels('hermes', probe.models, probe.models[0]);
+      broadcast({ type: 'providers.update', providers: providerCatalog() });
+      send({ type: 'done', ...r, models: probe.models || [], reachable: probe.ok });
+    } else {
+      send({ type: 'error', ...r });
+    }
+  } catch (err) {
+    console.error('start gateway:', err);
+    send({ type: 'error', detail: err.message });
   }
   res.end();
 });

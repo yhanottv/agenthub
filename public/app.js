@@ -2619,10 +2619,18 @@ async function runHermesDetection(btn, box) {
       const a = await tryApi(api('POST', '/api/hermes/adopt', { name: f.name }), 'Enregistrement');
       if (!a) { e.currentTarget.disabled = false; return; }
       if (a.joined) toast(`AgentHub raccordé au réseau ${a.joined}.`, { kind: 'info' });
-      toast(a.reachable ? `Hermes branché — ${a.models.length} modèle(s).` : 'Hermes enregistré, mais il ne répond pas encore.',
-        { kind: a.reachable ? 'success' : 'warn' });
-      await checkSetupSilently();
-      renderWizard();
+
+      if (a.reachable) {
+        toast(`Hermes branché — ${a.models.length} modèle(s).`, { kind: 'success' });
+        await checkSetupSilently();
+        renderWizard();
+        return;
+      }
+
+      // Enregistré mais muet. « Il ne répond pas encore » est vrai et inutile :
+      // on cherche pourquoi, et on propose de le réparer quand c'est possible.
+      toast('Hermes enregistré, mais sa passerelle ne répond pas. Diagnostic…', { kind: 'warn' });
+      await showGatewayDiagnosis(f.name, box);
     };
     return;
   }
@@ -2661,6 +2669,86 @@ async function runHermesDetection(btn, box) {
 
   const install = $('#scan-install', box);
   if (install) install.onclick = () => streamHermesInstall(install, $('#scan-log', box));
+}
+
+/**
+ * Explique pourquoi la passerelle se tait, et propose de la démarrer.
+ *
+ * Le cas courant, rencontré sur une installation neuve : l'image d'Hermes
+ * distribuée par certains hébergeurs ne lance sa passerelle que si un fichier
+ * de configuration existe déjà. Il n'existe pas encore, donc l'API n'écoute
+ * jamais — alors qu'elle démarrerait très bien sans lui.
+ */
+async function showGatewayDiagnosis(name, box) {
+  const d = await tryApi(api('GET', `/api/hermes/diagnose?name=${encodeURIComponent(name)}`), 'Diagnostic');
+  if (!d) return;
+
+  box.innerHTML = `
+    <div class="probe ${d.fixable ? 'warn' : 'bad'}">${d.fixable ? '⚠' : '✕'} ${escapeHtml(d.detail)}</div>
+    ${d.fixable ? `
+      <div class="scan-detail">AgentHub peut la démarrer pour toi. C'est instantané, et sans effet
+        sur la configuration d'Hermes.</div>
+      <button class="primary" id="gw-start" type="button" style="margin-top:10px">Démarrer la passerelle</button>
+      <div id="gw-log" class="scan-log hidden"></div>`
+    : `<div class="scan-detail">Une fois corrigé, reviens ici et clique <strong>Revérifier</strong>.</div>`}`;
+
+  const btn = $('#gw-start', box);
+  if (btn) btn.onclick = () => streamGatewayStart(name, btn, $('#gw-log', box));
+}
+
+/** Démarrage de la passerelle, progression en direct. */
+async function streamGatewayStart(name, btn, log) {
+  btn.disabled = true;
+  log.classList.remove('hidden');
+  log.textContent = '';
+  const line = (t) => { log.textContent += (log.textContent ? '\n' : '') + t; log.scrollTop = log.scrollHeight; };
+
+  let resp;
+  try {
+    resp = await fetch('/api/hermes/start-gateway', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
+    });
+  } catch (err) { line(`Échec : ${err.message}`); btn.disabled = false; return; }
+
+  const reader = resp.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  let done = null;
+  for (;;) {
+    const { done: fin, value } = await reader.read();
+    if (fin) break;
+    buf += dec.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const raw = buf.slice(0, i).trim();
+      buf = buf.slice(i + 1);
+      if (!raw) continue;
+      let ev;
+      try { ev = JSON.parse(raw); } catch { continue; }
+      if (ev.type === 'progress') line(ev.message);
+      else { done = ev; }
+    }
+  }
+
+  btn.disabled = false;
+  if (done && done.type === 'done') {
+    line(done.already
+      ? `La passerelle répondait déjà — ${done.models.length} modèle(s).`
+      : `La passerelle répond après ${done.seconds} s — ${done.models.length} modèle(s).`);
+    // Honnêteté sur la durée de vie : sur les images qui n'attendent qu'un
+    // fichier de configuration pour lancer la passerelle, un redémarrage du
+    // conteneur la remettra à l'arrêt. Autant le dire tout de suite.
+    line('\nNote : tant qu\'Hermes n\'a pas été configuré depuis son propre tableau de bord,'
+      + ' un redémarrage de son conteneur arrêtera de nouveau la passerelle. Il suffira de'
+      + ' recliquer ici, ou de terminer sa configuration pour que ce soit définitif.');
+    toast('Hermes est opérationnel.', { kind: 'success' });
+    await checkSetupSilently();
+    renderWizard();
+  } else if (done) {
+    line(done.detail || 'Échec.');
+    // Le journal d'Hermes dit précisément ce qui a coincé.
+    if (done.log) line(`\n--- journal d'Hermes ---\n${done.log}`);
+  }
 }
 
 /**

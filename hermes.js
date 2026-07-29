@@ -253,6 +253,157 @@ export async function connectToNetwork(network) {
   return { ok: true, already: false, network };
 }
 
+// ---- passerelle arrêtée : diagnostiquer, puis démarrer ----------------------
+
+/**
+ * Pourquoi la passerelle ne répond-elle pas, alors que le conteneur tourne ?
+ *
+ * « Injoignable : fetch failed » est vrai et inutile. Avec le socket, on peut
+ * distinguer les causes, et celle qu'on rencontre en pratique est précise :
+ * l'image Hermes distribuée par certains hébergeurs ne lance `hermes gateway
+ * run` que si un `config.yaml` existe déjà. Sur une installation neuve il
+ * n'existe pas, donc l'API n'écoute jamais — alors qu'elle démarrerait très
+ * bien sans lui.
+ */
+export async function diagnoseGateway(name) {
+  const status = await dockerStatus();
+  if (!status.available) {
+    return { cause: 'sans-docker', fixable: false,
+      detail: "Sans accès au moteur Docker, AgentHub ne peut pas dire pourquoi la passerelle se tait." };
+  }
+
+  const containers = await dockerRequest('GET', '/containers/json?all=1');
+  const c = containers.find((x) => (x.Names || []).some((n) => n.replace(/^\//, '') === name));
+  if (!c) return { cause: 'introuvable', fixable: false, detail: `Aucun conteneur nommé ${name}.` };
+  if (c.State !== 'running') {
+    return { cause: 'arrete', fixable: false,
+      detail: `Le conteneur ${name} est ${c.State}. Démarre-le : docker start ${name}` };
+  }
+
+  const info = await dockerRequest('GET', `/containers/${c.Id}/json`);
+  const env = Object.fromEntries((info.Config?.Env || []).map((e) => {
+    const i = e.indexOf('=');
+    return [e.slice(0, i), e.slice(i + 1)];
+  }));
+
+  if (env.API_SERVER_ENABLED === 'false' || (!env.API_SERVER_ENABLED && !env.API_SERVER_PORT)) {
+    return {
+      cause: 'api-desactivee', fixable: false, id: c.Id,
+      detail: "Le serveur d'API n'est pas activé dans la configuration d'Hermes. Ajoute "
+            + 'API_SERVER_ENABLED=true, API_SERVER_HOST=0.0.0.0, API_SERVER_PORT=8642 et une '
+            + 'API_SERVER_KEY à son environnement, puis redémarre-le.',
+    };
+  }
+
+  // Le processus tourne-t-il ?
+  const ps = await execIn(c.Id, ['sh', '-c', 'ps ax 2>/dev/null | grep -c "[g]ateway run"']);
+  const running = Number(String(ps.output).trim()) > 0;
+  if (running) {
+    return {
+      cause: 'demarrage-en-cours', fixable: false, id: c.Id,
+      detail: "La passerelle tourne mais n'a pas encore fini de se préparer. Reteste dans un moment.",
+    };
+  }
+
+  return {
+    cause: 'passerelle-arretee', fixable: true, id: c.Id,
+    port: Number(env.API_SERVER_PORT) || HERMES_PORT,
+    detail: "Hermes tourne, son serveur d'API est configuré, mais le processus de passerelle "
+          + "n'a pas été lancé. Sur les images qui n'attendent qu'un fichier de configuration "
+          + 'pour le faire, cela arrive sur une installation neuve.',
+  };
+}
+
+/**
+ * Lance `hermes gateway run` dans le conteneur.
+ *
+ * Exécuté sous l'utilisateur `hermes` et non root : le journal appartient à cet
+ * utilisateur, et un fichier créé par root le rend inécrivable — c'est
+ * exactement l'erreur observée au premier essai, un `PermissionError` sur
+ * gateway.log qui tuait le démarrage sans rapport avec la passerelle elle-même.
+ */
+export async function startGateway(name, { onProgress = () => {} } = {}) {
+  const d = await diagnoseGateway(name);
+
+  // Elle a pu se lever entre le diagnostic et le clic — et surtout, la détection
+  // de processus passe par `ps` dans le conteneur, ce qui n'est pas infaillible.
+  // Une sonde HTTP tranche sans ambiguïté et évite d'en démarrer une seconde.
+  const port = d.port || HERMES_PORT;
+  const already = await probeHttp(`http://${name}:${port}`, 2500);
+  if (already.alive) return { ok: true, base_url: `http://${name}:${port}`, seconds: 0, already: true };
+
+  if (!d.fixable) return { ok: false, ...d };
+
+  onProgress('Préparation du journal…');
+  // On répare d'abord les droits, au cas où un lancement précédent (ou un
+  // outil externe) ait laissé un fichier appartenant à root.
+  await execIn(d.id, ['sh', '-c', 'mkdir -p /opt/data/logs && chown -R hermes:hermes /opt/data/logs 2>/dev/null || true']);
+
+  onProgress('Démarrage de la passerelle…');
+  await execIn(d.id, ['sh', '-c', 'nohup hermes gateway run >>/opt/data/logs/gateway.log 2>&1 </dev/null &'], 'hermes');
+
+  const base = `http://${name}:${d.port}`;
+  for (let i = 0; i < 20; i++) {
+    await new Promise((r) => setTimeout(r, 3000));
+    const p = await probeHttp(base, 2500);
+    if (p.alive) return { ok: true, base_url: base, seconds: (i + 1) * 3 };
+    if (i % 3 === 2) onProgress(`Toujours en cours (${(i + 1) * 3} s)…`);
+  }
+
+  // Le dernier mot revient au journal d'Hermes : il dit précisément ce qui a
+  // coincé, et le recopier vaut mieux qu'un « échec » sans explication.
+  const log = await execIn(d.id, ['sh', '-c', 'tail -6 /opt/data/logs/gateway.log 2>/dev/null']);
+  return {
+    ok: false, cause: 'demarrage-echoue',
+    detail: "La passerelle n'a pas répondu en une minute.",
+    log: String(log.output || '').slice(-800),
+  };
+}
+
+/** Exécute une commande dans un conteneur et renvoie sa sortie. */
+async function execIn(containerId, cmd, user) {
+  const created = await dockerRequest('POST', `/containers/${containerId}/exec`, {
+    AttachStdout: true, AttachStderr: true, Tty: false, Cmd: cmd,
+    ...(user ? { User: user } : {}),
+  });
+  const output = await execStart(created.Id);
+  return { output };
+}
+
+/**
+ * `exec/start` répond en flux multiplexé : chaque bloc est précédé d'un en-tête
+ * de huit octets qu'il faut retirer, sinon la sortie est parasitée.
+ */
+function execStart(execId) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify({ Detach: false, Tty: false });
+    const req = http.request({
+      socketPath: SOCKET,
+      path: `/${API}/exec/${execId}/start`,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+      timeout: 60000,
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => {
+        let buf = Buffer.concat(chunks);
+        const parts = [];
+        while (buf.length >= 8) {
+          const len = buf.readUInt32BE(4);
+          parts.push(buf.slice(8, 8 + len).toString('utf8'));
+          buf = buf.slice(8 + len);
+        }
+        resolve(parts.join('') || buf.toString('utf8'));
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => req.destroy(new Error('exec: délai dépassé')));
+    req.write(payload);
+    req.end();
+  });
+}
+
 // ---- installation -----------------------------------------------------------
 
 /**
