@@ -78,6 +78,7 @@ export class Orchestrator {
     const controller = new AbortController();
     this.controllers.set(channel.id, controller);
     const ctx = { signal: controller.signal, turns: 0, touched: new Set() };
+    const startedAt = Date.now();
 
     try {
       const members = Channels.members(fresh.id);
@@ -113,6 +114,15 @@ export class Orchestrator {
         this.broadcast({ type: 'agent.status', agentId, channelId: channel.id, status: 'idle' });
       }
       this.controllers.delete(channel.id);
+      // The end of a run is the only moment worth a notification: individual
+      // messages arrive constantly while a delegation chain unfolds.
+      this.broadcast({
+        type: 'run.done',
+        channelId: channel.id,
+        channelName: fresh.name,
+        turns: ctx.turns,
+        ms: Date.now() - startedAt,
+      });
     }
   }
 
@@ -221,6 +231,7 @@ export class Orchestrator {
             tokens_out: result.usage.tokensOut,
             estimated: result.usage.estimated,
           });
+          this.checkBudget();
         }
 
         // Not every provider accepts a `tools` array. Rather than fail the turn,
@@ -426,6 +437,28 @@ export class Orchestrator {
       return { employee: null, reason: `${employee.name} n'est pas sous ses ordres.` };
     }
     return { employee, borrowed };
+  }
+
+  /**
+   * Prévient une fois par jour quand la dépense passe le seuil.
+   *
+   * Prévenir, pas bloquer : couper les agents en plein travail parce qu'un
+   * chiffre est dépassé ferait plus de dégâts que le dépassement lui-même.
+   */
+  checkBudget() {
+    const limit = Number(Settings.get('daily_budget', '')) || 0;
+    if (limit <= 0) return;
+    const spent = Usage.todayCost();
+    if (spent < limit) return;
+    const today = new Date().toISOString().slice(0, 10);
+    if (Settings.get('budget_alerted_on') === today) return;
+    Settings.set('budget_alerted_on', today);
+    this.broadcast({
+      type: 'budget.alert',
+      spent, limit,
+      message: `Dépense du jour : ${spent.toFixed(2)} € — le seuil de ${limit.toFixed(2)} € est atteint.`,
+    });
+    console.warn(`Seuil de dépense atteint : ${spent.toFixed(2)} € / ${limit.toFixed(2)} €.`);
   }
 
   postSystem(channel, content, taskId) {

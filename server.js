@@ -416,10 +416,12 @@ app.get('/api/settings', requireAuth, (req, res) => res.json(Settings.publicAll(
 
 app.put('/api/settings', requireAuth, (req, res) => {
   const patch = req.body || {};
-  const ALLOWED = ['owner_name', 'org_name', 'theme'];
+  const ALLOWED = ['owner_name', 'org_name', 'theme', 'daily_budget', 'tools_enabled'];
   for (const [k, v] of Object.entries(patch)) {
     if (!ALLOWED.includes(k)) continue;
     if (k === 'theme' && !['light', 'dark'].includes(v)) continue;
+    if (k === 'daily_budget' && v !== '' && !(Number(v) >= 0)) continue;
+    if (k === 'tools_enabled') { Settings.set(k, v ? '1' : ''); continue; }
     Settings.set(k, String(v ?? '').slice(0, 80));
   }
   const settings = Settings.publicAll();
@@ -503,9 +505,24 @@ app.delete('/api/channels/:id', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+/** Attach each message's files, so the client never has to ask per message. */
+function withAttachments(channelId, messages) {
+  const byMessage = new Map();
+  for (const a of Attachments.list(channelId)) {
+    if (!a.message_id) continue;
+    if (!byMessage.has(a.message_id)) byMessage.set(a.message_id, []);
+    byMessage.get(a.message_id).push({ id: a.id, name: a.name, bytes: a.bytes, mime: a.mime });
+  }
+  return messages.map((m) => (byMessage.has(m.id) ? { ...m, attachments: byMessage.get(m.id) } : m));
+}
+
 app.get('/api/channels/:id/messages', requireAuth, (req, res) => {
   if (!Channels.get(req.params.id)) return res.status(404).json({ error: 'not found' });
-  res.json({ messages: Messages.list(req.params.id), tasks: Tasks.list(req.params.id) });
+  res.json({
+    messages: withAttachments(req.params.id, Messages.list(req.params.id)),
+    tasks: Tasks.list(req.params.id),
+    files: Attachments.list(req.params.id),
+  });
 });
 
 // ---- send a message (fires orchestration) ----------------------------------
@@ -528,8 +545,21 @@ app.post('/api/channels/:id/messages', requireAuth, (req, res) => {
     content: text,
     status: 'complete',
   });
-  broadcast({ type: 'message.new', message: userMsg });
-  res.json({ ok: true, message: userMsg });
+
+  // Files uploaded while composing are bound to the message now. Only those
+  // belonging to this channel, so an id from elsewhere cannot be grafted on.
+  const attached = [];
+  for (const id of (Array.isArray(req.body?.attachments) ? req.body.attachments : []).slice(0, 10)) {
+    const a = Attachments.get(String(id));
+    if (a && a.channel_id === channel.id && !a.message_id) {
+      Attachments.attachTo(a.id, userMsg.id);
+      attached.push({ id: a.id, name: a.name, bytes: a.bytes, mime: a.mime });
+    }
+  }
+  const message = attached.length ? { ...userMsg, attachments: attached } : userMsg;
+
+  broadcast({ type: 'message.new', message });
+  res.json({ ok: true, message });
 
   // Orchestration runs off the response path; errors are reported in-channel.
   orchestrator.handleUserMessage(channel, text).catch((err) => {
@@ -790,8 +820,9 @@ app.get('/api/channels/:id/export', requireAuth, (req, res) => {
   for (const m of messages) {
     const when = new Date(m.created_at).toLocaleString('fr-FR');
     if (m.author_type === 'system') { out.push(`> ${m.content}\n`); continue; }
-    const who = m.author_type === 'user' ? 'Toi' : m.author_name;
-    out.push(`### ${m.author_emoji || ''} ${who}`.trim() + `\n<small>${when}</small>\n`);
+    // author_name porte déjà « Toi » pour un vrai message humain — et le nom du
+    // déclencheur pour ce qui est arrivé par webhook ou par le planificateur.
+    out.push(`### ${m.author_emoji || ''} ${m.author_name}`.trim() + `\n<small>${when}</small>\n`);
     out.push(m.content + '\n');
   }
 

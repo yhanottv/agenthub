@@ -29,7 +29,18 @@ const S = {
   loading: true,
   sidebarOpen: false, railOpen: false,
   booted: false,
+  pendingFiles: [], pendingChannel: null,
+  // Les notifications restent un choix explicite : la permission n'est demandée
+  // qu'au clic sur la case, jamais au chargement, où elle serait refusée d'office.
+  notifyOn: localStorage.getItem('ah_notify') === '1',
 };
+
+/** Notification navigateur, seulement si l'onglet n'est pas déjà sous les yeux. */
+function notify(title, body) {
+  if (!S.notifyOn || !document.hidden) return;
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+  try { new Notification(title, { body, tag: 'agenthub', icon: '/favicon.ico' }); } catch { /* refusé */ }
+}
 
 // ============================ tiny DOM utils ================================
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -196,6 +207,9 @@ const IC = {
   tasks: svg('<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>'),
   edit: svg('<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z"/>'),
   clock: svg('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
+  download: svg('<path d="M12 4v10m0 0 4-4m-4 4-4-4"/><path d="M5 18h14"/>'),
+  clip: svg('<path d="M20 11.5 12.3 19a4.6 4.6 0 0 1-6.5-6.5l7.9-7.9a3 3 0 0 1 4.3 4.3l-7.9 7.9a1.5 1.5 0 0 1-2.1-2.1l7.2-7.2"/>'),
+  trash: svg('<path d="M4 7h16M9 7V5h6v2M6 7l1 12h10l1-12"/>'),
   graph: svg('<circle cx="6" cy="7" r="2.4"/><circle cx="18" cy="6" r="2.4"/><circle cx="12" cy="17" r="2.4"/><path d="M8 8.4 10.6 15M16.2 8 13.4 15.2M8.3 6.6l7.4-.4"/>'),
   galaxy: svg('<circle cx="12" cy="12" r="2"/><ellipse cx="12" cy="12" rx="9.5" ry="4" transform="rotate(-22 12 12)"/><circle cx="19" cy="8.6" r=".9" fill="currentColor"/><circle cx="5.2" cy="15.6" r=".9" fill="currentColor"/>'),
   broom: svg('<path d="M3 21h18"/><path d="M8 21v-4a4 4 0 0 1 8 0v4"/><path d="M12 13V3"/><path d="M9 6h6"/>'),
@@ -2163,11 +2177,17 @@ function renderUsage(v) {
 
     ${!u ? '<div class="sk sk-stat"></div>' : `
       <div class="stat-grid">
+        ${statCard('Dépense', IC.spark, fmtMoney(u.cost), costCaption(u))}
         ${statCard('Tokens envoyés', IC.arrow, fmtTokens(u.tokensIn), 'contexte + instructions')}
         ${statCard('Tokens reçus', IC.chat, fmtTokens(u.tokensOut), 'réponses des agents')}
-        ${statCard('Total', IC.tokens, fmtTokens(totalTokens), u.estimated ? 'estimation' : 'compté par le fournisseur')}
         ${statCard('Appels modèle', IC.bolt, u.calls, 'requêtes envoyées')}
       </div>
+
+      ${u.unpricedCalls && u.calls ? `<div class="price-warn">
+        ${u.unpricedCalls} appel${u.unpricedCalls > 1 ? 's' : ''} sur ${u.calls} tourne${u.unpricedCalls > 1 ? 'nt' : ''} sur un modèle sans tarif renseigné —
+        la dépense affichée est donc un plancher, pas un total.
+        <button class="link-btn" id="go-prices" type="button">Renseigner les prix</button>
+      </div>` : ''}
 
       ${u.calls === 0 ? emptyBox('📊', "Aucun appel sur cette période. Écris à un pôle et les compteurs se rempliront.") : `
         <div class="section-title">Évolution
@@ -2178,7 +2198,8 @@ function renderUsage(v) {
         <div class="usage-table">
           ${u.byModel.map((r) => usageRow(
             `${escapeHtml(r.provider)} · ${escapeHtml(r.model)}`,
-            r.calls, r.tokens_in + r.tokens_out, totalTokens)).join('')}
+            r.calls, r.tokens_in + r.tokens_out, totalTokens, null,
+            r.priced ? r.cost : null)).join('')}
         </div>
 
         <div class="section-title">Par agent</div>
@@ -2186,9 +2207,19 @@ function renderUsage(v) {
           ${u.byAgent.map((r) => {
             const a = agentById(r.agent_id);
             return usageRow(a ? escapeHtml(a.name) : 'agent supprimé',
-              r.calls, r.tokens_in + r.tokens_out, totalTokens, a);
+              r.calls, r.tokens_in + r.tokens_out, totalTokens, a, r.cost);
           }).join('') || '<div class="muted" style="padding:12px">Aucun agent sur la période.</div>'}
         </div>
+
+        ${u.byChannel && u.byChannel.length ? `
+          <div class="section-title">Par salon</div>
+          <div class="usage-table">
+            ${u.byChannel.map((r) => {
+              const c = channelById(r.channel_id);
+              return usageRow(c ? `${c.emoji || ''} ${escapeHtml(c.name)}`.trim() : 'salon supprimé',
+                r.calls, r.tokens_in + r.tokens_out, totalTokens, null, r.cost);
+            }).join('')}
+          </div>` : ''}
       `}
 
       <div class="field-hint" style="margin-top:22px;line-height:1.7">
@@ -2200,19 +2231,109 @@ function renderUsage(v) {
   </div>`;
 
   $$('[data-range]', v).forEach((n) => n.onclick = () => { S.usageRange = n.dataset.range; loadUsage(); });
+  const goPrices = $('#go-prices', v);
+  if (goPrices) goPrices.onclick = () => openPricesModal();
   if (u && u.series) wireChart(v, u.series, u.bucketMs);
 }
 
-function usageRow(label, calls, tokens, total, agent) {
+/**
+ * Tarifs par modèle, en euros par million de tokens.
+ *
+ * Rien n'est pré-rempli : les grilles bougent, et un prix inventé par l'app
+ * serait pire que pas de prix du tout — il aurait l'air juste. Les modèles
+ * réellement appelés sont proposés, à toi de coller les tarifs de ton contrat.
+ */
+async function openPricesModal() {
+  const data = await tryApi(api('GET', '/api/prices'), 'Chargement des tarifs');
+  if (!data) return;
+
+  openModal('Tarifs des modèles', (b) => {
+    const known = new Map(data.prices.map((p) => [p.id, p]));
+    // Tout ce qui a déjà consommé, plus tout ce qui est déjà tarifé.
+    const rows = [...data.seen];
+    for (const p of data.prices) {
+      if (!rows.some((r) => r.provider === p.provider && r.model === p.model)) {
+        rows.push({ provider: p.provider, model: p.model });
+      }
+    }
+
+    b.innerHTML = `
+      <p class="field-hint" style="margin-bottom:14px;line-height:1.7">
+        En <strong>euros par million de tokens</strong>, comme les fournisseurs les publient.
+        Un modèle laissé à zéro est compté comme non tarifé : sa dépense n'est pas inventée,
+        elle est signalée comme manquante.
+      </p>
+      ${rows.length ? `<div class="price-table">
+        <div class="price-head"><span>Modèle</span><span>Entrée</span><span>Sortie</span></div>
+        ${rows.map((r) => {
+          const id = `${r.provider}:${String(r.model).toLowerCase()}`;
+          const p = known.get(id);
+          return `<div class="price-row" data-provider="${escapeAttr(r.provider)}" data-model="${escapeAttr(r.model)}">
+            <span class="price-name"><strong>${escapeHtml(r.model)}</strong><small>${escapeHtml(r.provider)}</small></span>
+            <input type="number" min="0" step="0.01" class="price-in" value="${p ? p.in_per_m : ''}" placeholder="0">
+            <input type="number" min="0" step="0.01" class="price-out" value="${p ? p.out_per_m : ''}" placeholder="0">
+          </div>`;
+        }).join('')}
+      </div>` : '<div class="empty">Aucun modèle appelé pour l\'instant.</div>'}
+      <div class="field" style="margin-top:18px">
+        <label for="p-budget">Alerte de dépense quotidienne (€)</label>
+        <input id="p-budget" type="number" min="0" step="1" value="${escapeAttr(S.settings.daily_budget || '')}" placeholder="ex : 5">
+        <div class="field-hint">Laisse vide pour ne pas être prévenu. L'alerte n'arrête rien, elle avertit.</div>
+      </div>
+      <button class="primary" id="p-save" type="button">Enregistrer</button>`;
+
+    $('#p-save', b).onclick = async (ev) => {
+      ev.currentTarget.disabled = true;
+      for (const row of $$('.price-row', b)) {
+        const inV = Number($('.price-in', row).value) || 0;
+        const outV = Number($('.price-out', row).value) || 0;
+        // Une ligne laissée vide reste non tarifée : on ne crée pas un prix à zéro,
+        // qui ferait passer le modèle pour gratuit dans les totaux.
+        if (!inV && !outV) continue;
+        await api('PUT', '/api/prices', {
+          provider: row.dataset.provider, model: row.dataset.model,
+          in_per_m: inV, out_per_m: outV,
+        }).catch(() => {});
+      }
+      await tryApi(api('PUT', '/api/settings', { daily_budget: $('#p-budget', b).value.trim() }), 'Budget');
+      ev.currentTarget.disabled = false;
+      closeModal();
+      toast('Tarifs enregistrés.', { kind: 'success' });
+      loadUsage();
+    };
+  });
+}
+
+function usageRow(label, calls, tokens, total, agent, cost) {
   const pct = total ? Math.round((tokens / total) * 100) : 0;
   return `<div class="usage-row">
     ${agent ? avatarHTML(agent, { size: 26 }) : '<span class="usage-dot"></span>'}
     <span class="usage-label">${label}</span>
     <span class="usage-bar"><span style="width:${pct}%"></span></span>
+    ${cost === null || cost === undefined
+      ? '<span class="usage-cost muted" title="Aucun tarif renseigné pour ce modèle">— €</span>'
+      : `<span class="usage-cost">${fmtMoney(cost)}</span>`}
     <span class="usage-num">${fmtTokens(tokens)}</span>
     <span class="usage-calls">${calls} appel${calls > 1 ? 's' : ''}</span>
   </div>`;
 }
+
+/**
+ * Euros with a precision that matches the amount: 0,0043 € is a real figure at
+ * this scale, and rounding it to 0,00 € would read as free.
+ */
+function fmtMoney(v) {
+  const n = Number(v) || 0;
+  if (n === 0) return '0 €';
+  const digits = n < 0.01 ? 4 : n < 1 ? 3 : 2;
+  return n.toLocaleString('fr-FR', { minimumFractionDigits: digits, maximumFractionDigits: digits }) + ' €';
+}
+
+const costCaption = (u) => {
+  if (!u.calls) return 'aucun appel';
+  if (u.fullyPriced) return u.estimated ? 'sur des tokens estimés' : 'sur des tokens comptés';
+  return u.cost > 0 ? 'au moins — tarifs incomplets' : 'aucun tarif renseigné';
+};
 
 /**
  * Monotone cubic interpolation (Fritsch–Carlson).
@@ -2486,8 +2607,70 @@ function renderSettings(v) {
           Les clés sont stockées sur le serveur et ne sont jamais renvoyées au navigateur.
         </div>
       </div>
+
+      <div class="agent-card">
+        <h3 style="margin:0 0 14px;font-size:14px">Outils des agents</h3>
+        <label class="checklist-item" style="padding:0">
+          <input type="checkbox" id="set-tools" ${S.settings.tools_enabled !== '' ? 'checked' : ''}>
+          <span>Autoriser les agents à agir — recherche web, lecture de pages, fouille de la mémoire, calcul</span>
+        </label>
+        <div class="field-hint" style="margin-top:10px;line-height:1.7">
+          Sans ça, tes agents ne peuvent que produire du texte à partir de ce qu'ils savent déjà.
+          Les appels sortants sont restreints à l'Internet public : une adresse interne
+          (<code>127.0.0.1</code>, réseau Docker, métadonnées cloud) est refusée, redirections comprises.
+          Un fournisseur qui n'accepte pas les outils est détecté et l'agent répond quand même.
+        </div>
+        <button class="btn" id="open-prices" type="button" style="margin-top:14px">Tarifs des modèles et alerte de dépense</button>
+      </div>
+
+      <div class="agent-card">
+        <h3 style="margin:0 0 4px;font-size:14px">Sauvegardes</h3>
+        <div class="field-hint" style="margin-bottom:12px;line-height:1.7">
+          Instantané cohérent de la base, pris au démarrage puis une fois par jour, ${'' /* */}
+          les 14 derniers étant conservés. Copier <code>agenthub.db</code> à la main ne suffirait pas :
+          en mode WAL l'essentiel des écritures récentes vit dans le journal.
+        </div>
+        <div id="backup-list" class="backup-list"><div class="muted">Chargement…</div></div>
+        <button class="btn" id="make-backup" type="button" style="margin-top:12px">Sauvegarder maintenant</button>
+      </div>
+
+      <div class="agent-card">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px">
+          <h3 style="margin:0;font-size:14px;flex:1">Déclenchements programmés</h3>
+          <button class="btn ghost" id="add-schedule" type="button">Ajouter</button>
+        </div>
+        <div class="field-hint" style="margin-bottom:12px">Un agent lancé à heure fixe dans un salon.</div>
+        <div id="schedule-list"><div class="muted">Chargement…</div></div>
+      </div>
+
+      <div class="agent-card">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px">
+          <h3 style="margin:0;font-size:14px;flex:1">Déclencheurs entrants</h3>
+          <button class="btn ghost" id="add-webhook" type="button">Ajouter</button>
+        </div>
+        <div class="field-hint" style="margin-bottom:12px;line-height:1.7">
+          Une URL secrète qui poste un message dans un salon et lance les agents.
+          Quiconque détient le lien peut déclencher : traite-le comme un mot de passe.
+        </div>
+        <div id="webhook-list"><div class="muted">Chargement…</div></div>
+      </div>
+
+      <div class="agent-card">
+        <h3 style="margin:0 0 14px;font-size:14px">Notifications et sessions</h3>
+        <label class="checklist-item" style="padding:0">
+          <input type="checkbox" id="set-notif" ${S.notifyOn ? 'checked' : ''}>
+          <span>M'avertir dans le navigateur quand un long traitement se termine</span>
+        </label>
+        <div class="field-hint" style="margin-top:8px">Seulement lorsque l'onglet est en arrière-plan.</div>
+        <button class="btn" id="revoke-sessions" type="button" style="margin-top:16px">Déconnecter les autres navigateurs</button>
+        <div class="field-hint" style="margin-top:8px">
+          Ta session actuelle est conservée. Utile si tu as ouvert AgentHub sur une machine que tu ne contrôles plus.
+        </div>
+      </div>
     </div>
   </div>`;
+
+  loadAutomation(v);
 
   const savePw = $('#save-password', v);
   if (savePw) savePw.onclick = async (e) => {
@@ -2528,6 +2711,239 @@ function renderSettings(v) {
       toast('Identité mise à jour.', { kind: 'success' });
     }
   };
+
+  $('#open-prices', v).onclick = () => openPricesModal();
+
+  $('#set-tools', v).onchange = async (e) => {
+    const on = e.currentTarget.checked;
+    const res = await tryApi(api('PUT', '/api/settings', { tools_enabled: on ? '1' : '' }), 'Enregistrement');
+    if (res) {
+      S.settings = res;
+      toast(on ? 'Les agents peuvent agir.' : 'Les agents ne produisent plus que du texte.', { kind: 'success' });
+    } else e.currentTarget.checked = !on;
+  };
+
+  $('#set-notif', v).onchange = async (e) => {
+    if (!e.currentTarget.checked) { S.notifyOn = false; localStorage.removeItem('ah_notify'); return; }
+    // La permission doit être demandée depuis un geste de l'utilisateur, ce
+    // que ce clic est ; la demander au chargement se fait refuser d'office.
+    const perm = await Notification.requestPermission().catch(() => 'denied');
+    if (perm !== 'granted') {
+      e.currentTarget.checked = false;
+      toast('Le navigateur a refusé les notifications.', { kind: 'warn' });
+      return;
+    }
+    S.notifyOn = true;
+    localStorage.setItem('ah_notify', '1');
+    toast('Notifications activées.', { kind: 'success' });
+  };
+
+  $('#revoke-sessions', v).onclick = async (e) => {
+    e.currentTarget.disabled = true;
+    const r = await tryApi(api('POST', '/api/sessions/revoke-others'), 'Révocation');
+    e.currentTarget.disabled = false;
+    if (r) toast(r.revoked ? `${r.revoked} session(s) fermée(s).` : 'Aucune autre session ouverte.', { kind: 'success' });
+  };
+
+  $('#make-backup', v).onclick = async (e) => {
+    e.currentTarget.disabled = true;
+    const r = await tryApi(api('POST', '/api/backups'), 'Sauvegarde');
+    e.currentTarget.disabled = false;
+    if (r) { toast('Sauvegarde effectuée.', { kind: 'success' }); loadAutomation(v); }
+  };
+
+  $('#add-schedule', v).onclick = () => openScheduleModal(null, () => loadAutomation(v));
+  $('#add-webhook', v).onclick = () => openWebhookModal(() => loadAutomation(v));
+}
+
+// ---- automatisation : sauvegardes, planificateur, webhooks ------------------
+const DAY_LABELS = ['D', 'L', 'M', 'M', 'J', 'V', 'S'];
+const DAY_FULL = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
+
+async function loadAutomation(root) {
+  const [backups, schedules, hooks] = await Promise.all([
+    api('GET', '/api/backups').catch(() => null),
+    api('GET', '/api/schedules').catch(() => null),
+    api('GET', '/api/webhooks').catch(() => null),
+  ]);
+  // La vue a pu changer pendant les requêtes.
+  if (!document.body.contains(root)) return;
+
+  const bl = $('#backup-list', root);
+  if (bl) {
+    bl.innerHTML = backups?.backups?.length
+      ? backups.backups.slice(0, 6).map((b) => `<div class="backup-row">
+          <span>${new Date(b.at).toLocaleString('fr-FR')}</span>
+          <span class="muted">${fmtBytes(b.bytes)}</span>
+          <a class="link-btn" href="/api/backups/${encodeURIComponent(b.file)}" download>Télécharger</a>
+        </div>`).join('')
+      : '<div class="muted">Aucune sauvegarde pour l\'instant.</div>';
+  }
+
+  const sl = $('#schedule-list', root);
+  if (sl) {
+    sl.innerHTML = schedules?.schedules?.length
+      ? schedules.schedules.map((s) => {
+        const c = channelById(s.channel_id);
+        const a = s.agent_id ? agentById(s.agent_id) : null;
+        return `<div class="auto-row">
+          <span class="auto-main">
+            <strong>${escapeHtml(s.label)}</strong>
+            <small>${String(s.hour).padStart(2, '0')}h${String(s.minute).padStart(2, '0')} ·
+              ${s.days.length === 7 ? 'tous les jours' : s.days.map((d) => DAY_LABELS[d]).join(' ')} ·
+              ${c ? escapeHtml(c.name) : 'salon supprimé'}${a ? ` · ${escapeHtml(a.name)}` : ''}</small>
+          </span>
+          <span class="pill ${s.enabled ? 'done' : 'pending'}">${s.enabled ? 'actif' : 'en pause'}</span>
+          <button class="link-btn" data-run-sched="${escapeAttr(s.id)}" type="button">Tester</button>
+          <button class="link-btn" data-edit-sched="${escapeAttr(s.id)}" type="button">Modifier</button>
+        </div>`;
+      }).join('')
+      : '<div class="muted">Aucun déclenchement programmé.</div>';
+
+    $$('[data-edit-sched]', sl).forEach((b) => b.onclick = () =>
+      openScheduleModal(schedules.schedules.find((s) => s.id === b.dataset.editSched), () => loadAutomation(root)));
+    $$('[data-run-sched]', sl).forEach((b) => b.onclick = async () => {
+      b.disabled = true;
+      const r = await tryApi(api('POST', `/api/schedules/${b.dataset.runSched}/run`), 'Test');
+      b.disabled = false;
+      if (r) toast(r.ok ? 'Déclenché — regarde le salon.' : 'Rien à déclencher (salon ou consigne vide).', { kind: r.ok ? 'success' : 'warn' });
+    });
+  }
+
+  const wl = $('#webhook-list', root);
+  if (wl) {
+    wl.innerHTML = hooks?.webhooks?.length
+      ? hooks.webhooks.map((w) => {
+        const c = channelById(w.channel_id);
+        return `<div class="auto-row">
+          <span class="auto-main">
+            <strong>${escapeHtml(w.label)}</strong>
+            <small>${c ? escapeHtml(c.name) : 'salon supprimé'} · ${w.calls} appel${w.calls > 1 ? 's' : ''}${w.last_call ? ` · dernier ${agoText(w.last_call)}` : ''}</small>
+          </span>
+          <button class="link-btn" data-copy-hook="${escapeAttr(location.origin + w.url)}" type="button">Copier l'URL</button>
+          <button class="link-btn danger" data-del-hook="${escapeAttr(w.id)}" type="button">Supprimer</button>
+        </div>`;
+      }).join('')
+      : '<div class="muted">Aucun déclencheur.</div>';
+
+    $$('[data-copy-hook]', wl).forEach((b) => b.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(b.dataset.copyHook);
+        toast('URL copiée. Traite-la comme un mot de passe.', { kind: 'success' });
+      } catch { toast(b.dataset.copyHook, { kind: 'info', title: 'Copie refusée — voici l\'URL' }); }
+    });
+    $$('[data-del-hook]', wl).forEach((b) => b.onclick = () => confirmModal(
+      'Supprimer ce déclencheur ?', 'Son URL cessera immédiatement de fonctionner.',
+      async () => {
+        const r = await tryApi(api('DELETE', `/api/webhooks/${b.dataset.delHook}`), 'Suppression');
+        if (r) { closeModal(); loadAutomation(root); }
+      }));
+  }
+}
+
+function openScheduleModal(sched, onDone) {
+  const isEdit = !!sched;
+  const days = isEdit ? sched.days : [1, 2, 3, 4, 5];
+  openModal(isEdit ? 'Modifier le déclenchement' : 'Nouveau déclenchement', (b) => {
+    b.innerHTML = `
+      <div class="field">
+        <label for="s-label">Nom</label>
+        <input id="s-label" maxlength="80" value="${isEdit ? escapeAttr(sched.label) : ''}" placeholder="ex : Veille du matin">
+      </div>
+      <div class="field-row" style="margin-top:12px">
+        <div class="field"><label for="s-channel">Salon</label>
+          <select id="s-channel">${S.channels.map((c) =>
+            `<option value="${escapeAttr(c.id)}" ${isEdit && sched.channel_id === c.id ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}</select>
+        </div>
+        <div class="field"><label for="s-agent">Agent (facultatif)</label>
+          <select id="s-agent"><option value="">le plus haut placé du salon</option>${S.agents.map((a) =>
+            `<option value="${escapeAttr(a.id)}" ${isEdit && sched.agent_id === a.id ? 'selected' : ''}>${escapeHtml(a.name)}</option>`).join('')}</select>
+        </div>
+      </div>
+      <div class="field-row" style="margin-top:12px">
+        <div class="field"><label for="s-hour">Heure</label>
+          <input id="s-hour" type="number" min="0" max="23" value="${isEdit ? sched.hour : 8}"></div>
+        <div class="field"><label for="s-min">Minute</label>
+          <input id="s-min" type="number" min="0" max="59" value="${isEdit ? sched.minute : 30}"></div>
+      </div>
+      <div class="field" style="margin-top:12px">
+        <label>Jours</label>
+        <div class="day-picker">${DAY_LABELS.map((d, i) =>
+          `<button type="button" class="day-btn ${days.includes(i) ? 'on' : ''}" data-day="${i}"
+                   aria-pressed="${days.includes(i)}" aria-label="${DAY_FULL[i]}">${d}</button>`).join('')}</div>
+      </div>
+      <div class="field" style="margin-top:12px">
+        <label for="s-prompt">Consigne envoyée</label>
+        <textarea id="s-prompt" rows="4" maxlength="4000" placeholder="ex : Fais-moi la veille du secteur, 5 points maximum, avec les sources.">${isEdit ? escapeHtml(sched.prompt) : ''}</textarea>
+      </div>
+      <label class="checklist-item" style="padding:0;margin-top:12px">
+        <input type="checkbox" id="s-on" ${!isEdit || sched.enabled ? 'checked' : ''}><span>Actif</span>
+      </label>
+      <div class="field-hint" style="margin-top:8px">Heure du serveur, pas celle de ton navigateur.</div>
+      <button class="primary" id="s-save" type="button">${isEdit ? 'Enregistrer' : 'Créer'}</button>
+      ${isEdit ? '<button class="del-link" id="s-del" type="button">Supprimer</button>' : ''}`;
+
+    $$('[data-day]', b).forEach((d) => d.onclick = () => {
+      const on = d.classList.toggle('on');
+      d.setAttribute('aria-pressed', String(on));
+    });
+
+    $('#s-save', b).onclick = async (ev) => {
+      const payload = {
+        label: $('#s-label', b).value.trim() || 'Sans nom',
+        channel_id: $('#s-channel', b).value,
+        agent_id: $('#s-agent', b).value || null,
+        prompt: $('#s-prompt', b).value,
+        hour: Number($('#s-hour', b).value),
+        minute: Number($('#s-min', b).value),
+        days: $$('.day-btn.on', b).map((d) => Number(d.dataset.day)),
+        enabled: $('#s-on', b).checked ? 1 : 0,
+      };
+      if (!payload.prompt.trim()) { toast('La consigne ne peut pas être vide.', { kind: 'warn' }); return; }
+      if (!payload.days.length) { toast('Choisis au moins un jour.', { kind: 'warn' }); return; }
+      ev.currentTarget.disabled = true;
+      const r = await tryApi(isEdit ? api('PUT', `/api/schedules/${sched.id}`, payload)
+        : api('POST', '/api/schedules', payload), 'Enregistrement');
+      ev.currentTarget.disabled = false;
+      if (r) { closeModal(); toast('Déclenchement enregistré.', { kind: 'success' }); onDone?.(); }
+    };
+
+    const del = $('#s-del', b);
+    if (del) del.onclick = async () => {
+      const r = await tryApi(api('DELETE', `/api/schedules/${sched.id}`), 'Suppression');
+      if (r) { closeModal(); onDone?.(); }
+    };
+  });
+}
+
+function openWebhookModal(onDone) {
+  openModal('Nouveau déclencheur entrant', (b) => {
+    b.innerHTML = `
+      <div class="field">
+        <label for="w-label">Nom</label>
+        <input id="w-label" maxlength="80" placeholder="ex : Formulaire du site">
+      </div>
+      <div class="field" style="margin-top:12px">
+        <label for="w-channel">Salon destinataire</label>
+        <select id="w-channel">${S.channels.map((c) =>
+          `<option value="${escapeAttr(c.id)}">${escapeHtml(c.name)}</option>`).join('')}</select>
+      </div>
+      <div class="field-hint" style="margin-top:12px;line-height:1.7">
+        Une fois créé, poste dessus :<br>
+        <code>curl -X POST &lt;url&gt; -H "Content-Type: application/json" -d '{"text":"…"}'</code><br>
+        Le message arrive dans le salon et les agents répondent comme si tu l'avais écrit.
+      </div>
+      <button class="primary" id="w-save" type="button">Créer</button>`;
+
+    $('#w-save', b).onclick = async (ev) => {
+      ev.currentTarget.disabled = true;
+      const r = await tryApi(api('POST', '/api/webhooks', {
+        label: $('#w-label', b).value.trim(), channel_id: $('#w-channel', b).value,
+      }), 'Création');
+      ev.currentTarget.disabled = false;
+      if (r) { closeModal(); toast('Déclencheur créé — copie son URL.', { kind: 'success' }); onDone?.(); }
+    };
+  });
 }
 
 // ---- Chat ------------------------------------------------------------------
@@ -2553,6 +2969,8 @@ function renderChat(v) {
           </div>
           <div style="display:flex;align-items:center;gap:6px">
             <div class="chat-members">${members.map((a) => avatarHTML(a, { status: true })).join('')}</div>
+            <button class="icon-btn" id="export-chat" type="button"
+                    aria-label="Exporter en Markdown" title="Exporter en Markdown">${IC.download}</button>
             <button class="icon-btn" id="clear-chat" type="button"
                     aria-label="Vider la conversation" title="Vider la conversation">${IC.broom}</button>
             ${canEdit ? `<button class="icon-btn" id="edit-pole" type="button" aria-label="Modifier le pôle" title="Modifier le pôle">${IC.edit}</button>` : ''}
@@ -2564,7 +2982,11 @@ function renderChat(v) {
         <div class="composer-wrap">
           <button class="scroll-down hidden-soft" id="scroll-down" type="button" aria-label="Revenir en bas">${IC.down}</button>
           <div id="mention-pop" class="mention-pop hidden" role="listbox" aria-label="Mentionner un agent"></div>
+          <div id="attach-tray" class="attach-tray hidden"></div>
           <div class="composer">
+            <input type="file" id="file-input" class="sr-only" multiple>
+            <button class="icon-btn attach-btn" id="attach-btn" type="button"
+                    aria-label="Joindre un fichier" title="Joindre un fichier">${IC.clip}</button>
             <div class="composer-box">
               <label for="composer-input" class="sr-only">Message</label>
               <textarea id="composer-input" rows="1" placeholder="Écris un message…  (@ pour appeler un agent)"></textarea>
@@ -2601,6 +3023,15 @@ function renderChat(v) {
 
   $('#model-chip', v).onclick = () => openChannelModelModal(c);
 
+  // L'export passe par une navigation plutôt que par fetch : le navigateur
+  // gère le téléchargement, et le cookie de session part avec la requête.
+  $('#export-chat', v).onclick = () => {
+    if (!S.messages.length) { toast('Rien à exporter dans ce salon.', { kind: 'warn' }); return; }
+    window.location.href = `/api/channels/${c.id}/export`;
+  };
+
+  wireAttachments(v, c);
+
   $('#clear-chat', v).onclick = () => {
     if (!S.messages.length && !S.tasks.length) { toast('La conversation est déjà vide.', { kind: 'warn' }); return; }
     confirmModal(
@@ -2615,6 +3046,98 @@ function renderChat(v) {
   box.addEventListener('scroll', updateScrollButton, { passive: true });
   $('#scroll-down', v).onclick = () => scrollToBottom(true);
   requestAnimationFrame(() => scrollToBottom(true));
+}
+
+// ---- pièces jointes --------------------------------------------------------
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+const fmtBytes = (n) => (n >= 1048576 ? (n / 1048576).toFixed(1) + ' Mo'
+  : n >= 1024 ? Math.round(n / 1024) + ' Ko' : n + ' o');
+
+/**
+ * Le fichier est envoyé brut, avec son nom et son type en paramètres d'URL.
+ * Coder un parseur multipart pour un seul champ coûterait plus que ça ne
+ * rapporte, et la liste de dépendances du projet reste à trois.
+ */
+async function uploadFile(channelId, file) {
+  if (file.size > MAX_UPLOAD_BYTES) {
+    toast(`« ${file.name} » dépasse 10 Mo.`, { kind: 'warn' });
+    return null;
+  }
+  try {
+    const r = await fetch(
+      `/api/channels/${channelId}/attachments?name=${encodeURIComponent(file.name)}&type=${encodeURIComponent(file.type || '')}`,
+      { method: 'POST', body: file, headers: { 'Content-Type': 'application/octet-stream' } });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
+    return await r.json();
+  } catch (err) {
+    toast(`Envoi de « ${file.name} » impossible : ${err.message}`, { kind: 'error' });
+    return null;
+  }
+}
+
+function renderAttachTray() {
+  const tray = $('#attach-tray');
+  if (!tray) return;
+  const list = S.pendingFiles || [];
+  tray.classList.toggle('hidden', !list.length);
+  tray.innerHTML = list.map((f) => `<span class="attach-chip">
+    ${IC.clip}<span>${escapeHtml(f.name)}</span><small>${fmtBytes(f.bytes)}</small>
+    ${f.readable ? '' : '<small title="Les agents ne peuvent pas lire ce format">non lisible</small>'}
+    <button type="button" data-unattach="${escapeAttr(f.id)}" aria-label="Retirer ${escapeAttr(f.name)}">${IC.trash}</button>
+  </span>`).join('');
+
+  $$('[data-unattach]', tray).forEach((b) => b.onclick = async () => {
+    const id = b.dataset.unattach;
+    S.pendingFiles = (S.pendingFiles || []).filter((f) => f.id !== id);
+    renderAttachTray();
+    await api('DELETE', `/api/attachments/${id}`).catch(() => {});
+  });
+}
+
+function wireAttachments(root, channel) {
+  // Les fichiers en attente appartiennent au salon : changer de salon ne doit
+  // pas traîner une pièce jointe dans une autre conversation.
+  if (S.pendingChannel !== channel.id) { S.pendingFiles = []; S.pendingChannel = channel.id; }
+  renderAttachTray();
+
+  const input = $('#file-input', root);
+  const btn = $('#attach-btn', root);
+  if (!input || !btn) return;
+
+  const take = async (files) => {
+    for (const file of [...files].slice(0, 10)) {
+      const up = await uploadFile(channel.id, file);
+      if (up) {
+        S.pendingFiles = [...(S.pendingFiles || []), up];
+        renderAttachTray();
+      }
+    }
+  };
+
+  btn.onclick = () => input.click();
+  input.onchange = async () => { await take(input.files); input.value = ''; };
+
+  const zone = $('.chat-main', root);
+  if (!zone) return;
+  zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragleave', (e) => {
+    if (e.target === zone) zone.classList.remove('drag-over');
+  });
+  zone.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    zone.classList.remove('drag-over');
+    if (e.dataTransfer?.files?.length) await take(e.dataTransfer.files);
+  });
+}
+
+/** Les fichiers portés par un message, sous son contenu. */
+function attachmentsHTML(m) {
+  const files = m.attachments || [];
+  if (!files.length) return '';
+  return `<div class="msg-files">${files.map((f) =>
+    `<a class="attach-chip" href="/api/attachments/${escapeAttr(f.id)}" download>
+      ${IC.clip}<span>${escapeHtml(f.name)}</span><small>${fmtBytes(f.bytes)}</small>
+    </a>`).join('')}</div>`;
 }
 
 // Consecutive messages from the same author within this window are visually
@@ -2668,6 +3191,7 @@ function renderMessage(m, prev) {
       ${toolTraceHTML(m)}
       ${reasoningHTML(m)}
       <div class="msg-content ${m.status === 'streaming' ? 'cursor' : ''}">${renderMarkdown(m.content)}</div>
+      ${attachmentsHTML(m)}
     </div>
     ${m.status === 'streaming' ? '' : deleteBtn(m.id)}`;
   return w;
@@ -3027,19 +3551,27 @@ async function send(input) {
   const channelId = S.current;
   if (!text || !channelId) return;
 
+  const files = (S.pendingChannel === channelId ? S.pendingFiles : []) || [];
+  const ids = files.map((f) => f.id);
+
   input.value = '';
   S.drafts[channelId] = '';
+  S.pendingFiles = [];
+  renderAttachTray();
   autoGrow(input);
   $('#send-btn').disabled = true;
   $('#mention-pop')?.classList.add('hidden');
 
   try {
-    await api('POST', `/api/channels/${channelId}/messages`, { text });
+    await api('POST', `/api/channels/${channelId}/messages`,
+      ids.length ? { text, attachments: ids } : { text });
   } catch (err) {
-    // Never lose what the user typed.
+    // Never lose what the user typed — nor the files already uploaded.
     if (S.current === channelId) {
       input.value = text;
       S.drafts[channelId] = text;
+      S.pendingFiles = files;
+      renderAttachTray();
       autoGrow(input);
       $('#send-btn').disabled = false;
     }
@@ -3332,6 +3864,20 @@ function handleEvent(e) {
 
     case 'proposals.update':
       loadProposals();
+      break;
+
+    case 'run.done':
+      // Sous 12 s on est encore devant l'écran à attendre : prévenir n'aurait
+      // aucun sens, et une notification par message serait vite insupportable.
+      if (e.ms > 12000) {
+        notify(`${e.channelName} — terminé`,
+          `${e.turns} exécution${e.turns > 1 ? 's' : ''} en ${Math.round(e.ms / 1000)} s.`);
+      }
+      break;
+
+    case 'budget.alert':
+      toast(e.message, { kind: 'warn', title: 'Seuil de dépense atteint' });
+      notify('Seuil de dépense atteint', e.message);
       break;
 
     case 'graph.dirty':
@@ -3754,8 +4300,43 @@ function openPalette() {
   input.value = '';
   setTimeout(() => input.focus(), 30);
 
+  // Recherche plein texte côté serveur, en plus du filtrage local.
+  //
+  // `seq` est là parce que deux frappes rapprochées lancent deux requêtes : sans
+  // ce jeton, une réponse lente à « ac » pourrait écraser les résultats de
+  // « acme » arrivés avant elle.
+  let seq = 0;
+  let debounce = null;
+
+  const runSearch = (q) => {
+    clearTimeout(debounce);
+    const box = $('#palette-deep');
+    if (q.length < 2) { if (box) box.innerHTML = ''; return; }
+    const mine = ++seq;
+    debounce = setTimeout(async () => {
+      let r;
+      try { r = await api('GET', `/api/search?q=${encodeURIComponent(q)}`); }
+      catch { return; }
+      if (mine !== seq) return;                 // une frappe plus récente a gagné
+      const target = $('#palette-deep');
+      if (!target) return;
+      target.innerHTML = deepResultsHTML(r);
+      $$('[data-goto-channel]', target).forEach((n) => n.onclick = () => {
+        closePalette();
+        openChannel(n.dataset.gotoChannel);
+      });
+      $$('[data-goto-note]', target).forEach((n) => n.onclick = () => {
+        const note = S.notes.find((x) => x.id === n.dataset.gotoNote);
+        closePalette();
+        if (note) openNoteModal(note);
+        else navigate('brain');
+      });
+    }, 220);
+  };
+
   const render = () => {
     const q = input.value.toLowerCase().trim();
+    runSearch(q);
     const items = [
       ...S.channels.map((c) => ({
         type: 'pôle', label: c.kind === 'hermes' ? c.name : 'Pôle ' + c.name,
@@ -3772,7 +4353,8 @@ function openPalette() {
     const res = $('#palette-results');
     res.innerHTML = '';
     if (!items.length) {
-      res.innerHTML = `<div class="palette-empty">Aucun résultat pour « ${escapeHtml(input.value)} »</div>`;
+      res.innerHTML = `<div class="palette-empty">Rien ne porte ce nom${q.length >= 2 ? ' — recherche dans le contenu en cours…' : ''}</div>`;
+      ensureDeepBox(res);
       return;
     }
     items.forEach((x, i) => {
@@ -3786,6 +4368,7 @@ function openPalette() {
       it.onclick = x.go;
       res.appendChild(it);
     });
+    ensureDeepBox(res);
   };
 
   input.oninput = render;
@@ -3807,6 +4390,48 @@ function openPalette() {
   render();
 }
 function closePalette() { $('#palette').classList.add('hidden'); }
+
+/** Conteneur des résultats plein texte, sous la liste de navigation. */
+function ensureDeepBox(res) {
+  if (res.querySelector('#palette-deep')) return;
+  const box = el('div', 'palette-deep');
+  box.id = 'palette-deep';
+  res.appendChild(box);
+}
+
+/**
+ * FTS5 renvoie ses extraits avec `<<` et `>>` autour des mots trouvés — des
+ * marqueurs choisis parce qu'ils survivent à l'échappement HTML, contrairement
+ * à des balises que `escapeHtml` neutraliserait.
+ */
+const markExcerpt = (s) => escapeHtml(String(s || ''))
+  .replace(/&lt;&lt;/g, '<mark>').replace(/&gt;&gt;/g, '</mark>');
+
+function deepResultsHTML(r) {
+  const parts = [];
+  if (r.notes?.length) {
+    parts.push('<div class="palette-group">Dans la mémoire</div>');
+    for (const n of r.notes.slice(0, 6)) {
+      parts.push(`<button class="palette-item deep" type="button" role="option" data-goto-note="${escapeAttr(n.id)}">
+        <span class="av square" style="background:var(--accent-soft);color:var(--accent-ink)">🧠</span>
+        <span class="palette-label"><strong>${escapeHtml(n.title)}</strong><small>${markExcerpt(n.excerpt)}</small></span>
+      </button>`);
+    }
+  }
+  if (r.messages?.length) {
+    parts.push('<div class="palette-group">Dans les conversations</div>');
+    for (const m of r.messages.slice(0, 8)) {
+      const c = channelById(m.channel_id);
+      parts.push(`<button class="palette-item deep" type="button" role="option" data-goto-channel="${escapeAttr(m.channel_id)}">
+        <span class="av" style="background:${safeColor(m.author_color, '#8a8f9a')}">${escapeHtml(m.author_emoji || initials(m.author_name))}</span>
+        <span class="palette-label"><strong>${escapeHtml(m.author_name)}${c ? ` · ${escapeHtml(c.name)}` : ''}</strong><small>${markExcerpt(m.excerpt)}</small></span>
+        <span class="palette-kind">${new Date(m.created_at).toLocaleDateString('fr-FR')}</span>
+      </button>`);
+    }
+  }
+  if (!parts.length) return '<div class="palette-group">Rien dans le contenu non plus.</div>';
+  return parts.join('');
+}
 $('#palette').onclick = (e) => { if (e.target.id === 'palette') closePalette(); };
 
 document.addEventListener('keydown', (e) => {

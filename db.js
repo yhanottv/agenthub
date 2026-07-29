@@ -368,7 +368,11 @@ const rankToManager = (rank) => (rank === 'ceo' || rank === 'manager' ? 1 : 0);
 // The settings table doubles as the store for the app's own secrets (session
 // signing key, password salt and hash), so anything that leaves the server goes
 // through an allowlist. A denylist would leak the next secret someone adds.
-export const PUBLIC_SETTINGS = ['owner_name', 'org_name', 'theme', 'setup_done'];
+export const PUBLIC_SETTINGS = [
+  'owner_name', 'org_name', 'theme', 'setup_done',
+  'daily_budget',      // seuil d'alerte de dépense, en euros
+  'tools_enabled',     // les agents peuvent-ils appeler des outils
+];
 
 export const Settings = {
   get: (key, def = '') => {
@@ -1088,7 +1092,21 @@ export const Prices = {
                   out_per_m=excluded.out_per_m, updated_at=excluded.updated_at`)
       .run(id, slug(p.provider), model,
         Math.max(0, Number(p.in_per_m) || 0), Math.max(0, Number(p.out_per_m) || 0), now());
-    return db.prepare('SELECT * FROM model_prices WHERE id=?').get(id);
+
+    // Rattrape les appels passés qui n'avaient AUCUN tarif.
+    //
+    // Ce n'est pas réécrire l'histoire : une ligne déjà tarifée garde son prix
+    // d'origine (priced=1, jamais touchée). Sans ce rattrapage, renseigner ses
+    // tarifs pour la première fois laisserait toute la consommation existante à
+    // zéro euro, ce qui se lit comme « gratuit » et non comme « inconnu ».
+    const row = db.prepare('SELECT * FROM model_prices WHERE id=?').get(id);
+    const back = db.prepare(`UPDATE usage_log
+      SET cost = (tokens_in / 1000000.0) * ? + (tokens_out / 1000000.0) * ?, priced = 1
+      WHERE priced = 0 AND provider = ? AND lower(model) = lower(?)`)
+      .run(row.in_per_m, row.out_per_m, row.provider, row.model);
+    if (back.changes) console.log(`Tarif ${id} appliqué à ${back.changes} appel(s) jusqu'ici non tarifé(s).`);
+
+    return row;
   },
 
   remove: (id) => db.prepare('DELETE FROM model_prices WHERE id=?').run(String(id || '')).changes > 0,
