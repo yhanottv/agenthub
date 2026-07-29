@@ -209,6 +209,17 @@ CREATE TABLE IF NOT EXISTS schedules (
   created_at INTEGER NOT NULL
 );
 
+-- Traductions de l'interface, remplies à la demande puis conservées.
+-- La source fait la clé : une chaîne absente retombe sur le français, ce qui
+-- rend l'ajout progressif possible sans jamais casser l'affichage.
+CREATE TABLE IF NOT EXISTS translations (
+  lang   TEXT NOT NULL,
+  source TEXT NOT NULL,
+  text   TEXT NOT NULL,
+  at     INTEGER NOT NULL,
+  PRIMARY KEY (lang, source)
+);
+
 -- Déclencheurs entrants : une URL secrète qui poste un message dans un salon.
 CREATE TABLE IF NOT EXISTS webhooks (
   id         TEXT PRIMARY KEY,
@@ -1455,6 +1466,42 @@ export const Webhooks = {
 
   noteCall: (id) => db.prepare('UPDATE webhooks SET calls=calls+1, last_call=? WHERE id=?').run(now(), id),
   remove: (id) => db.prepare('DELETE FROM webhooks WHERE id=?').run(id).changes > 0,
+};
+
+// ---- Traductions de l'interface -------------------------------------------
+export const MAX_I18N_SOURCE = 400;
+
+export const Translations = {
+  /** Tout ce qui est connu pour une langue, prêt à être envoyé au client. */
+  all: (lang) => Object.fromEntries(
+    db.prepare('SELECT source, text FROM translations WHERE lang=?').all(String(lang || ''))
+      .map((r) => [r.source, r.text])),
+
+  known: (lang, sources) => {
+    if (!sources.length) return {};
+    const q = sources.map(() => '?').join(',');
+    return Object.fromEntries(
+      db.prepare(`SELECT source, text FROM translations WHERE lang=? AND source IN (${q})`)
+        .all(String(lang || ''), ...sources).map((r) => [r.source, r.text]));
+  },
+
+  put: db.transaction((lang, pairs) => {
+    const ins = db.prepare(`INSERT INTO translations (lang,source,text,at) VALUES (?,?,?,?)
+                            ON CONFLICT(lang,source) DO UPDATE SET text=excluded.text, at=excluded.at`);
+    let n = 0;
+    const ts = now();
+    for (const [source, text] of Object.entries(pairs || {})) {
+      const src = String(source).slice(0, MAX_I18N_SOURCE);
+      const val = String(text ?? '').slice(0, MAX_I18N_SOURCE * 2);
+      if (!src || !val) continue;
+      ins.run(String(lang), src, val, ts);
+      n++;
+    }
+    return n;
+  }),
+
+  count: (lang) => db.prepare('SELECT COUNT(*) n FROM translations WHERE lang=?').get(String(lang || '')).n,
+  clear: (lang) => db.prepare('DELETE FROM translations WHERE lang=?').run(String(lang || '')).changes,
 };
 
 // ---- Stats -----------------------------------------------------------------

@@ -19,7 +19,6 @@ const S = {
   noteTags: [], proposals: [], graph: null, graphKey: '',
   notesBudget: 60000, notesBudgetMax: 400000, notesAuto: true,
   skills: null, skillQuery: '', skillCat: '', skillOnly: '',
-  translateTo: 'en', translateIn: '',
   // Les calques survivent au rechargement : c'est un réglage de lecture, pas
   // un état de session, et le refaire à chaque visite serait pénible.
   graphLayers: (() => {
@@ -487,7 +486,10 @@ async function openChannel(id, opts = {}) {
 }
 
 // ============================ render root ===================================
-function renderAll() { renderSidebar(); renderTopbar(); renderView(); renderScrim(); }
+function renderAll() {
+  renderSidebar(); renderTopbar(); renderView(); renderScrim();
+  window.I18N?.applyLang(document.body);
+}
 
 function renderScrim() {
   const existing = $('#scrim');
@@ -685,15 +687,16 @@ function renderTopbar() {
       ${IC.search}<span>Rechercher un agent, un pôle…</span><kbd>Ctrl K</kbd>
     </button>
     ${S.view === 'chat' ? `<button class="icon-btn" id="open-rail" type="button" aria-label="Voir les tâches" title="Tâches">${IC.tasks}</button>` : ''}
-    <button class="icon-btn" id="open-translate" type="button"
-            aria-label="Traducteur" title="Traducteur" aria-expanded="false">${IC.globe}</button>
+    <button class="icon-btn" id="open-lang" type="button"
+            aria-label="Langue de l'interface" title="Langue de l'interface"
+            aria-expanded="false">${IC.globe}</button>
     <button class="icon-btn" id="theme-toggle" type="button"
             aria-label="${dark ? 'Passer en clair' : 'Passer en sombre'}">${dark ? IC.sun : IC.moon}</button>
-    <div class="translate-pop hidden" id="translate-pop" role="dialog" aria-label="Traducteur"></div>`;
+    <div class="translate-pop hidden" id="lang-pop" role="dialog" aria-label="Langue de l'interface"></div>`;
 
   $('#burger', bar).onclick = () => { S.sidebarOpen = !S.sidebarOpen; renderSidebar(); renderTopbar(); renderScrim(); };
   $('#open-search', bar).onclick = openPalette;
-  $('#open-translate', bar).onclick = (e) => toggleTranslator(e.currentTarget, $('#translate-pop', bar));
+  $('#open-lang', bar).onclick = (e) => toggleLangMenu(e.currentTarget, $('#lang-pop', bar));
   const rail = $('#open-rail', bar);
   if (rail) rail.onclick = () => { S.railOpen = !S.railOpen; renderView(); renderScrim(); };
   $('#theme-toggle', bar).onclick = () => {
@@ -3952,84 +3955,50 @@ function renderChat(v) {
   requestAnimationFrame(() => scrollToBottom(true));
 }
 
-// ---- traducteur ------------------------------------------------------------
-// Disponible partout depuis la barre du haut. Il s'appuie sur le fournisseur
-// déjà configuré : pas de service de traduction à obtenir en plus, et le coût
-// entre dans la consommation comme n'importe quel appel.
+// ---- langue de l'interface -------------------------------------------------
+// Le menu ne fait que choisir la langue : la traduction elle-même vit dans
+// i18n.js, qui remplace les textes connus dans le DOM rendu.
 
-const TRANSLATE_TO = [['fr', 'Français'], ['en', 'Anglais']];
+function toggleLangMenu(btn, pop) {
+  if (!pop.classList.contains('hidden')) { closeLangMenu(pop, btn); return; }
 
-function toggleTranslator(btn, pop) {
-  const open = !pop.classList.contains('hidden');
-  if (open) { closeTranslator(pop, btn); return; }
-
+  const cur = window.I18N ? window.I18N.currentLang() : 'fr';
   pop.classList.remove('hidden');
   btn.setAttribute('aria-expanded', 'true');
   pop.innerHTML = `
     <div class="tr-head">
-      <span>${IC.globe} Traducteur</span>
-      <div class="seg sm">
-        ${TRANSLATE_TO.map(([id, label]) => `<button class="seg-btn ${id === S.translateTo ? 'on' : ''}"
-          data-to="${id}" type="button">vers ${label}</button>`).join('')}
-      </div>
-      <button class="icon-btn sm" id="tr-close" type="button" aria-label="Fermer">✕</button>
+      <span>${IC.globe} Langue de l'interface</span>
+      <button class="icon-btn sm" id="lang-close" type="button" aria-label="Fermer">✕</button>
     </div>
-    <textarea id="tr-in" rows="4" maxlength="6000" placeholder="Colle ou saisis le texte à traduire…">${escapeHtml(S.translateIn)}</textarea>
-    <div class="tr-actions">
-      <button class="btn sm" id="tr-go" type="button">Traduire</button>
-      <span class="muted" id="tr-state"></span>
+    <div class="lang-list" role="radiogroup">
+      ${Object.entries(window.I18N ? window.I18N.LANGS : { fr: 'Français' }).map(([id, label]) => `
+        <button class="lang-row ${id === cur ? 'on' : ''}" type="button" role="radio"
+                aria-checked="${id === cur}" data-lang="${id}">
+          <span>${escapeHtml(label)}</span>
+          ${id === cur ? '<span class="lang-tick">✓</span>' : ''}
+        </button>`).join('')}
     </div>
-    <div class="tr-out hidden" id="tr-out"></div>`;
+    <div class="field-hint" style="margin-top:10px;line-height:1.6">
+      Le français est la langue d'origine. Les libellés encore inconnus sont traduits
+      par ton propre modèle au premier affichage, puis conservés — ils apparaîtront
+      en français une fraction de seconde, une seule fois.
+    </div>`;
 
-  const input = $('#tr-in', pop);
-  const state = $('#tr-state', pop);
-  const out = $('#tr-out', pop);
-
-  $$('[data-to]', pop).forEach((b) => b.onclick = () => {
-    S.translateTo = b.dataset.to;
-    $$('[data-to]', pop).forEach((x) => x.classList.toggle('on', x.dataset.to === S.translateTo));
+  $$('[data-lang]', pop).forEach((b) => b.onclick = async () => {
+    const id = b.dataset.lang;
+    closeLangMenu(pop, btn);
+    if (window.I18N) await window.I18N.setLang(id);
   });
+  $('#lang-close', pop).onclick = () => closeLangMenu(pop, btn);
 
-  const run = async () => {
-    const text = input.value.trim();
-    if (!text) { input.focus(); return; }
-    S.translateIn = input.value;
-    state.textContent = 'Traduction…';
-    out.classList.add('hidden');
-    const r = await tryApi(api('POST', '/api/translate', { text, to: S.translateTo }), 'Traduction');
-    state.textContent = '';
-    if (!r) return;
-    out.classList.remove('hidden');
-    out.innerHTML = `<div class="tr-text">${escapeHtml(r.text)}</div>
-      <div class="tr-foot">
-        <button class="btn sm" id="tr-copy" type="button">${IC.copy} Copier</button>
-        <span class="muted">${escapeHtml(r.model || '')}</span>
-      </div>`;
-    $('#tr-copy', out).onclick = async () => {
-      try { await navigator.clipboard.writeText(r.text); toast('Traduction copiée.', { kind: 'success' }); }
-      catch { toast('Copie refusée par le navigateur.', { kind: 'warn' }); }
-    };
-  };
-
-  $('#tr-go', pop).onclick = run;
-  $('#tr-close', pop).onclick = () => closeTranslator(pop, btn);
-  input.addEventListener('keydown', (e) => {
-    // Entrée traduit, Maj+Entrée saute une ligne — comme le composeur.
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); run(); }
-    if (e.key === 'Escape') { e.preventDefault(); closeTranslator(pop, btn); }
-  });
-  setTimeout(() => input.focus(), 20);
-
-  // Fermeture au clic dehors, retirée avec le panneau.
   pop._outside = (e) => {
-    if (!pop.contains(e.target) && e.target !== btn && !btn.contains(e.target)) closeTranslator(pop, btn);
+    if (!pop.contains(e.target) && e.target !== btn && !btn.contains(e.target)) closeLangMenu(pop, btn);
   };
   setTimeout(() => document.addEventListener('mousedown', pop._outside), 0);
 }
 
-function closeTranslator(pop, btn) {
+function closeLangMenu(pop, btn) {
   if (!pop) return;
-  S.translateIn = $('#tr-in', pop)?.value ?? S.translateIn;
   pop.classList.add('hidden');
   pop.innerHTML = '';
   btn?.setAttribute('aria-expanded', 'false');
@@ -5657,4 +5626,8 @@ window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change',
     minPassword: me.minPassword || 8,
   };
   if (me.authed) { showApp(); await boot(); } else { showLogin(); }
+
+  // Après le premier rendu : le dictionnaire est chargé et appliqué, puis
+  // l'observateur prend le relais pour tout ce qui arrive ensuite.
+  await window.I18N?.initLang();
 })();

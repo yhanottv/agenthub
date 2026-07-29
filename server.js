@@ -8,7 +8,7 @@ import { WebSocketServer } from 'ws';
 
 import {
   Agents, Channels, Messages, Tasks, Settings, Stats, Notes, NoteProposals, Usage, Providers,
-  Sessions, Prices, Search, Attachments, Schedules, Webhooks,
+  Sessions, Prices, Search, Attachments, Schedules, Webhooks, Translations, MAX_I18N_SOURCE,
   notesBudget, NOTES_BUDGET_MAX, slug, db,
 } from './db.js';
 import { buildGraph, layerCounts, GRAPH_LAYERS, LAYER_META } from './graph.js';
@@ -886,6 +886,92 @@ app.delete('/api/notes/:id', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+// ---- langue de l'interface -------------------------------------------------
+/**
+ * Traductions de l'interface, remplies à la demande.
+ *
+ * Le français est la langue source, et la source sert de clé : une chaîne
+ * inconnue retombe donc simplement en français au lieu de laisser un trou.
+ * Le client envoie ce qu'il n'a pas, on traduit en un seul appel, on conserve —
+ * la fois suivante, plus rien à demander.
+ *
+ * Ce n'est pas un fichier de traduction figé, et c'est délibéré : l'interface
+ * compte près de cinq cents chaînes qui bougent à chaque fonctionnalité. Un
+ * fichier à maintenir à la main serait périmé en une semaine.
+ */
+const I18N_LANGS = { en: 'anglais', fr: 'français' };
+const MAX_I18N_BATCH = 60;
+
+app.get('/api/i18n/:lang', requireAuth, (req, res) => {
+  const lang = I18N_LANGS[req.params.lang] ? req.params.lang : 'fr';
+  res.json({ lang, translations: lang === 'fr' ? {} : Translations.all(lang) });
+});
+
+app.post('/api/i18n/:lang', requireAuth, async (req, res) => {
+  const lang = req.params.lang;
+  if (!I18N_LANGS[lang] || lang === 'fr') return res.json({ translations: {} });
+
+  const asked = (Array.isArray(req.body?.missing) ? req.body.missing : [])
+    .map((s) => String(s).slice(0, MAX_I18N_SOURCE).trim())
+    .filter(Boolean);
+  if (!asked.length) return res.json({ translations: {} });
+
+  const unique = [...new Set(asked)];
+  const known = Translations.known(lang, unique);
+  const todo = unique.filter((s) => !(s in known)).slice(0, MAX_I18N_BATCH);
+  if (!todo.length) return res.json({ translations: known });
+
+  const ref = Agents.all()[0] || {};
+  let out = '';
+  const r = await streamChat({
+    agent: { provider: ref.provider, model: ref.model },
+    messages: [
+      {
+        role: 'system',
+        content: `Tu traduis des libellés d'interface logicielle du français vers ${I18N_LANGS[lang]}.\n`
+          + 'On te donne un tableau JSON de chaînes. Réponds UNIQUEMENT par un tableau JSON de même '
+          + 'longueur et dans le même ordre, contenant les traductions.\n'
+          + 'Règles : garde la ponctuation, les majuscules initiales et les emoji tels quels ; '
+          + 'ne traduis pas les noms propres, les noms de produits ni le contenu entre backticks ; '
+          + 'reste concis, c\'est de l\'interface, pas de la prose ; aucun commentaire, aucun texte '
+          + 'autour du tableau.',
+      },
+      { role: 'user', content: JSON.stringify(todo) },
+    ],
+    onDelta: (d) => { out += d; },
+  });
+
+  if (r.error) return res.status(502).json({ error: r.error, translations: known });
+  if (r.usage) {
+    Usage.record({
+      agent_id: null, channel_id: null, provider: r.provider, model: r.model,
+      tokens_in: r.usage.tokensIn, tokens_out: r.usage.tokensOut, estimated: r.usage.estimated,
+    });
+  }
+
+  // Le modèle encadre parfois sa réponse d'un bloc de code : on ne garde que le
+  // tableau, et on exige la même longueur — un décalage fausserait tout.
+  let list = null;
+  try {
+    const m = out.match(/\[[\s\S]*\]/);
+    if (m) list = JSON.parse(m[0]);
+  } catch { list = null; }
+
+  if (!Array.isArray(list) || list.length !== todo.length) {
+    console.warn(`i18n ${lang} : réponse inutilisable (${Array.isArray(list) ? list.length : 'non-tableau'} pour ${todo.length} demandés).`);
+    return res.json({ translations: known, partial: true });
+  }
+
+  const pairs = {};
+  todo.forEach((src, i) => {
+    const v = String(list[i] ?? '').trim();
+    if (v) pairs[src] = v;
+  });
+  Translations.put(lang, pairs);
+  console.log(`i18n ${lang} : ${Object.keys(pairs).length} libellé(s) traduit(s) et conservé(s).`);
+  res.json({ translations: { ...known, ...pairs } });
+});
+
 // ---- traduction ------------------------------------------------------------
 /**
  * Traduit un texte avec le fournisseur déjà configuré.
@@ -1284,9 +1370,14 @@ function fingerprint(file) {
   }
 }
 
-const ASSET_V = { js: fingerprint('app.js'), css: fingerprint('styles.css') };
+const ASSET_V = {
+  js: fingerprint('app.js'),
+  css: fingerprint('styles.css'),
+  i18n: fingerprint('i18n.js'),
+};
 const SHELL = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8')
   .replace('href="/styles.css"', `href="/styles.css?v=${ASSET_V.css}"`)
+  .replace('src="/i18n.js"', `src="/i18n.js?v=${ASSET_V.i18n}"`)
   .replace('src="/app.js"', `src="/app.js?v=${ASSET_V.js}"`);
 
 app.use(express.static(PUBLIC_DIR, {

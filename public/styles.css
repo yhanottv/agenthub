@@ -2103,3 +2103,17 @@ body.no-scroll { overflow: hidden; }
   #mic-btn.recording::after { animation: none; opacity: .8; }
   .lightbox, .translate-pop { animation: none; }
 }
+
+/* Choix de la langue de l'interface. */
+.lang-list { display: grid; gap: 2px; }
+.lang-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 9px var(--sp-3); cursor: pointer; font-family: inherit;
+  font-size: var(--fs-base); color: var(--text); text-align: left;
+  background: transparent; border: 1px solid transparent; border-radius: var(--r-sm);
+  transition: background var(--fast) var(--ease);
+}
+.lang-row:hover { background: var(--surface-2); }
+.lang-row.on { background: var(--surface-2); border-color: var(--line); font-weight: 550; }
+.lang-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.lang-tick { color: var(--ok); font-weight: 700; }
