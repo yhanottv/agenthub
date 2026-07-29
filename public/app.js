@@ -348,6 +348,7 @@ async function boot() {
     S.channels = st.channels || [];
     S.settings = st.settings || {};
     S.providers = st.providers || [];
+    S.status = st.runs?.statuses || {};
   } catch (err) {
     if (err.status === 401) return;
     toast(err.message, { kind: 'error', title: 'Chargement impossible' });
@@ -5280,23 +5281,26 @@ function renderThinking() {
       </span>
     </div>`).join('');
 
-  // While anything runs, the send button turns into a stop button. Putting it
-  // where your hand already is beats a second control hidden under the field.
+  // Le bouton d'envoi envoie, toujours. Il devenait un bouton d'arrêt dès qu'un
+  // agent travaillait, ce qui rendait littéralement impossible d'écrire pendant
+  // une réponse — taper « continue » ne faisait rien du tout. L'arrêt a son
+  // propre bouton juste dessous.
   const anyBusy = c.members.some((id) => (S.status[id] || 'idle') !== 'idle');
   const sendBtn = $('#send-btn');
   const input = $('#composer-input');
-  if (sendBtn) {
-    sendBtn.classList.toggle('is-stop', anyBusy);
-    sendBtn.innerHTML = anyBusy ? IC.stop : IC.send;
-    sendBtn.setAttribute('aria-label', anyBusy ? 'Arrêter la réponse' : 'Envoyer');
-    sendBtn.title = anyBusy ? 'Arrêter la réponse' : 'Envoyer';
-    sendBtn.disabled = anyBusy ? false : !(input && input.value.trim());
-  }
+  if (sendBtn) sendBtn.disabled = !(input && input.value.trim());
 
   const controls = $('#run-controls');
   if (controls) {
     controls.innerHTML = anyBusy
-      ? '<span class="run-note">Une réponse est en cours — <kbd>Échap</kbd> pour l\'arrêter</span>' : '';
+      ? '<button type="button" class="run-stop" id="stop-run">Arrêter la réponse</button>'
+        // Une seule phrase, un seul noeud de texte : coupee par un <kbd>, elle
+        // ne correspondait a aucune cle et restait en francais.
+        + '<span class="run-note">ton message attendra son tour · Échap arrête aussi</span>'
+      : '';
+    const stop = $('#stop-run', controls);
+    if (stop) stop.onclick = stopRun;
+    window.I18N?.applyLang(controls);
   }
 }
 
@@ -5400,15 +5404,20 @@ function wireComposer() {
     }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      if (channelBusy()) return;      // don't queue a message onto a live run
+      // On envoyait un refus muet pendant qu'une réponse s'écrivait : la touche
+      // ne faisait rien, sans un mot, et l'application paraissait cassée. Le
+      // serveur sérialise déjà les tours par salon — le message se met donc en
+      // file, ce qui est exactement ce qu'on attend en tapant « continue ».
       send(input);
     }
   });
 
   input.addEventListener('blur', () => setTimeout(() => pop.classList.add('hidden'), 140));
 
-  // Same button, two jobs — never send while a reply is being written.
-  btn.onclick = () => (channelBusy() ? stopRun() : send(input));
+  // Un seul rôle : envoyer. L'arrêt a son propre bouton sous le composeur, et
+  // Échap le fait aussi — mêler les deux dans le même bouton privait d'un des
+  // deux gestes à chaque fois.
+  btn.onclick = () => send(input);
 
   // Escape stops the run without leaving the keyboard.
   input.addEventListener('keydown', (e) => {
@@ -5765,6 +5774,9 @@ async function resync() {
     S.agents = st.agents || [];
     S.channels = st.channels || [];
     S.settings = st.settings || {};
+    // Une coupure a pu nous faire manquer un retour a « idle » : sans cette
+    // remise a plat, un agent restait « au travail » pour toujours dans l onglet.
+    S.status = st.runs?.statuses || {};
     renderSidebar();
     if (S.view === 'chat' && S.current) {
       const data = await api('GET', `/api/channels/${S.current}/messages`);

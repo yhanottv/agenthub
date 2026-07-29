@@ -83,6 +83,9 @@ const CORE_EN = {
   'Prévisualisation': 'Preview',
   'Aperçu': 'Preview',
   'Ouverture…': 'Opening…',
+  'Arrêter la réponse': 'Stop the reply',
+  'ton message attendra son tour · Échap arrête aussi':
+    'your message will wait its turn · Esc also stops',
   'Relancer': 'Restart',
   'Réduire': 'Shrink',
   'Plein écran': 'Full screen',

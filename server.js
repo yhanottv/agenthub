@@ -362,6 +362,10 @@ app.get('/api/state', requireAuth, (req, res) => {
     channels: Channels.all(),
     settings: Settings.publicAll(),
     providers: providerCatalog(),
+    // Ce qui tourne en ce moment. Un onglet rouvert au milieu d'une réponse
+    // repartait sinon de « rien ne tourne », et se verrouillait à la diffusion
+    // suivante sans que rien ne l'ait annoncé.
+    runs: orchestrator.snapshot(),
   });
 });
 
@@ -1270,6 +1274,69 @@ function registerPreview(entries) {
   return { id, url: `/api/preview/${id}/${entry}`, entry, files: names };
 }
 
+/**
+ * Résout une référence relative depuis la page qui la porte.
+ *
+ * Deuxième filet : quand le chemin exact n'existe pas mais qu'un seul fichier du
+ * site a la bonne extension, c'est lui. Un agent écrit `css/styles.css` dans sa
+ * page et livre `style.css` à côté — la page était alors nue pour un nom, ce qui
+ * est une raison ridicule de ne rien afficher.
+ */
+function resolveInBundle(ref, fromPage, files) {
+  const clean = String(ref).split(/[?#]/)[0];
+  if (!clean || /^(https?:)?\/\//i.test(clean) || /^data:/i.test(clean)) return null;
+
+  const dir = fromPage.includes('/') ? fromPage.slice(0, fromPage.lastIndexOf('/')) : '';
+  const direct = safeEntryPath(clean.startsWith('/') ? clean : (dir ? `${dir}/${clean}` : clean));
+  if (files.has(direct)) return direct;
+
+  const bare = safeEntryPath(clean);
+  if (files.has(bare)) return bare;
+
+  const ext = clean.slice(clean.lastIndexOf('.')).toLowerCase();
+  if (!/^\.[a-z0-9]{1,6}$/.test(ext)) return null;
+  const sameKind = [...files.keys()].filter((n) => n.toLowerCase().endsWith(ext));
+  return sameKind.length === 1 ? sameKind[0] : null;
+}
+
+/** Remplace les références internes d'une page par leur contenu. */
+function inlineOwnAssets(html, page, files) {
+  const grab = (ref) => {
+    const found = resolveInBundle(ref, page, files);
+    return found ? files.get(found).toString('utf8') : null;
+  };
+
+  let out = html.replace(
+    /<link\b[^>]*\brel=["']?stylesheet["']?[^>]*>/gi,
+    (tag) => {
+      const href = tag.match(/\bhref=["']([^"']+)["']/i)?.[1];
+      const css = href ? grab(href) : null;
+      if (css === null) return tag;
+      const media = tag.match(/\bmedia=["']([^"']+)["']/i)?.[1];
+      return `<style${media ? ` media="${media}"` : ''}>\n${css}\n</style>`;
+    },
+  );
+
+  out = out.replace(
+    /<script\b([^>]*)\bsrc=["']([^"']+)["']([^>]*)>\s*<\/script>/gi,
+    (tag, before, src, after) => {
+      const js = grab(src);
+      if (js === null) return tag;
+      const attrs = `${before} ${after}`;
+      const isModule = /\btype=["']module["']/i.test(attrs);
+      // `defer` fait attendre le DOM : l'exécuter en ligne au même endroit le
+      // lancerait trop tôt. Un module est différé par nature, même remarque.
+      const deferred = isModule || /\bdefer\b/i.test(attrs);
+      const body = deferred
+        ? `document.addEventListener('DOMContentLoaded', function () {\n${js}\n});`
+        : js;
+      return `<script${isModule ? ' type="module"' : ''}>\n${body}\n</script>`;
+    },
+  );
+
+  return out;
+}
+
 app.post('/api/preview', requireAuth, (req, res) => {
   const raw = Array.isArray(req.body?.files) && req.body.files.length
     ? req.body.files
@@ -1333,7 +1400,9 @@ app.get('/api/preview/:id/*', requireAuth, (req, res) => {
   const wanted = safeEntryPath(decodeURIComponent(req.params[0] || ''));
   const body = p?.files.get(wanted) ?? (wanted ? undefined : p?.files.get(p.entry));
 
-  const base = `${isSecureRequest(req) ? 'https' : 'http'}://${req.headers.host}/api/preview/${req.params.id}/`;
+  // Source sans schema : elle vaut pour http comme pour https. Deviner le
+  // schema derriere un proxy etait un pari inutile.
+  const base = `${req.headers.host}/api/preview/${req.params.id}/`;
   res.setHeader('Cache-Control', 'no-store');
   // L'en-tête global est DENY : il faut le desserrer ici, sinon notre propre
   // iframe se ferait refuser par notre propre page.
@@ -1347,6 +1416,18 @@ app.get('/api/preview/:id/*', requireAuth, (req, res) => {
     // Rien ne sort : ni fetch, ni XHR, ni WebSocket, ni formulaire. C'est ce qui
     // rend acceptable d'exécuter du code écrit par un modèle.
     + "connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self';");
+
+  // Une page reçoit sa feuille de style et ses scripts en ligne.
+  //
+  // Ils étaient chargés comme des requêtes séparées, donc soumis à une politique
+  // qui doit nommer notre propre origine — l'iframe étant en origine opaque,
+  // `'self'` n'y désigne rien. Une seule différence entre notre origine devinée
+  // et celle que le navigateur a réellement utilisée, et la feuille de style
+  // était refusée : le site s'affichait nu. En ligne, il n'y a plus rien à
+  // deviner : `'unsafe-inline'` suffit, quel que soit l'hôte ou le schéma.
+  if (body !== undefined && /\.html?$/i.test(wanted || p.entry)) {
+    return res.type('html').send(inlineOwnAssets(body.toString('utf8'), wanted || p.entry, p.files));
+  }
 
   if (body === undefined) {
     return res.status(404).type('html').send(p

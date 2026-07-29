@@ -55,9 +55,32 @@ export class Orchestrator {
     this.broadcast = broadcast;      // (event) => void — fan out to WS clients
     this.chains = new Map();         // channelId -> promise (serialises turns)
     this.controllers = new Map();    // channelId -> AbortController
+    this.live = new Map();           // agentId -> { status, channelId }
   }
 
   isBusy(channelId) { return this.controllers.has(channelId); }
+
+  /**
+   * Le statut d'un agent, retenu ici et pas seulement diffusé.
+   *
+   * Il ne vivait que dans le navigateur, alimenté par les diffusions. Un onglet
+   * rouvert au milieu d'une réponse repartait donc de « rien ne tourne », puis se
+   * verrouillait à la diffusion suivante sans qu'on sache pourquoi. Le serveur
+   * sait ce qui tourne : autant qu'il puisse le dire.
+   */
+  setStatus(agentId, channelId, status) {
+    if (status === 'idle') this.live.delete(agentId);
+    else this.live.set(agentId, { status, channelId });
+    this.broadcast({ type: 'agent.status', agentId, channelId, status });
+  }
+
+  /** Ce qui tourne, pour un client qui arrive ou qui revient. */
+  snapshot() {
+    return {
+      statuses: Object.fromEntries([...this.live].map(([id, v]) => [id, v.status])),
+      channels: [...this.controllers.keys()],
+    };
+  }
 
   /** Cancel the run in flight for a channel. Returns true if something was cancelled. */
   stop(channelId) {
@@ -123,7 +146,7 @@ export class Orchestrator {
     } finally {
       // Never leave an agent stuck in "thinking" on the client.
       for (const agentId of ctx.touched) {
-        this.broadcast({ type: 'agent.status', agentId, channelId: channel.id, status: 'idle' });
+        this.setStatus(agentId, channel.id, 'idle');
       }
       this.controllers.delete(channel.id);
       // The end of a run is the only moment worth a notification: individual
@@ -151,7 +174,7 @@ export class Orchestrator {
     const canDelegate =
       (allowDelegate ?? true) && canDelegateRank(agent) && depth < MAX_DELEGATION_DEPTH;
 
-    this.broadcast({ type: 'agent.status', agentId: agent.id, channelId: channel.id, status: 'thinking' });
+    this.setStatus(agent.id, channel.id, 'thinking');
 
     const messages = this.buildContext(channel, agent, canDelegate, trigger, chain);
 
@@ -171,11 +194,22 @@ export class Orchestrator {
     let buf = '';
     let acc = '';
     let flushTimer = null;
+    let savedAt = 0;
     const flush = () => {
       if (!buf) return;
       const delta = buf;
       buf = '';
       this.broadcast({ type: 'message.delta', id: msg.id, channelId: channel.id, delta });
+
+      // Ce qui n'est pas écrit en base n'existe pas pour un onglet rouvert : la
+      // bulle revenait vide et semblait figée alors que la réponse s'écrivait
+      // toujours. Toutes les deux secondes suffit — c'est un filet, pas un
+      // journal, et le texte définitif est enregistré à la fin de toute façon.
+      const t = Date.now();
+      if (t - savedAt > 2000) {
+        savedAt = t;
+        try { Messages.setContent(msg.id, acc, 'streaming'); } catch { /* sans gravité */ }
+      }
     };
     const onDelta = (d) => {
       acc += d;
@@ -287,7 +321,7 @@ export class Orchestrator {
             type: 'tool.call', id: msg.id, channelId: channel.id,
             agentId: agent.id, name: call.name, label,
           });
-          this.broadcast({ type: 'agent.status', agentId: agent.id, channelId: channel.id, status: 'working' });
+          this.setStatus(agent.id, channel.id, 'working');
 
           const r = await runTool(call.name, call.args, {
             agent,
@@ -329,7 +363,7 @@ export class Orchestrator {
           });
         }
 
-        this.broadcast({ type: 'agent.status', agentId: agent.id, channelId: channel.id, status: 'thinking' });
+        this.setStatus(agent.id, channel.id, 'thinking');
       }
     } finally {
       clearTimeout(flushTimer);
@@ -353,7 +387,7 @@ export class Orchestrator {
       const shown = (acc.trim() ? `${acc.trim()}\n\n` : '') + '> ⏹️ Arrêté.';
       Messages.setContent(msg.id, shown, 'complete');
       this.broadcast({ type: 'message.update', id: msg.id, channelId: channel.id, content: shown, status: 'complete' });
-      this.broadcast({ type: 'agent.status', agentId: agent.id, channelId: channel.id, status: 'idle' });
+      this.setStatus(agent.id, channel.id, 'idle');
       throw new Aborted();
     }
 
@@ -361,7 +395,7 @@ export class Orchestrator {
       const shown = acc.trim() ? `${acc.trim()}\n\n> ⚠️ ${error}` : `⚠️ ${error}`;
       Messages.setContent(msg.id, shown, 'error');
       this.broadcast({ type: 'message.update', id: msg.id, channelId: channel.id, content: shown, status: 'error' });
-      this.broadcast({ type: 'agent.status', agentId: agent.id, channelId: channel.id, status: 'idle' });
+      this.setStatus(agent.id, channel.id, 'idle');
       return { text: acc, error };
     }
 
@@ -370,7 +404,7 @@ export class Orchestrator {
     const finalVisible = visible.trim() || (delegations.length ? '_(délégation en cours…)_' : '(réponse vide)');
     Messages.setContent(msg.id, finalVisible, 'complete');
     this.broadcast({ type: 'message.update', id: msg.id, channelId: channel.id, content: finalVisible, status: 'complete' });
-    this.broadcast({ type: 'agent.status', agentId: agent.id, channelId: channel.id, status: 'idle' });
+    this.setStatus(agent.id, channel.id, 'idle');
 
     if (canDelegate && delegations.length) {
       await this.runDelegations(channel, agent, delegations.slice(0, MAX_DELEGATIONS_PER_TURN), depth, chain, ctx);
