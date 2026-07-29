@@ -2551,10 +2551,13 @@ function renderSettings(v) {
       <div class="agent-card">
         <h3 style="margin:0 0 14px;font-size:14px">Mot de passe</h3>
         ${S.auth.envPassword ? `
-          <div class="field-hint" style="line-height:1.7">
-            Le mot de passe est imposé par la variable d'environnement <code>APP_PASSWORD</code>.
-            Retire-la de ta configuration pour pouvoir le gérer ici.
-          </div>` : `
+          <div class="price-warn" style="margin-top:0">
+            Ton mot de passe ne vient que de la variable <code>APP_PASSWORD</code> : <strong>rien n'est stocké en base</strong>.
+            Perdre ce fichier <code>.env</code> verrouillerait l'instance pour de bon — elle se sait revendiquée,
+            mais n'aurait plus aucun mot de passe à vérifier.
+            Enregistre-le ici (le mot de passe actuel est celui de la variable) : il passera en base,
+            et tu pourras retirer la variable ensuite.
+          </div>` : ''}
           <div class="field">
             <label for="pw-current">Mot de passe actuel</label>
             <input id="pw-current" type="password" autocomplete="current-password">
@@ -2568,10 +2571,12 @@ function renderSettings(v) {
             <input id="pw-confirm" type="password" autocomplete="new-password">
           </div>
           <div class="field-err" id="pw-err" style="margin-top:8px"></div>
-          <button class="btn" id="save-password" type="button" style="margin-top:12px">Changer le mot de passe</button>
+          <button class="btn" id="save-password" type="button" style="margin-top:12px">
+            ${S.auth.envPassword ? 'Enregistrer le mot de passe en base' : 'Changer le mot de passe'}</button>
           <div class="field-hint" style="margin-top:10px">
             ${S.auth.minPassword} caractères minimum. Aucune récupération possible : note-le.
-          </div>`}
+            Toutes les autres sessions seront fermées.
+          </div>
       </div>
 
       <div class="agent-card">

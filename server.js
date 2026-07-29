@@ -170,23 +170,41 @@ function requireAuth(req, res, next) {
   res.status(401).json({ error: 'unauthorized' });
 }
 
-// Password comparison that does not leak length or content through timing.
+/**
+ * Password comparison that does not leak length or content through timing.
+ *
+ * A stored hash wins over APP_PASSWORD, and that order matters.
+ *
+ * It used to be the other way round, which made one documented recovery path
+ * impossible to walk: an install protected only by APP_PASSWORD is marked
+ * claimed but stores no hash, so losing the variable locks the owner out for
+ * good. The README told them to put the variable back and set a real password
+ * from Réglages — but that screen refused to do anything while the variable
+ * existed. Reading the environment only when no hash exists turns APP_PASSWORD
+ * into what it should always have been: a bootstrap credential, replaceable
+ * from the interface, and safe to drop afterwards.
+ */
 function passwordMatches(candidate) {
   const given = String(candidate ?? '');
+
+  const salt = Settings.get('auth_salt');
+  const hash = storedHash();
+  if (salt && hash) {
+    const known = Buffer.from(hash, 'hex');
+    const attempt = crypto.scryptSync(given, salt, known.length);
+    return crypto.timingSafeEqual(attempt, known);
+  }
 
   if (ENV_PASSWORD) {
     const a = crypto.createHmac('sha256', SECRET).update(given).digest();
     const b = crypto.createHmac('sha256', SECRET).update(ENV_PASSWORD).digest();
     return crypto.timingSafeEqual(a, b);
   }
-
-  const salt = Settings.get('auth_salt');
-  const hash = storedHash();
-  if (!salt || !hash) return false;
-  const known = Buffer.from(hash, 'hex');
-  const attempt = crypto.scryptSync(given, salt, known.length);
-  return crypto.timingSafeEqual(attempt, known);
+  return false;
 }
+
+/** True while APP_PASSWORD is the credential actually in force. */
+const envPasswordInEffect = () => Boolean(ENV_PASSWORD) && !storedHash();
 
 // Built in one place so login and first-run claim issue identical sessions.
 function sessionCookie(req) {
@@ -275,20 +293,21 @@ app.post('/api/claim', (req, res) => {
 
 /** Change the password from Réglages. Requires the current one. */
 app.post('/api/password', requireAuth, (req, res) => {
-  if (ENV_PASSWORD) {
-    return res.status(409).json({ error: "Le mot de passe est fixé par la variable d'environnement APP_PASSWORD. Retire-la pour le gérer ici." });
-  }
   if (!passwordMatches(req.body?.current)) return res.status(401).json({ error: 'Mot de passe actuel incorrect.' });
   const pw = String(req.body?.password ?? '');
   if (pw.length < MIN_PASSWORD_CHARS) {
     return res.status(400).json({ error: `Le nouveau mot de passe doit faire au moins ${MIN_PASSWORD_CHARS} caractères.` });
   }
+  const wasEnvOnly = envPasswordInEffect();
   setPassword(pw);
   // Changing the password is the one lever that must evict a stolen cookie, so
   // every existing session dies and the caller gets a fresh one.
   Sessions.clear();
   res.setHeader('Set-Cookie', sessionCookie(req));
-  res.json({ ok: true });
+  if (wasEnvOnly) {
+    console.log('Mot de passe désormais stocké en base — APP_PASSWORD peut être retirée du .env.');
+  }
+  res.json({ ok: true, envReleased: wasEnvOnly });
 });
 
 /** Sign every other browser out, without changing the password. */
@@ -310,7 +329,9 @@ app.get('/api/me', (req, res) => res.json({
   authed: isAuthed(req),
   // false ⇒ the client shows "choose a password" instead of "log in".
   claimed: hasPassword(),
-  envPassword: Boolean(ENV_PASSWORD),
+  // Only true while the variable is what actually guards the door: once a
+  // password is stored, the hash wins and the variable is dead weight.
+  envPassword: envPasswordInEffect(),
   minPassword: MIN_PASSWORD_CHARS,
 }));
 app.get('/api/health', (req, res) => res.json({ ok: true, uptime: Math.round(process.uptime()) }));
@@ -1174,6 +1195,11 @@ if (halfWritten) console.log(`Reconciled ${halfWritten} message(s) left mid-stre
 if (!hasPassword()) {
   console.warn('⚠️  Aucun mot de passe défini : la première personne qui ouvrira l\'interface le choisira.');
   console.warn('   Ouvre l\'app maintenant pour prendre la main avant d\'exposer ce port publiquement.');
+} else if (envPasswordInEffect()) {
+  console.warn('⚠️  Le mot de passe ne vient que de APP_PASSWORD : rien n\'est stocké en base.');
+  console.warn('   Perdre ce .env verrouillerait l\'instance définitivement — elle se sait revendiquée');
+  console.warn('   mais n\'aurait plus de mot de passe à vérifier. Va dans Réglages → Mot de passe pour');
+  console.warn('   l\'enregistrer en base, puis retire la variable.');
 } else if (!ENV_PASSWORD && !storedHash()) {
   // Claimed, but the only credential lived in APP_PASSWORD and that variable is
   // gone. Refusing to reopen the claim is deliberate — it protects the data —
