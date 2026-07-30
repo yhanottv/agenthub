@@ -85,6 +85,33 @@ ok('des variables sont documentées', vars.length >= 5, `${vars.length}`);
 const fantomes = vars.filter((v) => !code.includes(v));
 ok('AUCUNE VARIABLE DOCUMENTÉE N\'EST FANTÔME', fantomes.length === 0, fantomes.join(', '));
 
+// ---- toute variable lue est documentée --------------------------------------
+// L'inverse du contrôle précédent, et le plus utile des deux : une variable que
+// le code lit sans que le modèle la mentionne n'existe que pour qui lit les
+// sources. Vingt-et-une s'étaient accumulées ainsi, chacune arrivée avec sa
+// fonctionnalité, aucune passée par la documentation — parce que rien ne le
+// signalait.
+const modulesJs = fs.readdirSync(ROOT).filter((f) => /\.js$/.test(f) && f !== 'eslint.config.js');
+const sources = modulesJs.map(read).join('\n');
+const lues = [...new Set([...sources.matchAll(/process\.env\.([A-Z][A-Z0-9_]+)/g)].map((m) => m[1]))];
+const exemple = read('.env.example');
+ok('des variables sont lues par le code', lues.length >= 10, `${lues.length}`);
+
+// Ces deux-là ne sont lues qu'en test, ou fournies par l'environnement lui-même.
+const HORS_MODELE = new Set(['NODE_ENV', 'REPO_DIR']);
+const tues = lues.filter((v) => !HORS_MODELE.has(v) && !exemple.includes(v));
+ok('CHAQUE VARIABLE LUE EST DOCUMENTÉE DANS .env.example', tues.length === 0,
+  `${tues.length} muette(s) : ${tues.join(', ')}`);
+
+// Et les lignes du modèle doivent rester inactives : le fichier est facultatif,
+// un `cp .env.example .env` ne doit rien imposer.
+const actives = exemple.split('\n')
+  .filter((l) => /^[A-Z][A-Z0-9_]*=/.test(l.trim()))
+  .map((l) => l.split('=')[0].trim());
+const imposees = actives.filter((v) => !['HERMES_API_URL', 'HERMES_API_KEY', 'HERMES_MODEL',
+  'AGENTROUTER_API_URL', 'AGENTROUTER_API_KEY', 'AGENTROUTER_MODEL', 'TRAEFIK_HOST'].includes(v));
+ok('aucune ligne active inattendue dans le modèle', imposees.length === 0, imposees.join(', '));
+
 // ---- les onglets promis existent -------------------------------------------
 const app = read('public/app.js');
 const onglets = [...new Set([...app.matchAll(/navItem\('([a-z]+)'/g)].map((m) => m[1]))];
