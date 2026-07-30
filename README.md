@@ -2,14 +2,14 @@
 
 # AgentHub
 
-**Une organisation d'agents IA, pas un chat de plus.**
+Interface web auto-hébergée pour faire travailler plusieurs agents IA en équipe.
 
-Tu recrutes des agents, tu leur donnes un rang — CEO, manager, worker — et tu les
-regroupes en pôles. Le membre le plus haut placé répond et **délègue** vers le bas,
-y compris à un agent d'un autre pôle. Chaque délégation est suivie, chaque réponse
-arrive en streaming.
+Chaque agent a un rang — CEO, manager ou worker — et appartient à un pôle. Un
+message envoyé dans un pôle est pris par le membre le plus haut placé, qui peut
+déléguer le travail à un agent de rang inférieur, y compris dans un autre pôle.
+Les délégations sont suivies et les réponses arrivent en streaming.
 
-Sur ta machine. Trois dépendances. Aucune étape de build.
+Node, JavaScript sans framework, SQLite. Trois dépendances, aucune étape de build.
 
 ![Node](https://img.shields.io/badge/node-%E2%89%A520-3e5faf?style=flat-square)
 ![Docker](https://img.shields.io/badge/docker-compose-3e5faf?style=flat-square)
@@ -23,54 +23,55 @@ Sur ta machine. Trois dépendances. Aucune étape de build.
 
 ## Sommaire
 
-| | |
+| Section | |
 |---|---|
-| [Ce que ça fait](#ce-que-ça-fait) · [Ce qui distingue](#ce-qui-distingue) | de quoi il s'agit |
-| [Installation](#installation) · [Premier démarrage](#premier-démarrage) | pour l'avoir chez toi |
-| [Configuration](#configuration) · [Sécurité](#sécurité) | pour le régler et le tenir |
-| [Mise à jour](#mise-à-jour) · [Architecture](#architecture) · [Tests](#tests) | pour y toucher |
-| [Ce qui manque encore](#ce-qui-manque-encore) · [Licence](#licence) | pour savoir où on en est |
+| **Présentation** | [Ce que ça fait](#ce-que-ça-fait) · [Choix d'implémentation](#choix-dimplémentation) |
+| **Mise en place** | [Installation](#installation) · [Premier démarrage](#premier-démarrage) · [Configuration](#configuration) |
+| **Exploitation** | [Sécurité](#sécurité) · [Mise à jour](#mise-à-jour) |
+| **Développement** | [Architecture](#architecture) · [Tests](#tests) |
+| **État du projet** | [Ce qui manque encore](#ce-qui-manque-encore) · [Licence](#licence) |
 
 ---
 
 ## Ce que ça fait
 
-| | | |
+| | Fonctionnalité | Description |
 |---|---|---|
-| 🏛️ | **Une hiérarchie réelle** | Rangs, délégation sur trois niveaux, emprunt d'un agent à un autre pôle. Les règles sont appliquées, pas suggérées. |
-| 🛠️ | **Des agents qui agissent** | Recherche web, lecture de pages, mémoire, calcul exact, tes fichiers, génération d'images, archives `.zip`. |
-| 🧠 | **Un second cerveau** | Des notes injectées dans le prompt de *tous* les agents, reliées par `[[doubles crochets]]`, et une vue **Graph** en galaxie navigable. |
-| ⚡ | **Les skills d'Hermes** | L'onglet **Skills** montre le catalogue Nous Research au complet et ce qui est déjà actif chez toi. |
-| 🔌 | **Les connexions MCP** | L'onglet **MCP** montre ce qu'Hermes peut piloter à distance — Blender, Unreal, n8n, Linear — et leur état réel. |
-| 👁️ | **Le code qui sort** | Un bloc se copie et se télécharge ; un site complet s'ouvre dans un panneau à côté de la conversation, même livré en archive. |
-| 🎙️ | **Dicter, et deux langues** | Le micro écrit dans le composeur ; un globe bascule toute l'interface en anglais. |
-| 🔀 | **Le service de ton choix** | Hermes, AgentRouter, OpenRouter, OpenAI, Gemini, Groq, Together, Ollama, ou tout endpoint compatible OpenAI — par agent, ou pour une seule conversation. |
-| 💶 | **Une addition honnête** | Coût en euros par appel, par modèle, par agent, par salon. Un modèle sans tarif est signalé, jamais compté zéro en silence. |
-| 🔎 | **Retrouver** | Recherche plein texte sur les conversations et la mémoire, depuis `Ctrl K`, termes surlignés. |
-| ⏰ | **Ça tourne tout seul** | Sauvegardes, déclenchements programmés, webhooks entrants, notifications de fin de traitement. |
-| 🎨 | **Soigné** | Thème clair et sombre, contraste WCAG AA vérifié sur les deux, navigation au clavier, mobile, `prefers-reduced-motion`. |
+| 🏛️ | **Hiérarchie et délégation** | Rangs CEO / manager / worker, délégation sur trois niveaux, emprunt d'un agent à un autre pôle. |
+| 🛠️ | **Outils des agents** | Recherche web, lecture de pages, recherche en mémoire, calcul, lecture des fichiers déposés, génération d'images, création d'archives `.zip`. |
+| 🧠 | **Mémoire partagée** | Des notes injectées dans le prompt de tous les agents, liées entre elles par `[[doubles crochets]]`, avec une vue **Graph** navigable. |
+| ⚡ | **Skills Hermes** | L'onglet **Skills** liste le catalogue Nous Research et les skills actuellement actifs. |
+| 🔌 | **Serveurs MCP** | L'onglet **MCP** liste ce qu'Hermes peut piloter à distance — Blender, Unreal Engine, n8n, Linear — avec leur transport et leur état. |
+| 👁️ | **Aperçu du code produit** | Copie et téléchargement de chaque bloc de code ; les sites complets s'ouvrent dans un panneau à côté de la conversation, y compris depuis une archive. |
+| 🎙️ | **Dictée et interface bilingue** | Saisie vocale dans le composeur, et bascule de toute l'interface en anglais. |
+| 🔀 | **Fournisseurs de modèles** | Hermes, AgentRouter, OpenRouter, OpenAI, Gemini, Groq, Together, Ollama et tout endpoint compatible OpenAI. Réglable par agent ou pour une seule conversation. |
+| 💶 | **Suivi des coûts** | Coût en euros par appel, réparti par modèle, par agent et par salon. Les modèles sans tarif renseigné sont signalés. |
+| 🔎 | **Recherche** | Recherche plein texte (SQLite FTS5) sur les conversations et la mémoire, depuis `Ctrl K`. |
+| ⏰ | **Automatisation** | Sauvegardes périodiques, déclenchements programmés, webhooks entrants, notifications navigateur. |
+| 🎨 | **Interface** | Thèmes clair et sombre, contraste WCAG AA vérifié sur les deux, navigation clavier, affichage mobile, `prefers-reduced-motion`. |
 
 ---
 
-## Ce qui distingue
+## Choix d'implémentation
 
-**Les rangs ne sont pas décoratifs.** Un manager ne peut déléguer qu'à un agent
-strictement moins gradé, jamais à lui-même, jamais en boucle. Ce n'est pas une
-consigne dans un prompt : c'est refusé côté serveur, et une suite de tests le
-vérifie sur trois niveaux de délégation.
+**Les règles de délégation sont appliquées côté serveur.** Un manager ne peut
+déléguer qu'à un agent de rang strictement inférieur, jamais à lui-même et jamais
+en boucle. Les délégations invalides sont refusées par l'orchestrateur, et la
+suite d'intégration vérifie ce comportement sur trois niveaux.
 
-**Chaque appel d'outil est montré au-dessus de la réponse.** Une affirmation
-appuyée sur une vraie recherche ne se confond pas avec la même phrase inventée.
-Le raisonnement du modèle est affiché à part, replié — jamais mêlé à ce que
-l'agent a réellement dit.
+**Les appels d'outils sont affichés au-dessus de la réponse**, avec le nom de
+l'outil et un résumé de l'appel. Le raisonnement du modèle, quand le fournisseur
+l'expose, est affiché dans un bloc séparé et replié par défaut.
 
-**Le coût est figé au moment de l'appel.** Re-tarifer un modèle plus tard ne
-réécrit pas ce que le mois dernier a coûté. Et un modèle dont le tarif est inconnu
-fait annoncer le total comme un plancher, pas comme un chiffre exact.
+**Le coût d'un appel est calculé et enregistré au moment de l'appel.** Modifier
+un tarif plus tard ne recalcule pas l'historique ; seuls les appels qui n'avaient
+aucun tarif au moment de l'appel sont rattrapés. Un appel dont le modèle n'a pas
+de tarif connu est marqué comme non tarifé, et le total est alors présenté comme
+un minimum.
 
-**Un site produit par un agent tourne dans une iframe cloisonnée** : origine
-opaque, aucun accès à ta session, et il ne peut joindre que ses propres fichiers.
-Exécuter du code écrit par un modèle demandait cette précaution.
+**Les sites produits par un agent s'exécutent dans une iframe cloisonnée**, en
+origine opaque et sans accès à la session. Leur politique de sécurité n'autorise
+les requêtes réseau que vers leurs propres fichiers.
 
 ---
 
@@ -385,7 +386,7 @@ navigateur ──REST──▶ server.js ──▶ orchestrator.js ──▶ llm
 
 Trois dépendances en tout : `express`, `ws`, `better-sqlite3`.
 
-### Choix qui méritent une explication
+### Détails d'implémentation
 
 **Interpolation cubique monotone** pour la courbe de consommation, plutôt qu'un
 Catmull-Rom : elle ne peut mathématiquement pas dépasser, donc une plage de zéros reste
@@ -404,9 +405,6 @@ change à chaque ouverture.
 passerelle multi-fournisseurs : 2,7 s, 3,2 s, 15,4 s, 3,2 s sur des requêtes quasi
 identiques. Un modèle à raisonnement peut légitimement réfléchir longtemps ; 30 s
 coupait des requêtes saines.
-
-**Le coût est figé sur chaque appel.** Re-tarifer un modèle plus tard ne doit pas
-réécrire ce que le mois dernier a coûté. Seuls les appels jamais tarifés sont rattrapés.
 
 ---
 
