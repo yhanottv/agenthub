@@ -52,9 +52,31 @@ agents, pôles, tâches et **skills Hermes**, groupés en amas, chaque famille a
 Tes agents alimentent eux-mêmes cette mémoire — automatiquement, ou après ta validation
 si tu préfères.
 
-**Les skills de ton Hermes, visibles depuis AgentHub.** Le catalogue officiel Nous
+**Les skills de ton Hermes, visibles depuis AgentHub.** L'onglet **Skills** montre le catalogue officiel Nous
 Research au complet, groupé par catégorie, avec ce qui est déjà actif chez toi.
 Recherche, filtres, et la commande exacte pour activer ce qui t'intéresse.
+
+**Les connexions MCP, au même endroit.** L'onglet **MCP** montre ce que ton Hermes peut
+piloter à distance — Blender, Unreal Engine, n8n, Linear — avec le transport, ce qu'il
+faut préparer côté logiciel, les variables à renseigner, et l'état réel : branché, en
+pause, ou seulement au catalogue. Aucun montage à configurer : AgentHub lit le catalogue
+d'Hermes par le socket Docker qu'il utilise déjà pour le détecter. Rien n'est branché
+depuis ici — donner à un agent le droit d'ouvrir Blender passe par Hermes et ses propres
+contrôles ; AgentHub rend la commande, préfixée du `docker exec` qui la rend utilisable.
+
+**Le code produit sort de la conversation.** Chaque bloc de code se copie et se télécharge
+sous son vrai nom de fichier. Une page complète s'ouvre dans un **panneau à droite**, la
+conversation restant utilisable à gauche : on corrige, on relance, on regarde. Un site à
+plusieurs fichiers fonctionne — feuille de style, scripts, liens internes — même livré en
+archive `.zip`, qu'AgentHub sait rouvrir pour l'afficher. Le code d'un modèle tourne dans
+une iframe cloisonnée, en origine opaque, sans accès à ta session, et ne peut joindre que
+ses propres fichiers.
+
+**Dicter, et une interface bilingue.** Le micro écrit dans le composeur : par l'API du
+navigateur quand elle répond, sinon en enregistrant et en faisant transcrire par le
+service que tu as déjà configuré — plus fiable, et ça vise l'entrée audio de ton choix.
+Un globe dans la barre du haut bascule toute l'interface en anglais ; ce que le
+dictionnaire ne couvre pas est traduit une fois par ton modèle, puis conservé.
 
 **Plusieurs fournisseurs, au choix par agent.** Hermes, AgentRouter, OpenRouter, OpenAI,
 Google Gemini, Groq, Together, Ollama, ou n'importe quel endpoint compatible OpenAI.
@@ -250,6 +272,28 @@ caractères par défaut (environ 15 000 tokens), jusqu'à 400 000. Cette mémoir
 **chaque** message de **chaque** agent : la doubler double la part de contexte facturée
 à chaque tour.
 
+### Les connexions MCP
+
+L'onglet **MCP** n'a rien à configurer. AgentHub lit le catalogue d'Hermes et sa
+configuration de deux façons, dans cet ordre :
+
+1. **Par le socket Docker** — celui qu'il utilise déjà pour détecter Hermes. Le catalogue
+   vit dans l'image d'Hermes, à un chemin qu'aucun montage ne couvre par défaut : passer
+   par là évite de te demander de modifier `docker-compose.yml` juste pour voir quelque
+   chose. C'est la voie normale.
+2. **Par un montage en lecture seule**, s'il existe : instantané, aucun appel. Les deux
+   volumes sont ceux déjà documentés pour les skills — le catalogue est dans
+   `/hermes-src/optional-mcps`, les serveurs branchés sous la clé `mcp_servers` de
+   `/hermes-home/config.yaml`.
+
+Un serveur configuré à la main, hors catalogue, apparaît quand même : la page ne doit pas
+mentir sur ce qui tourne. Et un dossier d'Hermes présent sans `config.yaml` veut dire
+« aucun serveur configuré », pas « lecture impossible » — les deux se ressemblent et ne se
+disent pas pareil.
+
+Ce qui traverse vers le navigateur : les **noms** des variables à renseigner, jamais leurs
+valeurs.
+
 ---
 
 ## Sécurité
@@ -350,9 +394,11 @@ docker cp agenthub:/data/backup.db ./agenthub-$(date +%F).db
 navigateur ──REST──▶ server.js ──▶ orchestrator.js ──▶ llm.js ──▶ fournisseur
      ▲                   │           (délégation,        (SSE)
      └──── WebSocket ────┘            outils)
-                         ├──▶ tools.js   (web, mémoire, images)
+                         ├──▶ tools.js   (web, mémoire, images, archives)
                          ├──▶ skills.js  (catalogue Hermes)
-                         ├──▶ hermes.js  (détection, installation)
+                         ├──▶ mcp.js     (serveurs MCP d'Hermes)
+                         ├──▶ archive.js (écriture et lecture de .zip)
+                         ├──▶ hermes.js  (détection, installation, exec Docker)
                          └──▶ db.js      (SQLite/WAL, FTS5)
 ```
 
@@ -363,6 +409,8 @@ navigateur ──REST──▶ server.js ──▶ orchestrator.js ──▶ llm
 | `llm.js` | Client SSE, retry, fournisseurs, découverte de modèles, images |
 | `tools.js` | Outils exécutables par les agents, et les garde-fous réseau |
 | `skills.js` | Lecture du catalogue de skills Hermes |
+| `mcp.js` | Catalogue MCP d'Hermes et serveurs branchés, plus un lecteur YAML du strict nécessaire |
+| `archive.js` | Écriture et lecture de `.zip`, sans dépendance, et audit d'un site livré |
 | `hermes.js` | Détection et installation d'Hermes |
 | `graph.js` | Groupes et liens de la carte |
 | `db.js` | Schéma SQLite, dépôts, index de recherche |
@@ -397,19 +445,28 @@ réécrire ce que le mois dernier a coûté. Seuls les appels jamais tarifés so
 
 ## Tests
 
-Quatre suites, à lancer contre l'image construite :
+Neuf suites, à lancer contre l'image construite :
 
 ```bash
 docker build -t agenthub:latest . && npm test
 ```
 
-`boot-test` démarre réellement le serveur et exerce HTTP et WebSocket.
-`integration-test` monte un faux gateway SSE et fait tourner l'orchestrateur pour de
-vrai : délégation sur trois niveaux, refus des délégations illégales, annulation,
-mémoire partagée, comptabilité des tokens, surcharge de modèle par conversation.
-`password-test` vérifie qu'un mot de passe posé dans l'environnement peut passer en base
-et que l'ancien cesse alors de fonctionner. `search-test` reconstruit l'index de
-recherche sur une base déjà remplie — le cas où le défaut se cache.
+| Suite | Ce qu'elle empêche de casser |
+|---|---|
+| `boot` | Le serveur démarre pour de vrai, et répond en HTTP comme en WebSocket |
+| `integration` | Délégation sur trois niveaux, refus des délégations illégales, annulation, mémoire partagée, comptabilité des tokens, transcription |
+| `password` | Un mot de passe posé dans l'environnement peut passer en base, et l'ancien cesse alors de fonctionner |
+| `search` | L'index de recherche se reconstruit sur une base déjà remplie — le cas où le défaut se cache |
+| `i18n` | Chaque libellé traduit existe encore à l'écran : un libellé reformulé rend son entrée morte, et la phrase repasse en français sans bruit |
+| `archive` | Les `.zip` se relisent octet pour octet, une remontée de dossier est neutralisée, une bombe de décompression refusée |
+| `preview` | En HTTP contre le vrai serveur : un site à modules tourne sans compilation, rien ne sort de l'aperçu, on ne remonte pas hors du site |
+| `mcp` | Le lecteur YAML forme par forme, l'état réel d'un serveur, et le fait qu'une valeur d'environnement ne traverse jamais |
+| `readme` | Ce fichier ne promet rien qui n'existe : fichiers cités, suites annoncées, variables documentées, liens du sommaire |
+
+Les deux dernières existent parce que la prévisualisation a cassé deux fois de suite d'une
+manière qu'aucun test unitaire n'aurait vue : une politique de sécurité qui refuse une
+feuille de style sans un mot, un chemin qui pointe vers la racine du serveur. Ça ne se
+voit qu'en demandant vraiment les fichiers.
 
 > Lance-les **dans le conteneur**, pas sur ta machine : l'image tourne sur Node 20, et du
 > code accepté par Node 24 peut y échouer.
@@ -426,6 +483,13 @@ recherche sur une base déjà remplie — le cas où le défaut se cache.
   vide et le dit, au lieu d'inventer.
 - Les agents ne s'écrivent pas entre eux hors délégation, et ne planifient pas leur
   propre travail.
+- **L'aperçu ne compile pas.** Il rebranche : chemins absolus ramenés vers le site,
+  dépendances par nom résolues par une carte d'imports, feuille de style importée depuis un
+  module réinjectée dans la page. Un projet qui a réellement besoin d'être compilé — JSX,
+  TypeScript, Sass — ne s'ouvrira pas, et l'outil d'archive le dit à l'agent au moment où
+  il peut encore corriger.
+- **AgentHub ne parle pas MCP lui-même.** Il montre ce que ton Hermes peut piloter et rend
+  la commande ; c'est Hermes qui se connecte.
 
 ---
 
