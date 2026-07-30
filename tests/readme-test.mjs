@@ -51,7 +51,10 @@ ok('AUCUN MODULE N\'EST PASSÉ SOUS SILENCE', tus.length === 0, tus.join(', '));
 
 // ---- le nombre de suites annoncé --------------------------------------------
 const suites = [...pkg.scripts.test.matchAll(/\/test\/([a-z0-9-]+)-test\.mjs/g)].map((m) => m[1]);
-const MOTS = { Quatre: 4, Cinq: 5, Six: 6, Sept: 7, Huit: 8, Neuf: 9, Dix: 10 };
+const MOTS = {
+  Quatre: 4, Cinq: 5, Six: 6, Sept: 7, Huit: 8, Neuf: 9, Dix: 10,
+  Onze: 11, Douze: 12, Treize: 13, Quatorze: 14, Quinze: 15,
+};
 const annonce = Object.entries(MOTS).find(([mot]) => readme.includes(`${mot} suites`));
 ok('le README annonce un nombre de suites', Boolean(annonce));
 ok('LE NOMBRE ANNONCÉ EST LE VRAI', annonce && annonce[1] === suites.length,

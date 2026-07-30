@@ -23,7 +23,7 @@ Node, JavaScript sans framework, SQLite. Trois dépendances, aucune étape de bu
 ![Node](https://img.shields.io/badge/node-%E2%89%A520-3e5faf?style=flat-square)
 ![Docker](https://img.shields.io/badge/docker-compose-3e5faf?style=flat-square)
 ![Dépendances](https://img.shields.io/badge/d%C3%A9pendances-3-3e5faf?style=flat-square)
-![Tests](https://img.shields.io/badge/suites%20de%20tests-10-3e5faf?style=flat-square)
+![Tests](https://img.shields.io/badge/suites%20de%20tests-11-3e5faf?style=flat-square)
 ![Licence](https://img.shields.io/badge/licence-MIT-3e5faf?style=flat-square)
 
 </div>
@@ -64,7 +64,7 @@ sa configuration en lecture seule et lui parle par son API.
 | | Fonctionnalité | Description |
 |---|---|---|
 | 🏛️ | **Hiérarchie et délégation** | Rangs CEO / manager / worker, délégation sur trois niveaux, emprunt d'un agent à un autre pôle. |
-| 🛠️ | **Outils des agents** | Recherche web, lecture de pages, recherche en mémoire, calcul, lecture des fichiers déposés, génération d'images, création d'archives `.zip`. |
+| 🛠️ | **Outils des agents** | Recherche web, lecture de pages, recherche en mémoire, calcul, lecture des fichiers déposés, génération d'images, tableurs `.xlsx`, archives `.zip`. |
 | 🧠 | **Mémoire partagée** | Des notes injectées dans le prompt de tous les agents, liées entre elles par `[[doubles crochets]]`, avec une vue **Graph** navigable. |
 | ⚡ | **Skills Hermes** | L'onglet **Skills** liste le catalogue Nous Research et les skills actuellement actifs. |
 | 🔌 | **Serveurs MCP** | L'onglet **MCP** liste ce qu'Hermes peut piloter à distance — Blender, Unreal Engine, n8n, Linear — avec leur transport et leur état. |
@@ -389,10 +389,11 @@ docker cp agenthub:/data/backup.db ./agenthub-$(date +%F).db
 navigateur ──REST──▶ server.js ──▶ orchestrator.js ──▶ llm.js ──▶ fournisseur
      ▲                   │           (délégation,        (SSE)
      └──── WebSocket ────┘            outils)
-                         ├──▶ tools.js   (web, mémoire, images, archives)
+                         ├──▶ tools.js   (web, mémoire, images, fichiers)
                          ├──▶ skills.js  (catalogue Hermes)
                          ├──▶ mcp.js     (serveurs MCP d'Hermes)
                          ├──▶ archive.js (écriture et lecture de .zip)
+                         ├──▶ sheet.js   (écriture de .xlsx)
                          ├──▶ hermes.js  (détection, installation, exec Docker)
                          └──▶ db.js      (SQLite/WAL, FTS5)
 ```
@@ -406,6 +407,7 @@ navigateur ──REST──▶ server.js ──▶ orchestrator.js ──▶ llm
 | `skills.js` | Lecture du catalogue de skills Hermes |
 | `mcp.js` | Catalogue MCP d'Hermes et serveurs branchés, plus un lecteur YAML du strict nécessaire |
 | `archive.js` | Écriture et lecture de `.zip`, sans dépendance, et audit d'un site livré |
+| `sheet.js` | Écriture de `.xlsx` par-dessus le zip d'`archive.js`, sans dépendance |
 | `hermes.js` | Détection et installation d'Hermes |
 | `graph.js` | Groupes et liens de la carte |
 | `db.js` | Schéma SQLite, dépôts, index de recherche |
@@ -437,7 +439,7 @@ coupait des requêtes saines.
 
 ## Tests
 
-Dix suites, à lancer contre l'image construite :
+Onze suites, à lancer contre l'image construite :
 
 ```bash
 docker build -t agenthub:latest . && npm test
@@ -451,6 +453,7 @@ docker build -t agenthub:latest . && npm test
 | `search` | L'index de recherche se reconstruit sur une base déjà remplie — le cas où le défaut se cache |
 | `i18n` | Chaque libellé traduit existe encore à l'écran : un libellé reformulé rend son entrée morte, et la phrase repasse en français sans bruit |
 | `archive` | Les `.zip` se relisent octet pour octet, une remontée de dossier est neutralisée, une bombe de décompression refusée |
+| `sheet` | Un `.xlsx` s'ouvre sans réparation : parties présentes, ordre imposé par le schéma respecté, et rien venu d'un modèle ne peut casser le XML |
 | `preview` | En HTTP contre le vrai serveur : un site à modules tourne sans compilation, rien ne sort de l'aperçu, on ne remonte pas hors du site |
 | `mcp` | Le lecteur YAML forme par forme, l'état réel d'un serveur, et le fait qu'une valeur d'environnement ne traverse jamais |
 | `readme` | Ce fichier ne promet rien qui n'existe : fichiers cités, suites annoncées, variables documentées, liens du sommaire |

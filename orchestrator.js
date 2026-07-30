@@ -632,6 +632,13 @@ function buildSystemPrompt(channel, agent, members, canDelegate, chain = []) {
     if (activeToolDefs().some((t) => t.function.name === 'generer_image')) {
       lines.push("- `generer_image` dès qu'on te demande un visuel. L'image apparaît seule dans la conversation : ne la décris pas après coup, commente-la.");
     }
+    lines.push("- `creer_tableur` pour tout tableau, questionnaire, grille, état des lieux, budget, planning ou inventaire : il publie un vrai fichier .xlsx téléchargeable.");
+    lines.push("- `creer_archive` pour livrer plusieurs fichiers d'un coup — un site, un script et ses dépendances, un dossier de documentation. L'archive .zip apparaît dans la conversation.");
+    lines.push('');
+    // Sans cette phrase, un agent à qui on demande un fichier écrit un script
+    // Python à lancer soi-même et annonce le livrable comme s'il existait. C'est
+    // exactement ce qui s'est produit sur une demande de questionnaire Excel.
+    lines.push("Tu n'as ni terminal ni système de fichiers : tu n'exécutes aucune commande. La seule façon de livrer un fichier est d'appeler l'outil correspondant. N'écris donc jamais un script ou une commande à lancer pour produire un livrable, et ne dis jamais qu'un fichier est prêt, joint ou téléchargeable si tu ne viens pas de l'appeler.");
     lines.push('Ne prétends jamais avoir utilisé un outil que tu n\'as pas appelé.');
   }
 

@@ -19,6 +19,7 @@ import crypto from 'node:crypto';
 import { Notes, NoteProposals, Search, Attachments, Usage } from './db.js';
 import { generateImage, imageProvider } from './llm.js';
 import { makeZip, prepareEntries, auditSite, MAX_ENTRIES, MAX_TOTAL_BYTES } from './archive.js';
+import { makeXlsx, prepareSheets, MAX_ROWS, MAX_SHEETS } from './sheet.js';
 
 const UPLOAD_DIR = path.join(process.env.DATA_DIR || './data', 'uploads');
 
@@ -444,6 +445,53 @@ export const TOOL_DEFS = [
   {
     type: 'function',
     function: {
+      name: 'creer_tableur',
+      description: "Produit un vrai fichier Excel (.xlsx) et le publie dans la conversation, prêt à "
+        + "télécharger. À utiliser dès qu'on demande un tableau, un questionnaire, une grille, un "
+        + "état des lieux, un budget, un planning, un suivi, un inventaire, ou « un Excel ».\n"
+        + "Tu n'as pas de terminal et tu n'exécutes aucune commande : n'écris jamais un script "
+        + "Python, un `pip install` ni une ligne à lancer pour fabriquer le fichier, et ne dis "
+        + "jamais qu'il est prêt sans avoir appelé cet outil. C'est le seul moyen de livrer un "
+        + "tableur téléchargeable.\n"
+        + "Écris le contenu complet : toutes les lignes, pas un échantillon ni un « … ». Une "
+        + "colonne laissée vide exprès pour être remplie à la main se déclare avec une chaîne vide.\n"
+        + `Limites : ${MAX_SHEETS} feuilles, ${MAX_ROWS} lignes par feuille.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          nom: {
+            type: 'string',
+            description: "Nom du fichier, sans extension. Ex : « etat-des-lieux-sortie ».",
+          },
+          feuilles: {
+            type: 'array',
+            description: 'Une entrée par onglet du classeur.',
+            items: {
+              type: 'object',
+              properties: {
+                nom: { type: 'string', description: "Nom de l'onglet, 31 caractères au plus." },
+                colonnes: {
+                  type: 'array',
+                  description: "Les en-têtes de colonnes, dans l'ordre.",
+                  items: { type: 'string' },
+                },
+                lignes: {
+                  type: 'array',
+                  description: 'Les lignes de données, chacune un tableau de valeurs aligné sur les colonnes.',
+                  items: { type: 'array', items: { type: ['string', 'number'] } },
+                },
+              },
+              required: ['nom', 'colonnes', 'lignes'],
+            },
+          },
+        },
+        required: ['nom', 'feuilles'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'lire_piece_jointe',
       description: "Lit le contenu texte d'un fichier déposé dans ce salon.",
       parameters: {
@@ -475,6 +523,7 @@ export const TOOL_LABELS = {
   calculer: 'calcule',
   generer_image: 'dessine',
   creer_archive: 'prépare une archive',
+  creer_tableur: 'prépare un tableur',
   lire_piece_jointe: 'lit un fichier',
 };
 
@@ -714,6 +763,51 @@ export async function runTool(name, rawArgs, ctx = {}) {
                 + 'tu as changé. Ne demande pas confirmation.'
               : '\nElle est déjà téléchargeable : ne recopie pas les fichiers dans ta réponse, '
                 + 'explique seulement comment s\'en servir.'),
+        };
+      }
+
+      case 'creer_tableur': {
+        if (!ctx.channel?.id) return { ok: false, text: 'Aucun salon en contexte.' };
+
+        const { sheets, skipped, cells } = prepareSheets(args.feuilles);
+        if (!sheets.length) {
+          return {
+            ok: false,
+            text: 'Aucune feuille utilisable'
+              + (skipped.length ? ` : ${skipped.slice(0, 6).join(', ')}.` : '.')
+              + ' Donne pour chaque feuille un nom, ses colonnes, et ses lignes complètes.',
+          };
+        }
+
+        const xlsx = makeXlsx(sheets);
+        // Même règle que pour les archives : le nom venu du modèle est une
+        // étiquette, l'identifiant sur le disque est le nôtre.
+        const id = 'at_' + crypto.randomBytes(8).toString('hex');
+        fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+        const diskPath = path.join(UPLOAD_DIR, id);
+        fs.writeFileSync(diskPath, xlsx);
+
+        const a = Attachments.create({
+          id,
+          channel_id: ctx.channel.id,
+          message_id: ctx.messageId || null,
+          name: `${slugName(args.nom || 'tableur')}.xlsx`,
+          mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          bytes: xlsx.length,
+          path: diskPath,
+        });
+        ctx.onFile?.(a);
+
+        const detail = sheets
+          .map((s) => `« ${s.name} » (${s.rows.length} ligne(s) × ${s.width} colonne(s))`)
+          .join(', ');
+        return {
+          ok: true,
+          text: `Classeur « ${a.name} » publié dans la conversation : ${sheets.length} feuille(s), `
+            + `${cells} cellule(s), ${Math.round(a.bytes / 1024)} Ko.\n${detail}.`
+            + (skipped.length ? `\nÉcarté : ${skipped.slice(0, 6).join(', ')}.` : '')
+            + '\nIl est déjà téléchargeable : ne recopie pas le tableau dans ta réponse, dis en une '
+            + 'phrase ce qu\'il contient et comment le remplir.',
         };
       }
 
