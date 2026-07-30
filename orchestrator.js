@@ -112,7 +112,12 @@ export class Orchestrator {
 
     const controller = new AbortController();
     this.controllers.set(channel.id, controller);
-    const ctx = { signal: controller.signal, turns: 0, touched: new Set() };
+    // `open` porte les messages encore en `streaming`. Sans ce suivi, une
+    // exception levée dans la boucle d'outils saute par-dessus les trois
+    // branches de finalisation : le message reste `streaming` à vie, donc son
+    // curseur clignote, alors que `run.done` a déjà fait disparaître le bouton
+    // d'arrêt. La conversation paraît figée jusqu'au prochain redémarrage.
+    const ctx = { signal: controller.signal, turns: 0, touched: new Set(), open: new Map() };
     const startedAt = Date.now();
 
     try {
@@ -148,6 +153,24 @@ export class Orchestrator {
       for (const agentId of ctx.touched) {
         this.setStatus(agentId, channel.id, 'idle');
       }
+
+      // Le filet : un message encore ouvert ici n'a plus personne pour l'écrire,
+      // puisque le run s'achève. Le laisser en `streaming` afficherait un curseur
+      // qui ne se résout jamais, et `reconcileStreaming` ne passe qu'au
+      // démarrage — l'attente durait donc jusqu'au prochain redémarrage.
+      for (const [id, o] of ctx.open) {
+        const m = Messages.get(id);
+        const avant = String(m?.content || '').trim();
+        const shown = (avant ? `${avant}\n\n` : '')
+          + "> ⚠️ Réponse interrompue avant la fin. Rien d'autre n'a été écrit.";
+        Messages.setContent(id, shown, 'error');
+        this.broadcast({
+          type: 'message.update', id, channelId: o.channelId, content: shown, status: 'error',
+        });
+        console.error(`message ${id} (${o.agentName}) laissé en streaming par un run interrompu`);
+      }
+      ctx.open.clear();
+
       this.controllers.delete(channel.id);
       // The end of a run is the only moment worth a notification: individual
       // messages arrive constantly while a delegation chain unfolds.
@@ -189,6 +212,7 @@ export class Orchestrator {
       status: 'streaming',
     });
     this.broadcast({ type: 'message.new', message: msg });
+    ctx.open?.set(msg.id, { channelId: channel.id, agentId: agent.id, agentName: agent.name });
 
     // Throttled delta flush so a fast stream cannot flood the socket.
     let buf = '';
@@ -386,6 +410,7 @@ export class Orchestrator {
     if (aborted) {
       const shown = (acc.trim() ? `${acc.trim()}\n\n` : '') + '> ⏹️ Arrêté.';
       Messages.setContent(msg.id, shown, 'complete');
+      ctx.open?.delete(msg.id);
       this.broadcast({ type: 'message.update', id: msg.id, channelId: channel.id, content: shown, status: 'complete' });
       this.setStatus(agent.id, channel.id, 'idle');
       throw new Aborted();
@@ -394,6 +419,7 @@ export class Orchestrator {
     if (error) {
       const shown = acc.trim() ? `${acc.trim()}\n\n> ⚠️ ${error}` : `⚠️ ${error}`;
       Messages.setContent(msg.id, shown, 'error');
+      ctx.open?.delete(msg.id);
       this.broadcast({ type: 'message.update', id: msg.id, channelId: channel.id, content: shown, status: 'error' });
       this.setStatus(agent.id, channel.id, 'idle');
       return { text: acc, error };
@@ -403,6 +429,7 @@ export class Orchestrator {
     const { visible, delegations } = extractDelegations(text);
     const finalVisible = visible.trim() || (delegations.length ? '_(délégation en cours…)_' : '(réponse vide)');
     Messages.setContent(msg.id, finalVisible, 'complete');
+    ctx.open?.delete(msg.id);
     this.broadcast({ type: 'message.update', id: msg.id, channelId: channel.id, content: finalVisible, status: 'complete' });
     this.setStatus(agent.id, channel.id, 'idle');
 
@@ -631,6 +658,9 @@ function buildSystemPrompt(channel, agent, members, canDelegate, chain = []) {
     lines.push('- `proposer_note` quand tu apprends un fait durable sur l\'organisation. Jamais pour un détail de la conversation.');
     if (activeToolDefs().some((t) => t.function.name === 'generer_image')) {
       lines.push("- `generer_image` dès qu'on te demande un visuel. L'image apparaît seule dans la conversation : ne la décris pas après coup, commente-la.");
+    }
+    if (activeToolDefs().some((t) => t.function.name === 'generer_video')) {
+      lines.push("- `generer_video` dès qu'on te demande une vidéo, une animation ou un clip. La génération prend plusieurs minutes et consomme des crédits : une seule à la fois, et jamais sans qu'on te l'ait demandée. La vidéo apparaît seule dans la conversation, ne la décris pas après coup.");
     }
     lines.push("- `creer_tableur` pour tout tableau, questionnaire, grille, état des lieux, budget, planning ou inventaire : il publie un vrai fichier .xlsx téléchargeable.");
     lines.push("- `creer_archive` pour livrer plusieurs fichiers d'un coup — un site, un script et ses dépendances, un dossier de documentation. L'archive .zip apparaît dans la conversation.");

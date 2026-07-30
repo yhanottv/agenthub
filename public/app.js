@@ -4721,18 +4721,36 @@ function wireAttachments(root, channel) {
 // côtés : c'est un document exécutable, pas une image inerte.
 const INLINE_MIME = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 
-/** Les fichiers portés par un message : les images s'affichent, le reste se télécharge. */
+// Une vidéo produite par un agent doit se regarder sur place. Servie en pièce
+// jointe téléchargeable, elle obligeait à quitter la conversation pour savoir
+// ce qu'elle contenait.
+const VIDEO_MIME = new Set(['video/mp4', 'video/webm', 'video/ogg']);
+
+/** Les fichiers portés par un message : images et vidéos s'affichent, le reste se télécharge. */
 function attachmentsHTML(m) {
   const files = m.attachments || [];
   if (!files.length) return '';
   const images = files.filter((f) => INLINE_MIME.has(f.mime));
-  const others = files.filter((f) => !INLINE_MIME.has(f.mime));
+  const videos = files.filter((f) => VIDEO_MIME.has(f.mime));
+  const others = files.filter((f) => !INLINE_MIME.has(f.mime) && !VIDEO_MIME.has(f.mime));
 
   return `<div class="msg-files" data-files="${escapeAttr(m.id)}">
     ${images.length ? `<div class="msg-images">${images.map(imageHTML).join('')}</div>` : ''}
+    ${videos.map(videoHTML).join('')}
     ${others.map(fileChipHTML).join('')}
   </div>`;
 }
+
+// `preload="metadata"` : la vignette et la durée suffisent à l'affichage, et une
+// conversation qui porte plusieurs vidéos ne doit pas les télécharger toutes.
+const videoHTML = (f) => `<figure class="msg-video">
+  <video src="/api/attachments/${escapeAttr(f.id)}" controls preload="metadata"
+         playsinline aria-label="${escapeAttr(f.name)}"></video>
+  <figcaption>
+    <span>${escapeHtml(f.name)}</span>
+    <a href="/api/attachments/${escapeAttr(f.id)}?download=1" download>${fmtBytes(f.bytes)} · télécharger</a>
+  </figcaption>
+</figure>`;
 
 /**
  * Une archive porte souvent un site entier.

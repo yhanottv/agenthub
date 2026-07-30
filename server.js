@@ -1679,7 +1679,11 @@ app.post('/api/transcribe',
  * est un document exécutable, et le servir en ligne le ferait tourner sur
  * notre propre origine — exactement ce que la CSP existe pour empêcher.
  */
-const INLINE_MIME = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+// Les vidéos y sont : sans ça elles partaient en `application/octet-stream` avec
+// un en-tête `attachment`, donc impossibles à lire dans la conversation. Le
+// `nosniff` plus bas reste la garantie que rien ici n'est réinterprété.
+const INLINE_MIME = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif',
+  'video/mp4', 'video/webm', 'video/ogg']);
 
 app.get('/api/attachments/:id', requireAuth, (req, res) => {
   const a = Attachments.get(req.params.id);
