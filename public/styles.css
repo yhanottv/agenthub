@@ -598,6 +598,7 @@ button.av:hover, .av[role="button"]:hover { transform: translateY(-2px); }
   margin-bottom: var(--sp-5); flex-wrap: wrap;
 }
 .page-head h1 { font-size: var(--fs-2xl); font-weight: 700; letter-spacing: -.03em; margin: 0; }
+.page-sub { font-size: var(--fs-md); color: var(--muted); margin-top: 3px; }
 
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 7px;
@@ -2026,6 +2027,60 @@ a.attach-chip:hover { border-color: var(--accent); color: var(--accent-ink); }
 /* Une liste desactivee doit se lire comme « pas encore », pas comme « casse ». */
 select:disabled {
   color: var(--muted); background: var(--surface-2); cursor: not-allowed;
+}
+
+/* ------------------------------------------------------------------- MCP -- */
+/* Une carte par logiciel qu'Hermes peut piloter. Celles qui sont branchees se
+   distinguent d'un liseré : c'est l'information qu'on cherche en arrivant. */
+.mcp-count { font-size: var(--fs-md); color: var(--muted); margin-bottom: var(--sp-4); }
+.mcp-count strong { color: var(--text); }
+.mcp-grid {
+  display: grid; gap: var(--sp-3);
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+}
+.mcp-card {
+  display: flex; flex-direction: column; gap: 9px;
+  padding: var(--sp-4); border-radius: var(--r-sm);
+  background: var(--surface); border: 1px solid var(--line);
+  animation: fade-in .25s var(--ease-out) both;
+}
+.mcp-card.on { border-left: 3px solid var(--accent); }
+.mcp-head { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.mcp-name {
+  font-weight: 700; font-size: var(--fs-base);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.mcp-tag {
+  font-size: 10px; padding: 2px 7px; border-radius: var(--r-pill);
+  background: var(--line-soft); color: var(--muted); font-weight: 650;
+  text-transform: uppercase; letter-spacing: .04em;
+}
+.mcp-desc { margin: 0; font-size: var(--fs-md); color: var(--text-2); line-height: 1.6; }
+.mcp-endpoint {
+  display: block; padding: 7px 9px; border-radius: var(--r-xs);
+  background: var(--surface-2); border: 1px solid var(--line);
+  font-size: 11px; overflow-x: auto; white-space: nowrap;
+}
+.mcp-meta { display: flex; flex-wrap: wrap; gap: var(--sp-2); font-size: 11px; color: var(--muted-2); }
+.mcp-meta span:not(:last-child)::after { content: ' ·'; }
+.mcp-env { font-size: 11px; color: var(--muted); }
+.mcp-env code {
+  padding: 1px 6px; border-radius: var(--r-pill);
+  background: var(--gold-soft); color: var(--gold); font-size: 10.5px;
+}
+.mcp-tools { display: flex; flex-wrap: wrap; gap: 4px; }
+.mcp-tools span {
+  font-size: 10px; padding: 2px 7px; border-radius: var(--r-pill);
+  background: var(--accent-soft); color: var(--accent-ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.mcp-acts { display: flex; align-items: center; gap: var(--sp-3); margin-top: 2px; }
+.mcp-src { font-size: 11.5px; }
+.mcp-notes summary { font-size: 11.5px; color: var(--muted); cursor: pointer; }
+.mcp-notes pre {
+  margin: var(--sp-2) 0 0; padding: var(--sp-3); border-radius: var(--r-xs);
+  background: var(--surface-2); border: 1px solid var(--line);
+  font-size: 11px; line-height: 1.6; white-space: pre-wrap; max-height: 260px; overflow-y: auto;
 }
 
 /* ------------------------------------------------------------------ micro */

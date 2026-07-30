@@ -31,6 +31,7 @@ const CORE_EN = {
   'Mon équipe': 'My team',
   'Second cerveau': 'Second brain',
   'Skills': 'Skills',
+  'MCP': 'MCP',
   'Consommation': 'Usage',
   'Journal': 'Journal',
   'Réglages': 'Settings',
@@ -132,6 +133,19 @@ const CORE_EN = {
   'tout': 'all',
   'toutes': 'all',
   'Ajouter à la mémoire': 'Add to memory',
+
+  // MCP
+  'Les logiciels qu\'Hermes peut piloter à distance.': 'The software Hermes can drive remotely.',
+  'Aucun serveur MCP visible d\'ici.': 'No MCP server visible from here.',
+  'Copier la commande d\'installation': 'Copy the install command',
+  'Copier la commande de réglage': 'Copy the settings command',
+  'Ce qu\'il faut préparer': 'What to prepare first',
+  'Commande copiée.': 'Command copied.',
+  'Source': 'Source',
+  'en pause': 'paused',
+  'au catalogue': 'in the catalogue',
+  'hors catalogue': 'off catalogue',
+  'Ajouté à la main, hors catalogue.': 'Added by hand, off catalogue.',
 
   // skills
   'Chercher par nom, description ou tag…': 'Search by name, description or tag…',

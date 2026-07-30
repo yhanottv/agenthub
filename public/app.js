@@ -7,7 +7,7 @@
    ========================================================================== */
 
 // ============================ state =========================================
-const VIEWS = ['home', 'team', 'brain', 'skills', 'usage', 'journal', 'settings'];
+const VIEWS = ['home', 'team', 'brain', 'skills', 'mcp', 'usage', 'journal', 'settings'];
 
 const S = {
   agents: [], channels: [], settings: {}, providers: [],
@@ -220,6 +220,7 @@ const IC = {
   clock: svg('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
   expand: svg('<path d="M9 4H4v5M15 4h5v5M15 20h5v-5M9 20H4v-5"/>'),
   reload: svg('<path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/>'),
+  plug: svg('<path d="M9 2v6M15 2v6"/><path d="M6 8h12v3.5a6 6 0 0 1-12 0Z"/><path d="M12 17.5V22"/>'),
   x: svg('<path d="M18 6 6 18M6 6l12 12"/>'),
   stopSquare: svg('<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/>'),
   mic: svg('<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>'),
@@ -449,6 +450,7 @@ function loadForView() {
   if (S.view === 'home' || S.view === 'journal') refreshDashboard();
   else if (S.view === 'brain') { loadNotes(); loadProposals(); }
   else if (S.view === 'skills') loadSkills();
+  else if (S.view === 'mcp') loadMcp();
   else if (S.view === 'usage') loadUsage();
 }
 function applyRoute(hash, opts = {}) {
@@ -552,6 +554,7 @@ function renderSidebar() {
       ${navItem('team', IC.team, 'Mon équipe')}
       ${navItem('brain', IC.brain, 'Second cerveau')}
       ${navItem('skills', IC.spark, 'Skills')}
+      ${navItem('mcp', IC.plug, 'MCP')}
       ${navItem('usage', IC.tokens, 'Consommation')}
       ${navItem('journal', IC.journal, 'Journal')}
       ${navItem('settings', IC.access, 'Réglages')}
@@ -737,6 +740,7 @@ function renderView() {
   if (S.view === 'team') return renderTeam(v);
   if (S.view === 'brain') return renderBrain(v);
   if (S.view === 'skills') return renderSkills(v);
+  if (S.view === 'mcp') return renderMcp(v);
   if (S.view === 'usage') return renderUsage(v);
   if (S.view === 'journal') return renderJournal(v);
   if (S.view === 'settings') return renderSettings(v);
@@ -981,6 +985,124 @@ function modelBadge(a) {
     <span class="provider-state ${p.enabled ? 'on' : 'off'}" aria-hidden="true"></span>
     <span>${escapeHtml(p.label)}</span><span class="model-sep">·</span><code>${escapeHtml(model)}</code>
   </div>`;
+}
+
+// ---- serveurs MCP ----------------------------------------------------------
+// MCP est la façon dont Hermes se connecte à un logiciel qui tourne ailleurs :
+// Blender, Unreal, n8n, Linear. La page montre ce qui existe et ce qui est
+// branché ; elle ne branche rien. Donner à un agent le droit d'agir sur une
+// machine passe par Hermes, qui applique ses propres contrôles — la page rend
+// donc la commande exacte, prête à coller.
+
+async function loadMcp(force = false) {
+  if (S.mcp && !force) { if (S.view === 'mcp') renderView(); return S.mcp; }
+  const r = await tryApi(api('GET', `/api/mcp${force ? '?refresh=1' : ''}`), 'Catalogue MCP');
+  if (!r) return null;
+  S.mcp = r;
+  if (S.view === 'mcp') renderView();
+  return r;
+}
+
+const MCP_STATE = {
+  actif: { cls: 'done', mot: 'actif' },
+  pause: { cls: 'pending', mot: 'en pause' },
+  catalogue: { cls: '', mot: 'au catalogue' },
+};
+
+function mcpCardHTML(s, container) {
+  const etat = s.installed ? (s.enabled ? MCP_STATE.actif : MCP_STATE.pause) : MCP_STATE.catalogue;
+  // La commande se lance dans le conteneur d'Hermes, pas chez nous : sans le
+  // `docker exec`, elle ne veut rien dire là où l'utilisateur la collera.
+  const verbe = s.installed ? 'configure' : 'install';
+  const cmd = container
+    ? `docker exec -it ${container} hermes mcp ${verbe} ${s.id}`
+    : `hermes mcp ${verbe} ${s.id}`;
+
+  return `<article class="mcp-card${s.installed ? ' on' : ''}">
+    <div class="mcp-head">
+      <span class="mcp-name">${escapeHtml(s.name)}</span>
+      <span class="pill ${etat.cls}">${etat.mot}</span>
+      ${s.transport ? `<span class="mcp-tag">${escapeHtml(s.transport)}</span>` : ''}
+      ${s.offCatalogue ? '<span class="mcp-tag">hors catalogue</span>' : ''}
+    </div>
+    <p class="mcp-desc">${escapeHtml(s.description)}</p>
+    ${s.endpoint ? `<code class="mcp-endpoint">${escapeHtml(s.endpoint)}</code>` : ''}
+    <div class="mcp-meta">
+      <span>authentification : ${escapeHtml(s.auth)}</span>
+      ${s.install ? `<span>installation : ${escapeHtml(s.install)}</span>` : ''}
+      ${s.version ? `<span>version ${escapeHtml(s.version)}</span>` : ''}
+      ${s.defaultTools.length ? `<span>${s.defaultTools.length} outil(s) par défaut</span>` : ''}
+    </div>
+    ${s.authEnv.length ? `<div class="mcp-env">à renseigner : ${
+      s.authEnv.map((k) => `<code>${escapeHtml(k)}</code>`).join(' ')}</div>` : ''}
+    ${s.defaultTools.length ? `<div class="mcp-tools">${
+      s.defaultTools.map((t) => `<span>${escapeHtml(t)}</span>`).join('')}</div>` : ''}
+    <div class="mcp-acts">
+      <button class="btn ghost" type="button" data-mcp-cmd="${escapeAttr(cmd)}">
+        ${s.installed ? 'Copier la commande de réglage' : 'Copier la commande d\'installation'}</button>
+      ${s.source ? `<a class="mcp-src" href="${escapeAttr(s.source)}" target="_blank" rel="noopener noreferrer">Source</a>` : ''}
+    </div>
+    ${s.notes ? `<details class="mcp-notes"><summary>Ce qu'il faut préparer</summary><pre>${
+      escapeHtml(s.notes)}</pre></details>` : ''}
+  </article>`;
+}
+
+function renderMcp(v) {
+  const data = S.mcp;
+  if (!data) {
+    v.innerHTML = `<div class="page"><div class="page-head"><h1>MCP</h1></div>
+      <div class="sk sk-stat"></div></div>`;
+    return;
+  }
+
+  const tete = `<div class="page-head">
+      <div>
+        <h1>MCP</h1>
+        <div class="page-sub">Les logiciels qu'Hermes peut piloter à distance.</div>
+      </div>
+      <button class="btn ghost" id="mcp-refresh" type="button">Actualiser</button>
+    </div>`;
+
+  if (!data.servers.length) {
+    v.innerHTML = `<div class="page">${tete}
+      <div class="empty" style="text-align:left;padding:28px;line-height:1.8">
+        <div class="empty-ic" aria-hidden="true">🔌</div>
+        <strong>Aucun serveur MCP visible d'ici.</strong><br>
+        AgentHub lit le catalogue d'Hermes et sa configuration, d'abord par les
+        dossiers montés en lecture seule, puis par le socket Docker. Ni l'un ni
+        l'autre n'a répondu : Hermes n'est probablement pas détecté sur ce
+        serveur. Va dans <strong>Réglages</strong> pour l'adopter, puis reviens ici.
+      </div>
+    </div>`;
+    $('#mcp-refresh', v).onclick = () => loadMcp(true);
+    return;
+  }
+
+  const c = data.counts;
+  v.innerHTML = `<div class="page">${tete}
+    <div class="mcp-count">
+      <strong>${c.installed}</strong> branché(s) sur ${c.total} ·
+      <strong>${c.enabled}</strong> actif(s) ·
+      lu ${data.via === 'montage' ? 'dans les dossiers montés' : 'par le socket Docker'}
+    </div>
+    <div class="mcp-grid">${data.servers.map((s) => mcpCardHTML(s, data.container)).join('')}</div>
+    <div class="field-hint" style="margin-top:18px;line-height:1.8">
+      Brancher un serveur MCP donne à un agent le droit d'agir sur une machine :
+      ouvrir Blender, modifier un projet Unreal, déclencher un flux n8n. AgentHub
+      ne le fait pas à ta place — la commande passe par Hermes, qui applique ses
+      propres contrôles.
+    </div>
+  </div>`;
+
+  $('#mcp-refresh', v).onclick = () => loadMcp(true);
+  $$('[data-mcp-cmd]', v).forEach((b) => b.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(b.dataset.mcpCmd);
+      toast('Commande copiée.', { kind: 'success' });
+    } catch {
+      toast(b.dataset.mcpCmd, { title: 'Copie refusée — voici la commande' });
+    }
+  });
 }
 
 // ---- Skills Hermes ---------------------------------------------------------

@@ -57,6 +57,11 @@ services:
       #
       # - hermes-webui-yowj_hermes-agent-src:/hermes-src:ro
       # - hermes-webui-yowj_hermes-home:/hermes-home:ro
+      #
+      # Ces deux montages servent aussi à l'onglet MCP : le catalogue vit dans
+      # `/hermes-src/optional-mcps`, et les serveurs branchés sous la clé
+      # `mcp_servers` de `/hermes-home/config.yaml`. Sans eux, AgentHub lit les
+      # mêmes fichiers par le socket Docker — plus lent, mais rien à configurer.
 
       # ─── Installer Hermes depuis AgentHub (facultatif) ────────────────────
       # ⚠️  LIS CECI AVANT DE DÉCOMMENTER.

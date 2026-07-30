@@ -361,7 +361,14 @@ export async function startGateway(name, { onProgress = () => {} } = {}) {
 }
 
 /** Exécute une commande dans un conteneur et renvoie sa sortie. */
-async function execIn(containerId, cmd, user) {
+/**
+ * Exécute une commande dans un conteneur, par le socket Docker.
+ *
+ * Exporté parce que le catalogue MCP en a besoin : ses manifestes vivent dans
+ * l'image d'Hermes, à un chemin qu'aucun montage d'AgentHub ne couvre. Lire par
+ * ici évite de demander à l'utilisateur de modifier son docker-compose.yml.
+ */
+export async function execIn(containerId, cmd, user) {
   const created = await dockerRequest('POST', `/containers/${containerId}/exec`, {
     AttachStdout: true, AttachStderr: true, Tty: false, Cmd: cmd,
     ...(user ? { User: user } : {}),

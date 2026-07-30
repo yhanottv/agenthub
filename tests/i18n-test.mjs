@@ -51,7 +51,7 @@ ok('aucune clé en double', dupes.length === 0, dupes.join(' | '));
 // Les blancs sont écrasés comme le fait `lookup` : une phrase coupée sur deux
 // lignes dans un gabarit reste la même phrase à l'écran.
 const haystack = ['public/app.js', 'public/index.html', 'server.js', 'skills.js', 'graph.js',
-  'orchestrator.js']
+  'orchestrator.js', 'mcp.js']
   .map(read).join('\n')
   .replace(/\s+/g, ' ')
   .replace(/\\'/g, "'")

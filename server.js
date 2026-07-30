@@ -13,6 +13,7 @@ import {
 } from './db.js';
 import { buildGraph, layerCounts, GRAPH_LAYERS, LAYER_META } from './graph.js';
 import { skillsCatalogue, invalidateSkills } from './skills.js';
+import { mcpCatalogue, invalidateMcp } from './mcp.js';
 import { safeEntryPath, readZip } from './archive.js';
 import {
   discover as discoverHermes, installHermes, installPlan, dockerStatus, connectToNetwork,
@@ -1159,6 +1160,21 @@ app.post('/api/channels/:id/attachments',
     });
     res.json({ id: a.id, name: a.name, mime: a.mime, bytes: a.bytes, readable: Boolean(a.text) });
   });
+
+// ---- serveurs MCP -----------------------------------------------------------
+// MCP est la façon dont Hermes se connecte à un logiciel qui tourne ailleurs :
+// Blender, Unreal, n8n, Linear. On lit son catalogue et sa configuration, on
+// n'écrit rien — brancher un serveur donne à un agent le droit d'agir sur une
+// machine, et cela passe par Hermes, qui applique ses propres contrôles.
+app.get('/api/mcp', requireAuth, async (req, res) => {
+  if (req.query.refresh) invalidateMcp();
+  try {
+    res.json(await mcpCatalogue());
+  } catch (err) {
+    console.error('catalogue MCP :', err.message);
+    res.status(502).json({ error: `Catalogue MCP illisible : ${err.message}` });
+  }
+});
 
 // ---- prévisualisation de page ----------------------------------------------
 /*
