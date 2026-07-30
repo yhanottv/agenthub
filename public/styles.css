@@ -1040,11 +1040,20 @@ button.agent-card:hover { border-color: var(--accent); transform: translateY(-1p
    clavier, qui n'apprennent rien de neuf pendant qu'on attend. */
 
 /* Bord bas commun avec le bouton d'envoi : une marge, meme de 2 px, se voit
-   quand deux boutons se touchent. Plus petit que lui, en revanche, et sans
-   fond : c'est une action secondaire, pas un second bouton principal. */
-.stop-btn { align-self: flex-end; color: var(--muted); }
+   quand deux boutons se touchent. Plus petit que lui, en revanche : c'est une
+   action secondaire, pas un second bouton principal.
+
+   Rouge des le repos, en revanche, et pas seulement au survol : un bouton d'arret
+   qu'il faut survoler pour deviner ne sert a rien dans l'urgence. Le fond teinte
+   le detache du champ de saisie sans lui donner le poids d'un bouton plein. */
+.stop-btn {
+  align-self: flex-end;
+  color: var(--alert); background: var(--alert-soft);
+}
 .stop-btn svg { width: 13px; height: 13px; }
-.stop-btn:hover { background: var(--alert-soft); color: var(--alert); }
+/* Au survol, le rapport s'inverse : le fond devient plein et le glyphe clair.
+   La couleur ne change pas de nature, elle s'affirme. */
+.stop-btn:hover { background: var(--alert); color: var(--on-accent); }
 .stop-btn:active { transform: scale(.94); }
 .stop-btn:focus-visible { outline: 2px solid var(--alert); outline-offset: 1px; }
 .stop-btn.hidden { display: none; }
