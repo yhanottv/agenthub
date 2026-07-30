@@ -93,7 +93,10 @@ ok('un commentaire est ignoré', !('#' in y));
 let r = await mcpCatalogue();
 ok('les trois manifestes sont lus', r.servers.length === 3, `${r.servers.length}`);
 ok('lus par le montage', r.via === 'montage', r.via);
-ok('aucune configuration détectée', r.configVia === 'aucune-config', r.configVia);
+// Sans config.yaml sur le montage et sans Docker joignable ici, la réponse juste
+// est « je n'ai pas pu lire » — pas « rien n'est configuré ». Voir plus bas.
+ok('la configuration se déclare illisible, faute de pouvoir la lire',
+  r.configVia === 'indisponible', r.configVia);
 ok('donc rien de branché', r.counts.installed === 0 && r.counts.enabled === 0);
 
 const par = Object.fromEntries(r.servers.map((s) => [s.id, s]));
@@ -143,8 +146,23 @@ invalidateMcp();
 r = await mcpCatalogue();
 ok('SANS RIEN À LIRE, LA PAGE LE DIT AU LIEU DE MENTIR',
   r.via === 'indisponible' && r.servers.length === 0, `${r.via} / ${r.servers.length}`);
-ok('et un dossier présent mais vide ne se confond pas avec une lecture ratée',
-  r.configVia === 'aucune-config', r.configVia);
+// Cette assertion figeait un défaut, pas un comportement. Elle exigeait
+// « aucune-config » dès que le dossier existait sans le fichier — or monter
+// `/hermes-home/skills` fait exister `/hermes-home` sans y mettre `config.yaml`.
+// Sur l'installation la plus courante, la page annonçait donc « aucune
+// configuration » alors que des serveurs étaient branchés et actifs. Sans Docker
+// joignable ici, la seule réponse honnête est « je n'ai pas pu lire ».
+ok('UN DOSSIER PARTIEL NE SE FAIT PAS PASSER POUR UNE ABSENCE DE CONFIGURATION',
+  r.configVia === 'indisponible', r.configVia);
+
+// ---- le montage complet reste le chemin rapide ------------------------------
+fs.writeFileSync(path.join(DIR, 'home', 'config.yaml'), 'mcp_servers:\n  blender:\n    enabled: true\n');
+invalidateMcp();
+r = await mcpCatalogue();
+ok('un config.yaml présent sur le montage est lu directement', r.configVia === 'lu', r.configVia);
+ok('ET CE QUI Y EST BRANCHÉ RESSORT BRANCHÉ',
+  r.servers.some((x) => x.id === 'blender' && x.installed && x.enabled),
+  JSON.stringify(r.servers.map((x) => [x.id, x.installed, x.enabled])));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 try { fs.rmSync(DIR, { recursive: true, force: true }); } catch { /* verrou */ }

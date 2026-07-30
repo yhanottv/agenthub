@@ -27,6 +27,9 @@ const HOME_MOUNT = process.env.HERMES_HOME_DIR || '/hermes-home';
 // Chemins dans le conteneur d'Hermes, quand on lit par le socket.
 const CATALOGUE_IN_HERMES = '/opt/hermes/optional-mcps';
 const MAX_MANIFEST_BYTES = 64 * 1024;
+// Marqueur renvoye par le conteneur quand le fichier n'existe pas : sans lui,
+// une sortie vide ne dirait pas si le fichier manque ou si la lecture a echoue.
+const NO_CONFIG = '===AH-NO-CONFIG';
 const CACHE_MS = 5 * 60 * 1000;
 
 let cache = null;
@@ -173,18 +176,25 @@ async function readConfigured() {
 
   if (fs.existsSync(local)) {
     try { text = fs.readFileSync(local, 'utf8'); } catch { /* illisible */ }
-  } else if (fs.existsSync(HOME_MOUNT)) {
-    // Le dossier d'Hermes est là et le fichier n'y est pas : ce n'est pas un
-    // échec de lecture, c'est qu'aucun serveur MCP n'est configuré. Les deux
-    // situations se ressemblent et ne se disent pas de la même façon.
-    return { via: 'aucune-config', servers: {} };
   }
+
+  // Le fichier n'est pas sur le montage : cela ne dit rien de son existence.
+  //
+  // J'avais conclu ici « aucun serveur configuré » dès que `/hermes-home`
+  // existait, en croyant distinguer une absence d'une lecture ratée. C'était
+  // faux : monter `/hermes-home/skills` fait exister `/hermes-home` sans que
+  // `config.yaml` y soit. Sur l'installation la plus courante — celle du
+  // catalogue Hostinger — la page annonçait donc « aucune configuration » alors
+  // que Blender y était branché et actif. Une conclusion tirée trop tôt ferme la
+  // seule lecture qui fasse autorité.
   if (text === null) {
     const container = await hermesContainer();
     if (!container) return { via: 'indisponible', servers: {} };
     try {
       const { output } = await execIn(container, ['sh', '-lc',
-        'cat "${HERMES_HOME:-/opt/data}/config.yaml" 2>/dev/null || true']);
+        'f="${HERMES_HOME:-/opt/data}/config.yaml"; '
+        + `if [ -f "$f" ]; then cat "$f"; else echo "${NO_CONFIG}"; fi`]);
+      if (String(output).includes(NO_CONFIG)) return { via: 'aucune-config', servers: {} };
       text = output;
     } catch { return { via: 'indisponible', servers: {} }; }
   }
