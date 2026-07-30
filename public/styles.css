@@ -1027,39 +1027,51 @@ button.agent-card:hover { border-color: var(--accent); transform: translateY(-1p
 .codeblock.open .code-inner > pre { overflow-x: auto; }
 
 /* --- une reponse est en cours --- */
-/* L'arret etait une pastille coincee entre deux raccourcis clavier, du meme
-   poids visuel qu'un indice, alors que c'est la seule action urgente de l'ecran.
-   Il a sa propre bande, alignee sur le champ de saisie, avec un point qui bat
-   pour dire que ca tourne et un bouton pousse a droite. */
+/* Deux erreurs dans la version precedente. La bande occupait toute la largeur du
+   composeur en --alert-soft : une dalle brune saturee pour annoncer que tout se
+   passe bien. Or le brun de ce theme signale un probleme, pas un travail en cours.
+   Et le bouton d'arret etait un bloc plein, un second poids lourd a cote du
+   premier.
+
+   Ici : un liseré discret, du neutre, un point qui bat — le seul element vivant.
+   L'arret ne prend sa couleur d'alerte qu'au survol, quand la main s'en approche. */
 .run-bar {
-  display: flex; align-items: center; gap: var(--sp-2);
+  display: inline-flex; align-items: center; gap: 9px;
   margin: 0 var(--sp-5) var(--sp-2);
-  padding: 7px 8px 7px 12px; border-radius: var(--r-sm);
-  background: var(--alert-soft); border: 1px solid transparent;
+  padding: 4px 4px 4px 11px; border-radius: var(--r-pill);
+  background: var(--surface); border: 1px solid var(--line);
   font-size: var(--fs-sm); color: var(--text-2);
+  max-width: calc(100% - var(--sp-5) * 2);
   animation: fade-in .22s var(--ease-out) both;
 }
 .run-bar.hidden { display: none; }
+
+/* Le point est le seul a bouger : c'est lui qui dit « ca tourne encore ». */
 .run-live {
-  width: 7px; height: 7px; border-radius: 50%; flex: none;
-  background: var(--alert); animation: pulse-dot 1.5s var(--ease) infinite;
+  width: 6px; height: 6px; border-radius: 50%; flex: none;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow, transparent);
+  animation: pulse-dot 1.6s var(--ease) infinite;
 }
-.run-label { font-weight: 600; color: var(--alert); }
-.run-hint { flex: 1; min-width: 0; color: var(--muted); font-size: 11.5px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-label { font-weight: 600; color: var(--text); white-space: nowrap; }
+.run-hint {
+  min-width: 0; color: var(--muted-2); font-size: 11px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.run-hint::before { content: '· '; }
+
 .run-stop {
-  display: inline-flex; align-items: center; gap: 6px; flex: none;
-  padding: 5px 11px 5px 9px; border-radius: var(--r-pill);
-  /* --alert est un brun desature, clair en theme sombre : --on-accent suit et
-     donne de l'encre sombre dessus. Du blanc en dur y tomberait a 2,9:1. */
-  background: var(--alert); color: var(--on-accent);
-  font-size: 11.5px; font-weight: 650;
-  transition: filter var(--fast) var(--ease), transform var(--fast) var(--ease);
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
+  padding: 4px 10px 4px 8px; border-radius: var(--r-pill);
+  background: transparent; color: var(--muted);
+  font-size: 11px; font-weight: 650;
+  transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
 }
-.run-stop svg { width: 11px; height: 11px; }
-.run-stop:hover { filter: brightness(1.08); }
-.run-stop:active { transform: scale(.97); }
-.run-stop:focus-visible { outline: 2px solid var(--alert); outline-offset: 2px; }
+.run-stop svg { width: 9px; height: 9px; opacity: .85; }
+.run-stop:hover { background: var(--alert-soft); color: var(--alert); }
+.run-stop:active { background: var(--alert-soft); color: var(--alert); transform: scale(.97); }
+.run-stop:focus-visible { outline: 2px solid var(--alert); outline-offset: 1px; }
+
 @media (max-width: 620px) { .run-hint { display: none; } }
 #send-btn svg { transition: transform var(--fast) var(--ease); }
 
