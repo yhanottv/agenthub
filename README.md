@@ -1,109 +1,76 @@
+<div align="center">
+
 # AgentHub
 
-Une interface web pour faire travailler **plusieurs agents IA ensemble**, plutôt qu'un
-chat de plus avec un seul modèle.
+**Une organisation d'agents IA, pas un chat de plus.**
 
 Tu recrutes des agents, tu leur donnes un rang — CEO, manager, worker — et tu les
-regroupes en **pôles**. Quand tu écris dans un pôle, le membre le plus haut placé
-répond, et il peut **déléguer** le travail vers le bas, y compris à des agents d'un
-autre pôle. Chaque tâche déléguée est suivie, chaque réponse arrive en streaming.
+regroupes en pôles. Le membre le plus haut placé répond et **délègue** vers le bas,
+y compris à un agent d'un autre pôle. Chaque délégation est suivie, chaque réponse
+arrive en streaming.
 
-Tes agents ne se contentent pas d'écrire : ils cherchent sur le web, lisent des pages,
-fouillent leur propre mémoire, calculent, lisent tes fichiers et créent des images.
+Sur ta machine. Trois dépendances. Aucune étape de build.
 
-Aucune étape de build : Node, du JavaScript vanilla, et SQLite.
+![Node](https://img.shields.io/badge/node-%E2%89%A520-3e5faf?style=flat-square)
+![Docker](https://img.shields.io/badge/docker-compose-3e5faf?style=flat-square)
+![Dépendances](https://img.shields.io/badge/d%C3%A9pendances-3-3e5faf?style=flat-square)
+![Tests](https://img.shields.io/badge/suites%20de%20tests-10-3e5faf?style=flat-square)
+![Licence](https://img.shields.io/badge/licence-MIT-3e5faf?style=flat-square)
 
-![Node](https://img.shields.io/badge/node-%E2%89%A520-3e5faf)
-![Docker](https://img.shields.io/badge/docker-compose-3e5faf)
-![Dépendances](https://img.shields.io/badge/d%C3%A9pendances-3-3e5faf)
-![License](https://img.shields.io/badge/license-MIT-3e5faf)
+</div>
 
 ---
 
 ## Sommaire
 
-- [Ce que ça fait](#ce-que-ça-fait)
-- [Installation](#installation)
-- [Premier démarrage](#premier-démarrage)
-- [Configuration](#configuration)
-- [Sécurité](#sécurité)
-- [Mise à jour, sauvegarde, dépannage](#mise-à-jour)
-- [Architecture](#architecture)
-- [Tests](#tests)
+| | |
+|---|---|
+| [Ce que ça fait](#ce-que-ça-fait) · [Ce qui distingue](#ce-qui-distingue) | de quoi il s'agit |
+| [Installation](#installation) · [Premier démarrage](#premier-démarrage) | pour l'avoir chez toi |
+| [Configuration](#configuration) · [Sécurité](#sécurité) | pour le régler et le tenir |
+| [Mise à jour](#mise-à-jour) · [Architecture](#architecture) · [Tests](#tests) | pour y toucher |
+| [Ce qui manque encore](#ce-qui-manque-encore) · [Licence](#licence) | pour savoir où on en est |
 
 ---
 
 ## Ce que ça fait
 
-**Une organisation, pas une liste de prompts.** Les rangs sont réels : un manager ne
-peut déléguer qu'à des agents strictement moins gradés, jamais à lui-même, jamais en
-boucle. La chaîne CEO → manager → worker fonctionne sur trois niveaux, et un manager
-peut emprunter un worker à un autre pôle.
+| | | |
+|---|---|---|
+| 🏛️ | **Une hiérarchie réelle** | Rangs, délégation sur trois niveaux, emprunt d'un agent à un autre pôle. Les règles sont appliquées, pas suggérées. |
+| 🛠️ | **Des agents qui agissent** | Recherche web, lecture de pages, mémoire, calcul exact, tes fichiers, génération d'images, archives `.zip`. |
+| 🧠 | **Un second cerveau** | Des notes injectées dans le prompt de *tous* les agents, reliées par `[[doubles crochets]]`, et une vue **Graph** en galaxie navigable. |
+| ⚡ | **Les skills d'Hermes** | L'onglet **Skills** montre le catalogue Nous Research au complet et ce qui est déjà actif chez toi. |
+| 🔌 | **Les connexions MCP** | L'onglet **MCP** montre ce qu'Hermes peut piloter à distance — Blender, Unreal, n8n, Linear — et leur état réel. |
+| 👁️ | **Le code qui sort** | Un bloc se copie et se télécharge ; un site complet s'ouvre dans un panneau à côté de la conversation, même livré en archive. |
+| 🎙️ | **Dicter, et deux langues** | Le micro écrit dans le composeur ; un globe bascule toute l'interface en anglais. |
+| 🔀 | **Le service de ton choix** | Hermes, AgentRouter, OpenRouter, OpenAI, Gemini, Groq, Together, Ollama, ou tout endpoint compatible OpenAI — par agent, ou pour une seule conversation. |
+| 💶 | **Une addition honnête** | Coût en euros par appel, par modèle, par agent, par salon. Un modèle sans tarif est signalé, jamais compté zéro en silence. |
+| 🔎 | **Retrouver** | Recherche plein texte sur les conversations et la mémoire, depuis `Ctrl K`, termes surlignés. |
+| ⏰ | **Ça tourne tout seul** | Sauvegardes, déclenchements programmés, webhooks entrants, notifications de fin de traitement. |
+| 🎨 | **Soigné** | Thème clair et sombre, contraste WCAG AA vérifié sur les deux, navigation au clavier, mobile, `prefers-reduced-motion`. |
 
-**Des agents qui agissent.** Recherche web, lecture de pages, fouille de la mémoire et
-de l'historique, calcul exact, lecture des fichiers déposés dans le salon, création
-d'images. Chaque appel d'outil est affiché au-dessus de la réponse : une affirmation
+---
+
+## Ce qui distingue
+
+**Les rangs ne sont pas décoratifs.** Un manager ne peut déléguer qu'à un agent
+strictement moins gradé, jamais à lui-même, jamais en boucle. Ce n'est pas une
+consigne dans un prompt : c'est refusé côté serveur, et une suite de tests le
+vérifie sur trois niveaux de délégation.
+
+**Chaque appel d'outil est montré au-dessus de la réponse.** Une affirmation
 appuyée sur une vraie recherche ne se confond pas avec la même phrase inventée.
+Le raisonnement du modèle est affiché à part, replié — jamais mêlé à ce que
+l'agent a réellement dit.
 
-**Un second cerveau, et une carte pour s'y retrouver.** Des notes écrites une fois,
-injectées dans le prompt de *tous* tes agents. Relie-les avec des `[[doubles crochets]]`
-et la vue **Graph** cartographie tout l'espace de travail en galaxie navigable : notes,
-agents, pôles, tâches et **skills Hermes**, groupés en amas, chaque famille activable.
-Tes agents alimentent eux-mêmes cette mémoire — automatiquement, ou après ta validation
-si tu préfères.
+**Le coût est figé au moment de l'appel.** Re-tarifer un modèle plus tard ne
+réécrit pas ce que le mois dernier a coûté. Et un modèle dont le tarif est inconnu
+fait annoncer le total comme un plancher, pas comme un chiffre exact.
 
-**Les skills de ton Hermes, visibles depuis AgentHub.** L'onglet **Skills** montre le catalogue officiel Nous
-Research au complet, groupé par catégorie, avec ce qui est déjà actif chez toi.
-Recherche, filtres, et la commande exacte pour activer ce qui t'intéresse.
-
-**Les connexions MCP, au même endroit.** L'onglet **MCP** montre ce que ton Hermes peut
-piloter à distance — Blender, Unreal Engine, n8n, Linear — avec le transport, ce qu'il
-faut préparer côté logiciel, les variables à renseigner, et l'état réel : branché, en
-pause, ou seulement au catalogue. Aucun montage à configurer : AgentHub lit le catalogue
-d'Hermes par le socket Docker qu'il utilise déjà pour le détecter. Rien n'est branché
-depuis ici — donner à un agent le droit d'ouvrir Blender passe par Hermes et ses propres
-contrôles ; AgentHub rend la commande, préfixée du `docker exec` qui la rend utilisable.
-
-**Le code produit sort de la conversation.** Chaque bloc de code se copie et se télécharge
-sous son vrai nom de fichier. Une page complète s'ouvre dans un **panneau à droite**, la
-conversation restant utilisable à gauche : on corrige, on relance, on regarde. Un site à
-plusieurs fichiers fonctionne — feuille de style, scripts, liens internes — même livré en
-archive `.zip`, qu'AgentHub sait rouvrir pour l'afficher. Le code d'un modèle tourne dans
-une iframe cloisonnée, en origine opaque, sans accès à ta session, et ne peut joindre que
-ses propres fichiers.
-
-**Dicter, et une interface bilingue.** Le micro écrit dans le composeur : par l'API du
-navigateur quand elle répond, sinon en enregistrant et en faisant transcrire par le
-service que tu as déjà configuré — plus fiable, et ça vise l'entrée audio de ton choix.
-Un globe dans la barre du haut bascule toute l'interface en anglais ; ce que le
-dictionnaire ne couvre pas est traduit une fois par ton modèle, puis conservé.
-
-**Plusieurs fournisseurs, au choix par agent.** Hermes, AgentRouter, OpenRouter, OpenAI,
-Google Gemini, Groq, Together, Ollama, ou n'importe quel endpoint compatible OpenAI.
-Chaque agent a son service et son modèle — et tu peux surcharger le tout **pour une
-seule conversation**, effort de raisonnement compris.
-
-**Une consommation qui ne ment pas.** Une ligne par appel modèle, tokens entrants et
-sortants, **coût en euros**, répartition par modèle, par agent et par salon. Un modèle
-sans tarif renseigné n'est pas compté zéro en silence : il est signalé, et le total
-s'annonce comme un plancher. Seuil d'alerte quotidien qui prévient sans rien couper.
-
-**Retrouver.** Recherche plein texte (SQLite FTS5) sur les conversations et la mémoire,
-depuis la palette `Ctrl K`, termes surlignés.
-
-**Des fichiers.** Dépôt par bouton ou glisser-déposer, jusqu'à 10 Mo. Les fichiers texte
-sont réellement lisibles par les agents. Export d'une conversation en Markdown.
-
-**Ça tourne tout seul.** Sauvegardes automatiques, déclenchements programmés (« tous les
-matins à 8 h 30, Chercheur me fait la veille »), webhooks entrants, notifications
-navigateur en fin de traitement long.
-
-**Temps réel.** WebSocket avec reconnexion et resynchronisation, streaming
-token-par-token, raisonnement du modèle affiché à part et replié, statut des agents,
-arrêt d'un run en cours.
-
-**Soigné.** Thème clair et sombre, contraste WCAG AA vérifié sur les deux, navigation au
-clavier, mobile, `prefers-reduced-motion`.
+**Un site produit par un agent tourne dans une iframe cloisonnée** : origine
+opaque, aucun accès à ta session, et il ne peut joindre que ses propres fichiers.
+Exécuter du code écrit par un modèle demandait cette précaution.
 
 ---
 
