@@ -122,11 +122,20 @@ for (const nom of ['MCP', 'Skills']) {
 }
 
 // ---- les liens internes du sommaire tombent juste --------------------------
-const titres = new Set([...readme.matchAll(/^#{2,3} (.+)$/gm)].map(([, t]) => t
-  .toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, '').trim().replace(/\s+/g, '-')));
-const casses = [...readme.matchAll(/- \[([^\]]+)\]\(#([^)]+)\)/g)]
-  .filter(([, , anchor]) => !titres.has(anchor)).map(([, label]) => label);
+const ancre = (t) => t.toLowerCase()
+  .replace(/[^\p{L}\p{N}\s-]/gu, '').trim().replace(/\s+/g, '-');
+const titres = new Set([...readme.matchAll(/^#{2,3} (.+)$/gm)].map(([, t]) => ancre(t)));
+// Sans ancrage au `- ` d'une liste : le sommaire est un tableau, et exiger la
+// puce faisait passer ce test à vide — donc réussir — quelle que soit la cible.
+const liens = [...readme.matchAll(/\[([^\]]+)\]\(#([^)]+)\)/g)];
+const casses = liens.filter(([, , anchor]) => !titres.has(anchor)).map(([, label]) => label);
 ok('AUCUN LIEN DU SOMMAIRE NE TOMBE DANS LE VIDE', casses.length === 0, casses.join(', '));
+// Et l'inverse : une section de premier niveau ajoutée plus tard sans passer par
+// le sommaire deviendrait introuvable depuis le haut de la page.
+const vise = new Set(liens.map(([, , a]) => a));
+const absentes = [...readme.matchAll(/^## (.+)$/gm)].map(([, t]) => t)
+  .filter((t) => t !== 'Sommaire' && !vise.has(ancre(t)));
+ok('ET AUCUNE SECTION N\'EST ABSENTE DU SOMMAIRE', absentes.length === 0, absentes.join(', '));
 
 // ---- la commande d'installation est celle du projet ------------------------
 ok('la commande de test citée est celle de package.json', readme.includes('npm test'));
