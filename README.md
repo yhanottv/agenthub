@@ -394,6 +394,7 @@ navigateur ──REST──▶ server.js ──▶ orchestrator.js ──▶ llm
                          ├──▶ mcp.js     (serveurs MCP d'Hermes)
                          ├──▶ archive.js (écriture et lecture de .zip)
                          ├──▶ sheet.js   (écriture de .xlsx)
+                         ├──▶ higgsfield.js (images et vidéos via Hermes)
                          ├──▶ hermes.js  (détection, installation, exec Docker)
                          └──▶ db.js      (SQLite/WAL, FTS5)
 ```
@@ -408,6 +409,7 @@ navigateur ──REST──▶ server.js ──▶ orchestrator.js ──▶ llm
 | `mcp.js` | Catalogue MCP d'Hermes et serveurs branchés, plus un lecteur YAML du strict nécessaire |
 | `archive.js` | Écriture et lecture de `.zip`, sans dépendance, et audit d'un site livré |
 | `sheet.js` | Écriture de `.xlsx` par-dessus le zip d'`archive.js`, sans dépendance |
+| `higgsfield.js` | Images et vidéos Higgsfield, via le CLI du conteneur Hermes |
 | `hermes.js` | Détection et installation d'Hermes |
 | `graph.js` | Groupes et liens de la carte |
 | `db.js` | Schéma SQLite, dépôts, index de recherche |
