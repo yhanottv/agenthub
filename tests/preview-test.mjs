@@ -118,8 +118,23 @@ ok('un import absolu est ramené au bon niveau', /from '\.\.\/src\/util\.js'/.te
   (mod.match(/from '[^']*util[^']*'/) || ['aucun'])[0]);
 
 // ---- la politique servie ---------------------------------------------------
+// Ce qui empêche un site de démarrer doit se voir : un écran de chargement figé
+// ne dit rien, alors que l'erreur existe dans une console que personne n'ouvre.
+ok('UN RAPPORTEUR D\'ERREURS EST POSÉ DANS LA PAGE',
+  /__ahPreview/.test(page) && /securitypolicyviolation/.test(page) && /unhandledrejection/.test(page));
+ok('il est posé avant tout le reste de la page',
+  page.indexOf('__ahPreview') < page.indexOf('importmap')
+  && page.indexOf('__ahPreview') < page.indexOf('src/main.js'));
+
 const csp = pageRes.headers.get('content-security-policy') || '';
-ok('RIEN NE PEUT SORTIR DE L\'APERÇU', /connect-src 'none'/.test(csp), csp.slice(0, 120));
+// `connect-src 'none'` laissait la promesse d'un `fetch('donnees.json')` en
+// attente pour toujours — donc un compteur figé sans un mot d'explication.
+ok('UN SITE PEUT LIRE SES PROPRES FICHIERS',
+  new RegExp(`connect-src [^;]*127\\.0\\.0\\.1:8757/api/preview/${site.id}/`).test(csp),
+  (csp.match(/connect-src[^;]*/) || [''])[0]);
+ok('MAIS RIEN NE SORT VERS L\'EXTÉRIEUR',
+  !/connect-src[^;]*\bhttps:/.test(csp) && !/connect-src[^;]*\*/.test(csp),
+  (csp.match(/connect-src[^;]*/) || [''])[0]);
 ok('les bibliothèques publiques sont autorisées', /esm\.sh/.test(csp) && /cdn\.jsdelivr\.net/.test(csp));
 
 // Une texture refusée laissait un site noir sans le moindre message. Les

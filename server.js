@@ -1397,6 +1397,29 @@ function toRelative(target, fromFile) {
   return depth ? '../'.repeat(depth) + target : target;
 }
 
+/*
+ * Ce qui empêche le site de démarrer doit se voir.
+ *
+ * Un site dont le script échoue n'affiche rien de particulier : son écran de
+ * chargement reste à zéro, et rien ne dit pourquoi. L'erreur existe pourtant —
+ * dans la console de l'iframe, que personne n'ouvre. Ce petit rapporteur la fait
+ * remonter à AgentHub, qui l'affiche sous le panneau.
+ *
+ * Il est posé avant tout le reste de la page, sinon il manquerait justement les
+ * erreurs les plus intéressantes : celles du premier script.
+ */
+const PREVIEW_REPORTER = `<script>(function(){
+var n=0;function t(k,m){if(n++>12)return;try{parent.postMessage(
+{__ahPreview:1,kind:k,text:String(m).slice(0,300)},'*')}catch(e){}}
+addEventListener('error',function(e){var g=e.target;
+if(g&&g!==window&&g.tagName)t('ressource',g.tagName+' '+(g.src||g.href||''));
+else t('script',(e.message||'erreur')+(e.filename?' ('+e.filename.split('/').pop()+':'+e.lineno+')':''))},true);
+addEventListener('unhandledrejection',function(e){var r=e.reason;
+t('promesse',(r&&(r.message||r))||'promesse rejetee')});
+document.addEventListener('securitypolicyviolation',function(e){
+t('politique',e.effectiveDirective+' | '+(e.blockedURI||''))});
+})();<\/script>`;
+
 /** Réécrit les chemins absolus d'une page vers le site prévisualisé. */
 function rerootHtml(html, page, files) {
   return html.replace(/\b(src|href)=(["'])(\/[^"'>]*)\2/gi, (tag, attr, q, ref) => {
@@ -1455,14 +1478,14 @@ function preparePage(html, page, files, plan) {
   );
 
   // La carte doit précéder tout module : on la place au plus tôt dans le head.
-  const head = [];
+  const head = [PREVIEW_REPORTER];
   if (Object.keys(plan.importMap).length) {
     head.push(`<script type="importmap">${JSON.stringify({ imports: plan.importMap })}</script>`);
   }
   for (const css of plan.cssImports) {
     head.push(`<style data-from="${css}">\n${files.get(css).toString('utf8')}\n</style>`);
   }
-  if (head.length) {
+  {
     const at = out.search(/<head[^>]*>/i);
     out = at === -1
       ? head.join('\n') + '\n' + out
@@ -1551,9 +1574,11 @@ app.get('/api/preview/:id/*', requireAuth, (req, res) => {
     + `script-src 'unsafe-inline' blob: ${base} ${PREVIEW_CDNS}; `
     + "style-src 'unsafe-inline' https: data:; "
     + 'img-src https: data: blob:; media-src https: data: blob:; font-src https: data:; '
-    // Rien ne sort : ni fetch, ni XHR, ni WebSocket, ni formulaire. C'est ce qui
-    // rend acceptable d'exécuter du code écrit par un modèle.
-    + "connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self';");
+    // Un site peut lire ses propres fichiers — `fetch('donnees.json')` est courant,
+    // et un refus laissait sa promesse en attente pour toujours, donc un écran de
+    // chargement figé. Il ne peut joindre que son propre dossier : rien ne sort
+    // vers l'extérieur, et c'est ce qui rend acceptable d'exécuter ce code.
+    + `connect-src ${base}; form-action 'none'; base-uri 'none'; frame-ancestors 'self';`);
 
   // Une page reçoit sa feuille de style et ses scripts en ligne.
   //

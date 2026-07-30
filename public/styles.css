@@ -2182,6 +2182,21 @@ body.resizing .preview-frame { pointer-events: none; }
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* Ce qui a empeche le site de demarrer. Un ecran de chargement fige ne dit rien ;
+   l'erreur existe pourtant, dans une console que personne n'ouvre. */
+.preview-issues { display: none; flex: none; max-height: 30%; overflow-y: auto;
+  padding: var(--sp-2) var(--sp-3); gap: 5px; flex-direction: column;
+  background: var(--alert-soft); border-top: 1px solid var(--line); }
+.preview-issues.shown { display: flex; }
+.preview-issue {
+  font-size: 11px; line-height: 1.5; color: var(--text-2);
+  padding-left: 13px; position: relative; word-break: break-word;
+}
+.preview-issue::before {
+  content: '!'; position: absolute; left: 0; top: 0;
+  color: var(--alert); font-weight: 800;
+}
+
 .preview-foot {
   flex: none; display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap;
   padding: 5px var(--sp-3); font-size: 10.5px; color: var(--muted-2);

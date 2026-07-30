@@ -4847,12 +4847,42 @@ function previewDockHTML() {
       <iframe class="preview-frame" id="preview-frame" src="${escapeAttr(url)}"
               sandbox="allow-scripts allow-pointer-lock allow-modals"
               title="Site produit par un agent"></iframe>
+      <div class="preview-issues" id="preview-issues"></div>
       <div class="preview-foot">
         <span>isolé de ton compte · bibliothèques publiques chargées, aucun autre appel</span>
         ${(S.preview.notes || []).map((n) => `<span class="preview-fix">${escapeHtml(n)}</span>`).join('')}
       </div>
     </aside>`;
 }
+
+/**
+ * Ce que dit une erreur venue du site, en clair.
+ *
+ * « securitypolicyviolation connect-src » ne veut rien dire pour qui regarde un
+ * écran de chargement figé. La cause la plus fréquente d'un site qui ne démarre
+ * pas est un module qui n'a pas pu se charger : autant le nommer.
+ */
+function explainPreviewIssue(kind, text) {
+  const t = String(text || '');
+  if (kind === 'politique') {
+    const dir = t.split('|')[0].trim();
+    const cible = (t.split('|')[1] || '').trim();
+    if (dir === 'connect-src') return `appel réseau refusé vers ${cible || 'un hôte externe'} — l'aperçu n'autorise que les fichiers du site`;
+    if (dir === 'script-src') return `script refusé : ${cible || 'hôte non autorisé'} n'est pas dans la liste des CDN permis`;
+    return `refusé par la politique de l'aperçu : ${dir} ${cible}`.trim();
+  }
+  if (kind === 'ressource') return `fichier introuvable : ${t.replace(/^(SCRIPT|LINK|IMG)\s*/i, '') || t}`;
+  if (/dynamically imported module|Failed to fetch/i.test(t)) {
+    return `un module n'a pas pu être chargé — vérifie la carte d'imports (${t.slice(0, 90)})`;
+  }
+  if (/Failed to resolve module specifier|bare specifier/i.test(t)) {
+    return `nom de paquet non résolu — il manque une carte d'imports (${t.slice(0, 90)})`;
+  }
+  if (kind === 'promesse') return `promesse rejetée sans être traitée : ${t}`;
+  return t;
+}
+
+let previewMsgOff = null;
 
 /**
  * Ouvre le site dans une iframe cloisonnée.
@@ -4915,11 +4945,37 @@ function wirePreviewDock(root) {
   const dock = $('.preview-dock', root);
   if (!dock) return;
 
+  // Le site parle depuis une origine opaque : on n'accepte que ce qui vient de
+  // NOTRE iframe, et on traite le contenu comme du texte, jamais comme du code.
+  previewMsgOff?.();
+  const box = $('#preview-issues', root);
+  const frame0 = $('#preview-frame', root);
+  const vus = new Set();
+  const onMsg = (e) => {
+    if (e.source !== frame0.contentWindow) return;
+    const d = e.data;
+    if (!d || d.__ahPreview !== 1) return;
+    const phrase = explainPreviewIssue(d.kind, d.text);
+    if (!phrase || vus.has(phrase) || vus.size >= 6) return;
+    vus.add(phrase);
+    const el0 = el('span', 'preview-issue');
+    el0.textContent = phrase;
+    box.appendChild(el0);
+    box.classList.add('shown');
+  };
+  window.addEventListener('message', onMsg);
+  previewMsgOff = () => { window.removeEventListener('message', onMsg); previewMsgOff = null; };
+
   $('#preview-close', root).onclick = closeCodePreview;
   $('#preview-full', root).onclick = openPreviewFullscreen;
   // Relancer sans refermer le panneau. Reaffecter `f.src = f.src` marcherait,
   // mais remplacerait le chemin relatif par une URL absolue a chaque clic.
-  $('#preview-reload', root).onclick = () => reloadFrame($('#preview-frame', root));
+  $('#preview-reload', root).onclick = () => {
+    vus.clear();
+    box.innerHTML = '';
+    box.classList.remove('shown');
+    reloadFrame($('#preview-frame', root));
+  };
 
   // Un site lourd a besoin de place, un site étroit n'en a pas besoin : la
   // largeur est à l'utilisateur, et elle est retenue d'une fois sur l'autre.
