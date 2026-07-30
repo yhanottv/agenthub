@@ -2,12 +2,21 @@
 
 # AgentHub
 
-Interface web auto-hébergée pour faire travailler plusieurs agents IA en équipe.
+Interface web pour [Hermes Agent](https://github.com/NousResearch/hermes-agent),
+l'agent auto-apprenant de Nous Research.
 
-Chaque agent a un rang — CEO, manager ou worker — et appartient à un pôle. Un
-message envoyé dans un pôle est pris par le membre le plus haut placé, qui peut
-déléguer le travail à un agent de rang inférieur, y compris dans un autre pôle.
-Les délégations sont suivies et les réponses arrivent en streaming.
+Hermes vit dans un terminal, ou derrière une passerelle de messagerie. Il a une
+mémoire persistante, un catalogue de skills qu'il enrichit lui-même, l'accès à
+plus de 300 modèles, une quarantaine d'outils et le protocole MCP. Ce qu'il n'a
+pas, c'est une interface web.
+
+AgentHub lui en donne une, et ajoute une organisation par-dessus : des agents
+nommés qui durent, avec des rangs et des pôles, qui se délèguent le travail et
+partagent une même mémoire. Ses skills et ses serveurs MCP sont lus dans sa
+propre configuration et affichés tels quels — il n'y a rien à redéclarer.
+
+Hermes n'est pas obligatoire : tout service compatible OpenAI fait l'affaire.
+Mais c'est avec lui que l'ensemble a été construit.
 
 Node, JavaScript sans framework, SQLite. Trois dépendances, aucune étape de build.
 
@@ -25,11 +34,28 @@ Node, JavaScript sans framework, SQLite. Trois dépendances, aucune étape de bu
 
 | Section | |
 |---|---|
-| **Présentation** | [Ce que ça fait](#ce-que-ça-fait) · [Choix d'implémentation](#choix-dimplémentation) |
+| **Présentation** | [Ce qu'AgentHub ajoute à Hermes](#ce-quagenthub-ajoute-à-hermes) · [Ce que ça fait](#ce-que-ça-fait) · [Choix d'implémentation](#choix-dimplémentation) |
 | **Mise en place** | [Installation](#installation) · [Premier démarrage](#premier-démarrage) · [Configuration](#configuration) |
 | **Exploitation** | [Sécurité](#sécurité) · [Mise à jour](#mise-à-jour) |
 | **Développement** | [Architecture](#architecture) · [Tests](#tests) |
 | **État du projet** | [Ce qui manque encore](#ce-qui-manque-encore) · [Licence](#licence) |
+
+---
+
+## Ce qu'AgentHub ajoute à Hermes
+
+| | Hermes Agent | Dans AgentHub |
+|---|---|---|
+| **Accès** | Terminal, ou passerelle Telegram / Discord / Slack / WhatsApp / Signal / e-mail | Un navigateur, mobile compris |
+| **Effectif** | Un agent, et des sous-agents lancés le temps d'une tâche | Des agents nommés qui durent, avec des rangs et des pôles |
+| **Délégation** | Sous-agents en parallèle | Vers un rang strictement inférieur, tracée et lisible dans la conversation |
+| **Skills** | Un catalogue que l'agent enrichit lui-même, au standard agentskills.io | L'onglet **Skills** montre le catalogue et ce qui est actif |
+| **MCP** | Déclaré dans `config.yaml` | L'onglet **MCP** montre chaque serveur, son transport et son état |
+| **Mémoire** | Persistante, avec recherche dans les sessions | Partagée entre tous les agents, liée par `[[doubles crochets]]`, avec une vue **Graph** |
+| **Modèles** | Plus de 300, chez plusieurs fournisseurs | Choisis par agent ou pour une seule conversation, avec le coût en euros |
+
+Rien de tout cela ne demande de toucher à l'installation d'Hermes : AgentHub lit
+sa configuration en lecture seule et lui parle par son API.
 
 ---
 
@@ -119,9 +145,10 @@ ce qui te donne aussi HTTPS.
 
 ### Hermes Agent
 
-[Hermes Agent](https://github.com/NousResearch/hermes-agent) apporte la continuité de
-session, ses outils et sa mémoire persistante, plus un catalogue de skills. **Il n'est
-pas obligatoire** — AgentHub fonctionne très bien avec n'importe quel autre service.
+Le backend pour lequel AgentHub a été écrit — voir
+[ce qu'il y ajoute](#ce-quagenthub-ajoute-à-hermes). Rien ici n'est obligatoire :
+sans Hermes, l'onglet **Skills** et l'onglet **MCP** restent vides, et le reste
+fonctionne avec n'importe quel service compatible OpenAI.
 
 L'assistant s'en occupe : à l'étape 2, un bouton **Détecter Hermes automatiquement**.
 
