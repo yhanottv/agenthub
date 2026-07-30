@@ -1025,11 +1025,41 @@ button.agent-card:hover { border-color: var(--accent); transform: translateY(-1p
   border-top: 1px solid var(--line); overflow: hidden; }
 .codeblock.open .code-inner > pre { overflow-x: auto; }
 
-.run-note { color: var(--muted-2); }
-
-/* Le bouton d'envoi devient bouton d'arrêt pendant une réponse. */
-#send-btn.is-stop { background: var(--alert); }
-#send-btn.is-stop:hover:not(:disabled) { filter: brightness(.92); }
+/* --- une reponse est en cours --- */
+/* L'arret etait une pastille coincee entre deux raccourcis clavier, du meme
+   poids visuel qu'un indice, alors que c'est la seule action urgente de l'ecran.
+   Il a sa propre bande, alignee sur le champ de saisie, avec un point qui bat
+   pour dire que ca tourne et un bouton pousse a droite. */
+.run-bar {
+  display: flex; align-items: center; gap: var(--sp-2);
+  margin: 0 var(--sp-5) var(--sp-2);
+  padding: 7px 8px 7px 12px; border-radius: var(--r-sm);
+  background: var(--alert-soft); border: 1px solid transparent;
+  font-size: var(--fs-sm); color: var(--text-2);
+  animation: fade-in .22s var(--ease-out) both;
+}
+.run-bar.hidden { display: none; }
+.run-live {
+  width: 7px; height: 7px; border-radius: 50%; flex: none;
+  background: var(--alert); animation: pulse-dot 1.5s var(--ease) infinite;
+}
+.run-label { font-weight: 600; color: var(--alert); }
+.run-hint { flex: 1; min-width: 0; color: var(--muted); font-size: 11.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-stop {
+  display: inline-flex; align-items: center; gap: 6px; flex: none;
+  padding: 5px 11px 5px 9px; border-radius: var(--r-pill);
+  /* --alert est un brun desature, clair en theme sombre : --on-accent suit et
+     donne de l'encre sombre dessus. Du blanc en dur y tomberait a 2,9:1. */
+  background: var(--alert); color: var(--on-accent);
+  font-size: 11.5px; font-weight: 650;
+  transition: filter var(--fast) var(--ease), transform var(--fast) var(--ease);
+}
+.run-stop svg { width: 11px; height: 11px; }
+.run-stop:hover { filter: brightness(1.08); }
+.run-stop:active { transform: scale(.97); }
+.run-stop:focus-visible { outline: 2px solid var(--alert); outline-offset: 2px; }
+@media (max-width: 620px) { .run-hint { display: none; } }
 #send-btn svg { transition: transform var(--fast) var(--ease); }
 
 /* Pastille de modèle : ce sur quoi la conversation tourne réellement. */
@@ -1826,7 +1856,40 @@ button.tag.on { background: var(--accent); color: var(--on-accent); }
 
 /* — pièces jointes — */
 .attach-btn { flex: none; align-self: flex-end; margin-bottom: 3px; }
-.attach-tray { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: var(--sp-2); }
+/* Le bandeau n'avait aucune marge laterale alors que le champ de saisie en a :
+   la pastille se collait donc au bord gauche de la fenetre, decalee de tout le
+   reste. Il s'aligne desormais sur le composeur. */
+.attach-tray {
+  display: flex; flex-wrap: wrap; gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-5) 0;
+}
+.attach-pill {
+  display: inline-flex; align-items: center; gap: 9px;
+  padding: 6px 6px 6px 8px; border-radius: var(--r-sm);
+  background: var(--surface); border: 1px solid var(--line);
+  max-width: 300px; min-width: 0;
+  animation: fade-in .2s var(--ease-out) both;
+}
+.attach-pill-ic {
+  display: grid; place-items: center; flex: none;
+  width: 26px; height: 26px; border-radius: 7px;
+  background: var(--accent-soft); color: var(--accent-ink);
+}
+.attach-pill-ic svg { width: 13px; height: 13px; }
+.attach-pill-body { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
+.attach-pill-name {
+  font-size: var(--fs-sm); font-weight: 600; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.attach-pill-meta { font-size: 10.5px; color: var(--muted-2); }
+.attach-pill-x {
+  display: grid; place-items: center; flex: none;
+  width: 24px; height: 24px; border-radius: 7px; color: var(--muted);
+  transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+}
+.attach-pill-x svg { width: 13px; height: 13px; }
+.attach-pill-x:hover { background: var(--alert-soft); color: var(--alert); }
+.attach-pill-x:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .attach-tray.hidden { display: none; }
 /* Une archive porte souvent un site : son bouton d'apercu vit a cote de la
    pastille, pas dedans — un bouton dans un lien n'est pas du HTML valide et se
@@ -2078,15 +2141,6 @@ select:disabled {
 .lightbox-x:hover { background: rgba(255, 255, 255, .16); color: #fff; }
 .lightbox-x:focus-visible { outline: 2px solid #8fa8ff; outline-offset: 2px; }
 body.no-scroll { overflow: hidden; }
-
-/* Arreter une reponse est une action a part entiere : elle avait pris la place du
-   bouton d'envoi, ce qui empechait d'ecrire pendant qu'un agent travaillait. */
-.run-stop {
-  padding: 3px 9px; border-radius: var(--r-pill); font-size: 11px; font-weight: 650;
-  color: var(--alert); background: var(--alert-soft); border: 1px solid transparent;
-  transition: border-color var(--fast) var(--ease);
-}
-.run-stop:hover { border-color: var(--alert); }
 
 /* --- apercu d'un site produit par un agent --- */
 /* Le panneau prend la moitie droite de la conversation, qui reste utilisable :

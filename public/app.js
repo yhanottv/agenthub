@@ -221,6 +221,7 @@ const IC = {
   expand: svg('<path d="M9 4H4v5M15 4h5v5M15 20h5v-5M9 20H4v-5"/>'),
   reload: svg('<path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/>'),
   x: svg('<path d="M18 6 6 18M6 6l12 12"/>'),
+  stopSquare: svg('<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/>'),
   mic: svg('<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>'),
   globe: svg('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18a15 15 0 0 1 0-18"/>'),
   copy: svg('<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>'),
@@ -3918,6 +3919,7 @@ function renderChat(v) {
           <button class="scroll-down hidden-soft" id="scroll-down" type="button" aria-label="Revenir en bas">${IC.down}</button>
           <div id="mention-pop" class="mention-pop hidden" role="listbox" aria-label="Mentionner un agent"></div>
           <div id="attach-tray" class="attach-tray hidden"></div>
+          <div id="run-controls" class="run-bar hidden"></div>
           <div class="composer">
             <input type="file" id="file-input" class="sr-only" multiple>
             <button class="icon-btn attach-btn" id="attach-btn" type="button"
@@ -3933,7 +3935,6 @@ function renderChat(v) {
           <div class="composer-hint">
             ${modelChip(c)}
             <span><kbd>Entrée</kbd> envoie · <kbd>Maj+Entrée</kbd> saute une ligne</span>
-            <span id="run-controls"></span>
           </div>
         </div>
       </div>
@@ -4535,10 +4536,17 @@ function renderAttachTray() {
   if (!tray) return;
   const list = S.pendingFiles || [];
   tray.classList.toggle('hidden', !list.length);
-  tray.innerHTML = list.map((f) => `<span class="attach-chip">
-    ${IC.clip}<span>${escapeHtml(f.name)}</span><small>${fmtBytes(f.bytes)}</small>
-    ${f.readable ? '' : '<small title="Les agents ne peuvent pas lire ce format">non lisible</small>'}
-    <button type="button" data-unattach="${escapeAttr(f.id)}" aria-label="Retirer ${escapeAttr(f.name)}">${IC.trash}</button>
+  // Le nom complet en info-bulle : tronquer sans pouvoir relire serait pire que
+  // de déborder. La taille et l'état de lecture tiennent sur la seconde ligne.
+  tray.innerHTML = list.map((f) => `<span class="attach-pill">
+    <span class="attach-pill-ic" aria-hidden="true">${IC.clip}</span>
+    <span class="attach-pill-body">
+      <span class="attach-pill-name" title="${escapeAttr(f.name)}">${escapeHtml(f.name)}</span>
+      <span class="attach-pill-meta">${fmtBytes(f.bytes)}${f.readable
+        ? '' : ' · <span title="Les agents ne peuvent pas lire ce format">non lu par les agents</span>'}</span>
+    </span>
+    <button type="button" class="attach-pill-x" data-unattach="${escapeAttr(f.id)}"
+            aria-label="Retirer ${escapeAttr(f.name)}" title="Retirer">${IC.x}</button>
   </span>`).join('');
 
   $$('[data-unattach]', tray).forEach((b) => b.onclick = async () => {
@@ -5295,13 +5303,18 @@ function renderThinking() {
   const input = $('#composer-input');
   if (sendBtn) sendBtn.disabled = !(input && input.value.trim());
 
+  // L'arrêt était une pastille coincée au milieu des raccourcis clavier, du même
+  // poids visuel qu'un indice. C'est une action urgente : elle a sa propre bande,
+  // avec un point qui bat pour dire que ça tourne, et un bouton à droite.
   const controls = $('#run-controls');
   if (controls) {
+    controls.classList.toggle('hidden', !anyBusy);
     controls.innerHTML = anyBusy
-      ? '<button type="button" class="run-stop" id="stop-run">Arrêter la réponse</button>'
-        // Une seule phrase, un seul noeud de texte : coupee par un <kbd>, elle
-        // ne correspondait a aucune cle et restait en francais.
-        + '<span class="run-note">ton message attendra son tour · Échap arrête aussi</span>'
+      ? '<span class="run-live" aria-hidden="true"></span>'
+        + '<span class="run-label">Une réponse est en cours</span>'
+        + '<span class="run-hint">ton message attendra son tour</span>'
+        + `<button type="button" class="run-stop" id="stop-run" title="Échap arrête aussi">
+             ${IC.stopSquare}<span>Arrêter</span></button>`
       : '';
     const stop = $('#stop-run', controls);
     if (stop) stop.onclick = stopRun;
