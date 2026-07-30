@@ -445,7 +445,7 @@ réécrire ce que le mois dernier a coûté. Seuls les appels jamais tarifés so
 
 ## Tests
 
-Neuf suites, à lancer contre l'image construite :
+Dix suites, à lancer contre l'image construite :
 
 ```bash
 docker build -t agenthub:latest . && npm test
@@ -462,6 +462,7 @@ docker build -t agenthub:latest . && npm test
 | `preview` | En HTTP contre le vrai serveur : un site à modules tourne sans compilation, rien ne sort de l'aperçu, on ne remonte pas hors du site |
 | `mcp` | Le lecteur YAML forme par forme, l'état réel d'un serveur, et le fait qu'une valeur d'environnement ne traverse jamais |
 | `readme` | Ce fichier ne promet rien qui n'existe : fichiers cités, suites annoncées, variables documentées, liens du sommaire |
+| `style` | Aucune règle CSS n'en écrase une autre en silence, et les deux thèmes définissent les mêmes couleurs |
 
 Les deux dernières existent parce que la prévisualisation a cassé deux fois de suite d'une
 manière qu'aucun test unitaire n'aurait vue : une politique de sécurité qui refuse une

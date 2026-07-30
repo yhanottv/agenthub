@@ -4041,7 +4041,6 @@ function renderChat(v) {
           <button class="scroll-down hidden-soft" id="scroll-down" type="button" aria-label="Revenir en bas">${IC.down}</button>
           <div id="mention-pop" class="mention-pop hidden" role="listbox" aria-label="Mentionner un agent"></div>
           <div id="attach-tray" class="attach-tray hidden"></div>
-          <div id="run-controls" class="run-bar hidden"></div>
           <div class="composer">
             <input type="file" id="file-input" class="sr-only" multiple>
             <button class="icon-btn attach-btn" id="attach-btn" type="button"
@@ -4052,11 +4051,14 @@ function renderChat(v) {
               <label for="composer-input" class="sr-only">Message</label>
               <textarea id="composer-input" rows="1" placeholder="Écris un message…  (@ pour appeler un agent)"></textarea>
             </div>
+            <button class="icon-btn stop-btn hidden" id="stop-btn" type="button"
+                    aria-label="Arrêter la réponse" title="Arrêter la réponse (Échap)">${IC.stopSquare}</button>
             <button id="send-btn" type="button" aria-label="Envoyer" disabled>${IC.send}</button>
           </div>
           <div class="composer-hint">
             ${modelChip(c)}
-            <span><kbd>Entrée</kbd> envoie · <kbd>Maj+Entrée</kbd> saute une ligne</span>
+            <span class="kbd-hints"><kbd>Entrée</kbd> envoie · <kbd>Maj+Entrée</kbd> saute une ligne</span>
+            <span class="run-state hidden" id="run-controls"></span>
           </div>
         </div>
       </div>
@@ -5481,9 +5483,21 @@ function renderThinking() {
   const input = $('#composer-input');
   if (sendBtn) sendBtn.disabled = !(input && input.value.trim());
 
-  // L'arrêt était une pastille coincée au milieu des raccourcis clavier, du même
-  // poids visuel qu'un indice. C'est une action urgente : elle a sa propre bande,
-  // avec un point qui bat pour dire que ça tourne, et un bouton à droite.
+  // Deux natures, deux emplacements. L'arrêt est une action : il vit dans la
+  // rangée du composeur, contre le bouton d'envoi, là où la main se trouve déjà.
+  // L'état est une information secondaire : il vit dans la ligne d'indices, et
+  // prend la place des raccourcis clavier — qui n'apprennent rien de neuf
+  // précisément quand on attend une réponse. Une bande flottante au-dessus du
+  // champ faisait sauter la mise en page à chaque tour et se collait au bord.
+  const stop = $('#stop-btn');
+  if (stop) {
+    stop.classList.toggle('hidden', !anyBusy);
+    stop.onclick = stopRun;
+  }
+
+  const hints = $('.kbd-hints');
+  if (hints) hints.classList.toggle('hidden', anyBusy);
+
   const controls = $('#run-controls');
   if (controls) {
     controls.classList.toggle('hidden', !anyBusy);
@@ -5491,11 +5505,7 @@ function renderThinking() {
       ? '<span class="run-live" aria-hidden="true"></span>'
         + '<span class="run-label">Une réponse est en cours</span>'
         + '<span class="run-hint">ton message attendra son tour</span>'
-        + `<button type="button" class="run-stop" id="stop-run" title="Échap arrête aussi">
-             ${IC.stopSquare}<span>Arrêter</span></button>`
       : '';
-    const stop = $('#stop-run', controls);
-    if (stop) stop.onclick = stopRun;
     window.I18N?.applyLang(controls);
   }
 }
