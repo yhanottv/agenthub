@@ -121,6 +121,16 @@ ok('un import absolu est ramené au bon niveau', /from '\.\.\/src\/util\.js'/.te
 const csp = pageRes.headers.get('content-security-policy') || '';
 ok('RIEN NE PEUT SORTIR DE L\'APERÇU', /connect-src 'none'/.test(csp), csp.slice(0, 120));
 ok('les bibliothèques publiques sont autorisées', /esm\.sh/.test(csp) && /cdn\.jsdelivr\.net/.test(csp));
+
+// Une texture refusée laissait un site noir sans le moindre message. Les
+// ressources inertes viennent donc d'où le site les demande — le code, non.
+ok('UNE IMAGE PEUT VENIR DE N\'IMPORTE QUEL HÔTE',
+  /img-src[^;]*\bhttps:/.test(csp), (csp.match(/img-src[^;]*/) || [''])[0]);
+ok('les polices et les sons aussi',
+  /font-src[^;]*\bhttps:/.test(csp) && /media-src[^;]*\bhttps:/.test(csp));
+ok('MAIS LE CODE RESTE LIMITÉ À LA LISTE NOMMÉE',
+  !/script-src[^;]*\bhttps:\s/.test(csp) && /script-src[^;]*cdn\.jsdelivr\.net/.test(csp),
+  (csp.match(/script-src[^;]*/) || [''])[0]);
 ok('notre origine est nommée sans schéma, pour ne pas dépendre du proxy',
   csp.includes(`127.0.0.1:8757/api/preview/${site.id}/`)
   && !csp.includes(`http://127.0.0.1:8757/api/preview/${site.id}/`),
@@ -141,6 +151,42 @@ ok('un fichier absent le dit clairement', absent.status === 404);
 const expire = await get('/api/preview/pv_jamaisvu/index.html');
 ok('un aperçu expiré le dit clairement',
   expire.status === 404 && /expir/i.test(await expire.text()));
+
+// ---- la carte du site fait autorité ----------------------------------------
+// Une page n'accepte qu'une seule carte d'imports : la seconde est ignorée.
+// Poser la nôtre par-dessus celle de l'agent effaçait donc la sienne — et la
+// sienne était juste, sous-chemins compris, ce que nous ne savons pas deviner.
+// Le site restait bloqué à 0 %, son script n'ayant jamais pu se charger.
+const SIEN = [
+  {
+    path: 'index.html',
+    content: '<!doctype html><html><head><script type="importmap">'
+      + '{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",'
+      + '"three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>'
+      + '</head><body><div id="l">0%</div>'
+      + '<script type="module" src="src/app.js"></script></body></html>',
+  },
+  {
+    path: 'src/app.js',
+    content: "import * as THREE from 'three';\n"
+      + "import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';\n"
+      + "document.querySelector('#l').textContent = '100%';\n",
+  },
+];
+const own = await get('/api/preview', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ files: SIEN }),
+});
+const ownPv = await own.json();
+ok('une carte déjà écrite est reconnue',
+  (ownPv.notes || []).some((n) => /respectée/.test(n)), JSON.stringify(ownPv.notes));
+
+const ownPage = await (await get(ownPv.url)).text();
+const nbMaps = (ownPage.match(/<script type="importmap">/g) || []).length;
+ok('LA PAGE NE PORTE QU\'UNE SEULE CARTE D\'IMPORTS', nbMaps === 1, `${nbMaps} carte(s)`);
+ok('ET C\'EST CELLE DU SITE',
+  ownPage.includes('cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/') && !ownPage.includes('esm.sh'),
+  (ownPage.match(/<script type="importmap">[^<]{0,120}/) || [''])[0]);
 
 // ---- une page seule reste possible ----------------------------------------
 const one = await get('/api/preview', {

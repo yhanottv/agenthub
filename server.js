@@ -1267,9 +1267,10 @@ function registerPreview(entries) {
   // Ce que le site ne sait pas résoudre seul, et ce qu'on fait pour lui. Dit à
   // l'utilisateur, parce qu'un aperçu qui bricole en silence ment sur ce qu'il
   // montre : le site tel quel n'aurait pas tourné.
-  const { bare, cssImports } = scanModules(files);
+  const { bare, cssImports, declared } = scanModules(files);
   const importMap = buildImportMap(bare, declaredVersions(files));
   const notes = [];
+  if (declared) notes.push("carte d'imports du site respectée");
   if (bare.size) notes.push(`dépendances résolues via esm.sh : ${[...bare].join(', ')}`);
   if (cssImports.size) notes.push(`feuille(s) de style importée(s) par un module, réinjectée(s) dans la page`);
 
@@ -1339,6 +1340,14 @@ function declaredVersions(files) {
 function scanModules(files) {
   const bare = new Set();
   const cssImports = new Set();
+  // Une page n'accepte qu'une seule carte d'imports : la seconde est ignoree.
+  // Poser la notre par-dessus celle de l'agent revenait donc a effacer la
+  // sienne — et la sienne etait juste, y compris les sous-chemins que nous ne
+  // savons pas deviner. Quand elle existe, elle fait autorite.
+  let declared = false;
+  for (const [path, buf] of files) {
+    if (/\.html?$/i.test(path) && /type=["']importmap["']/i.test(buf.toString('utf8'))) declared = true;
+  }
   for (const [path, buf] of files) {
     if (!/\.m?js$/i.test(path)) continue;
     const src = buf.toString('utf8');
@@ -1350,7 +1359,7 @@ function scanModules(files) {
       if (found) cssImports.add(found);
     }
   }
-  return { bare, cssImports };
+  return { bare: declared ? new Set() : bare, cssImports, declared };
 }
 
 /** Carte d'imports vers esm.sh, en respectant les versions du projet. */
@@ -1534,10 +1543,14 @@ app.get('/api/preview/:id/*', requireAuth, (req, res) => {
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('Content-Security-Policy',
     "default-src 'none'; "
+    // Le code exécutable ne vient que d'une liste nommée. Les images, polices,
+    // sons et feuilles de style viennent d'où le site les demande : ce sont des
+    // ressources inertes, et un site dont les textures sont refusées reste noir
+    // sans qu'on comprenne pourquoi. La seule fuite possible serait une adresse
+    // d'image, dans une origine opaque qui ne détient rien.
     + `script-src 'unsafe-inline' blob: ${base} ${PREVIEW_CDNS}; `
-    + `style-src 'unsafe-inline' ${base} ${PREVIEW_CDNS}; `
-    + `img-src data: blob: ${base} ${PREVIEW_CDNS}; `
-    + `media-src data: blob: ${base}; font-src data: ${base} ${PREVIEW_CDNS}; `
+    + "style-src 'unsafe-inline' https: data:; "
+    + 'img-src https: data: blob:; media-src https: data: blob:; font-src https: data:; '
     // Rien ne sort : ni fetch, ni XHR, ni WebSocket, ni formulaire. C'est ce qui
     // rend acceptable d'exécuter du code écrit par un modèle.
     + "connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self';");
