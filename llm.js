@@ -548,6 +548,26 @@ export function imageProvider() {
  *
  * @returns {Promise<{ok:boolean, buffer?:Buffer, mime?:string, error?:string, usage?:object}>}
  */
+// Les échecs qui valent une nouvelle tentative. Le texte est examiné en plus du
+// code HTTP : les passerelles relaient souvent le message du modèle avec un 200,
+// et « Our servers are currently overloaded » arrivait ainsi jusqu'à l'écran sans
+// qu'aucune reprise ne soit tentée.
+const IMAGE_TRANSIENT =
+  /satur|overload|capacity|unavailable|try again|rate.?limit|temporair|temporarily|injoignable|\b(429|500|502|503|504)\b/i;
+
+const imageRetryable = (r) => Boolean(r) && !r.ok && !r.aborted
+  && (r.retryable === true || IMAGE_TRANSIENT.test(String(r.error || '')));
+
+/** Un essai complet : endpoint dédié, puis complétion de chat en repli. */
+async function attemptImage({ provider, model, prompt, size, signal, mode }) {
+  if (mode !== 'chat') {
+    const r = await imageViaEndpoint({ provider, model, prompt, size, signal });
+    if (r.ok || !r.tryChat || mode === 'images') return r;
+    console.log(`${provider.label} : pas de /images/generations pour « ${model} », essai par complétion de chat.`);
+  }
+  return imageViaChat({ provider, model, prompt, size, signal });
+}
+
 export async function generateImage({ prompt, size = '1024x1024', signal } = {}) {
   const { provider, model, reason } = imageProvider();
   if (!provider) {
@@ -555,12 +575,24 @@ export async function generateImage({ prompt, size = '1024x1024', signal } = {})
   }
   const mode = Settings.get('image_mode', 'auto');
 
-  if (mode !== 'chat') {
-    const r = await imageViaEndpoint({ provider, model, prompt, size, signal });
-    if (r.ok || !r.tryChat || mode === 'images') return r;
-    console.log(`${provider.label} : pas de /images/generations pour « ${model} », essai par complétion de chat.`);
+  let last;
+  for (let attempt = 1; attempt <= Math.max(1, MAX_ATTEMPTS); attempt++) {
+    last = await attemptImage({ provider, model, prompt, size, signal, mode });
+    if (last.ok || signal?.aborted) return last;
+
+    if (!imageRetryable(last) || attempt >= MAX_ATTEMPTS) break;
+
+    const wait = RETRY_BASE_MS * 2 ** (attempt - 1);
+    console.warn(`${provider.label} image : tentative ${attempt}/${MAX_ATTEMPTS} échouée `
+      + `(${last.error}) — nouvel essai dans ${wait} ms.`);
+    await new Promise((r) => setTimeout(r, wait));
+    if (signal?.aborted) return { ok: false, error: 'Génération interrompue.', aborted: true };
   }
-  return imageViaChat({ provider, model, prompt, size, signal });
+
+  // Sans cette ligne, l'échec n'existait que dans la conversation : rien dans les
+  // journaux, donc rien à diagnostiquer après coup.
+  if (!last?.ok) console.error(`${provider.label} image « ${model} » : échec définitif — ${last?.error}`);
+  return last;
 }
 
 async function imageViaEndpoint({ provider, model, prompt, size, signal }) {
