@@ -425,7 +425,14 @@ export const TOOL_DEFS = [
         + "style posées avec <link rel=\"stylesheet\">, jamais importées depuis un fichier .js ; et des "
         + "chemins relatifs (« src/app.js »), jamais absolus (« /src/app.js ») qui ne mènent nulle "
         + "part hors serveur.\n"
-        + `Limites : ${MAX_ENTRIES} fichiers, ${Math.round(MAX_TOTAL_BYTES / 1048576)} Mo au total.`,
+        + "Pour inclure une vidéo ou une image déjà publiée dans le salon — produite par "
+        + "`generer_video` ou déposée par l'utilisateur — donne son nom dans `piece_jointe` au lieu "
+        + "d'un `contenu`, avec le chemin voulu dans l'archive. Le fichier entre alors vraiment dans "
+        + "le zip, et la page peut le référencer : <video src=\"videos/clip.mp4\" controls></video>. "
+        + "N'invente jamais un chemin de média : sans `piece_jointe`, le fichier sera absent et la "
+        + "page cassée.\n"
+        + `Limites : ${MAX_ENTRIES} fichiers, ${Math.round(MAX_TOTAL_BYTES / 1048576)} Mo au total, `
+        + '64 Mo si l\'archive embarque un média.',
       parameters: {
         type: 'object',
         properties: {
@@ -437,9 +444,15 @@ export const TOOL_DEFS = [
               type: 'object',
               properties: {
                 chemin: { type: 'string', description: 'Chemin relatif, ex : « index.html » ou « src/jeu.js ».' },
-                contenu: { type: 'string', description: 'Contenu complet du fichier.' },
+                contenu: { type: 'string', description: 'Contenu complet du fichier. À omettre si tu donnes `piece_jointe`.' },
+                piece_jointe: {
+                  type: 'string',
+                  description: "Nom d'un fichier déjà publié dans ce salon — vidéo, image, archive — à "
+                    + "placer dans l'archive à ce chemin. Sert à inclure un média : une vidéo produite par "
+                    + '`generer_video` ou déposée par l\'utilisateur. Ne mets alors pas de `contenu`.',
+                },
               },
-              required: ['chemin', 'contenu'],
+              required: ['chemin'],
             },
           },
         },
@@ -750,7 +763,39 @@ export async function runTool(name, rawArgs, ctx = {}) {
       case 'creer_archive': {
         if (!ctx.channel?.id) return { ok: false, text: 'Aucun salon en contexte.' };
 
-        const { kept, skipped, bytes } = prepareEntries(args.fichiers);
+        // Les entrées qui désignent une pièce jointe sont résolues en octets avant
+        // la préparation : c'est ce qui permet à un site de contenir une vraie
+        // vidéo au lieu d'un lien vers un fichier absent du zip.
+        const demandes = Array.isArray(args.fichiers) ? args.fichiers : [];
+        const introuvables = [];
+        let media = false;
+        const resolus = demandes.map((f) => {
+          const nom = String(f?.piece_jointe || '').trim();
+          if (!nom) return f;
+          const dispo = Attachments.list(ctx.channel.id);
+          const hit = dispo.find((x) => x.name.toLowerCase() === nom.toLowerCase())
+            || dispo.find((x) => x.name.toLowerCase().includes(nom.toLowerCase()));
+          if (!hit) { introuvables.push(nom); return null; }
+          const full = Attachments.get(hit.id);
+          if (!full?.path || !fs.existsSync(full.path)) { introuvables.push(nom); return null; }
+          media = true;
+          return { chemin: f.chemin, data: fs.readFileSync(full.path) };
+        }).filter(Boolean);
+
+        if (!resolus.length && introuvables.length) {
+          const noms = Attachments.list(ctx.channel.id).map((x) => x.name).slice(0, 10);
+          return {
+            ok: false,
+            text: `Pièce(s) jointe(s) introuvable(s) : ${introuvables.join(', ')}.`
+              + (noms.length ? ` Disponibles dans ce salon : ${noms.join(', ')}.` : ' Ce salon n\'en contient aucune.'),
+          };
+        }
+
+        // Les plafonds ne s'élargissent que si un média est réellement embarqué.
+        const { kept, skipped, bytes } = prepareEntries(resolus, media
+          ? { maxEntryBytes: 48 * 1024 * 1024, maxTotalBytes: 64 * 1024 * 1024 }
+          : {});
+        if (introuvables.length) skipped.push(...introuvables.map((n) => `${n} (pièce jointe introuvable)`));
         if (!kept.length) {
           return {
             ok: false,

@@ -308,7 +308,18 @@ export function auditSite(entries) {
  * Renvoie les entrées retenues et ce qui a été écarté, pour que l'agent puisse
  * le dire au lieu de croire que tout est passé.
  */
-export function prepareEntries(list) {
+const mo = (n) => `${Math.round(n / 1048576)} Mo`;
+
+/**
+ * `limites` permet d'élargir les plafonds quand l'archive embarque un média déjà
+ * publié : 2 Mo par fichier et 8 Mo au total conviennent à du texte, pas à une
+ * vidéo. Une entrée dont `data` est déjà un Buffer passe telle quelle — c'est
+ * ainsi qu'une pièce jointe entre dans le zip sans transiter par une chaîne.
+ */
+export function prepareEntries(list, limites = {}) {
+  const maxEntry = limites.maxEntryBytes || MAX_ENTRY_BYTES;
+  const maxTotal = limites.maxTotalBytes || MAX_TOTAL_BYTES;
+
   const kept = [];
   const skipped = [];
   const seen = new Set();
@@ -321,9 +332,11 @@ export function prepareEntries(list) {
     if (!path) { skipped.push(`${item?.chemin || '?'} (chemin inutilisable)`); continue; }
     if (seen.has(path)) { skipped.push(`${path} (déjà présent)`); continue; }
 
-    const data = Buffer.from(String(item?.contenu ?? item?.content ?? ''), 'utf8');
-    if (data.length > MAX_ENTRY_BYTES) { skipped.push(`${path} (dépasse 2 Mo)`); continue; }
-    if (total + data.length > MAX_TOTAL_BYTES) { skipped.push(`${path} (l'archive dépasserait 8 Mo)`); continue; }
+    const data = Buffer.isBuffer(item?.data)
+      ? item.data
+      : Buffer.from(String(item?.contenu ?? item?.content ?? ''), 'utf8');
+    if (data.length > maxEntry) { skipped.push(`${path} (dépasse ${mo(maxEntry)})`); continue; }
+    if (total + data.length > maxTotal) { skipped.push(`${path} (l'archive dépasserait ${mo(maxTotal)})`); continue; }
 
     seen.add(path);
     total += data.length;

@@ -663,7 +663,7 @@ function buildSystemPrompt(channel, agent, members, canDelegate, chain = []) {
       lines.push("- `generer_video` dès qu'on te demande une vidéo, une animation ou un clip. La génération prend plusieurs minutes et consomme des crédits : une seule à la fois, et jamais sans qu'on te l'ait demandée. La vidéo apparaît seule dans la conversation, ne la décris pas après coup.");
     }
     lines.push("- `creer_tableur` pour tout tableau, questionnaire, grille, état des lieux, budget, planning ou inventaire : il publie un vrai fichier .xlsx téléchargeable.");
-    lines.push("- `creer_archive` pour livrer plusieurs fichiers d'un coup — un site, un script et ses dépendances, un dossier de documentation. L'archive .zip apparaît dans la conversation.");
+    lines.push("- `creer_archive` pour livrer plusieurs fichiers d'un coup — un site, un script et ses dépendances, un dossier de documentation. L'archive .zip apparaît dans la conversation. Pour qu'un site contienne une vidéo ou une image déjà publiée dans le salon, donne son nom dans `piece_jointe` : le fichier entre réellement dans l'archive au lieu d'être un lien mort.");
     lines.push('');
     // Sans cette phrase, un agent à qui on demande un fichier écrit un script
     // Python à lancer soi-même et annonce le livrable comme s'il existait. C'est
