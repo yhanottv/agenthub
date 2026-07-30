@@ -13,7 +13,7 @@
  */
 import zlib from 'node:zlib';
 import {
-  makeZip, readZip, prepareEntries, safeEntryPath,
+  makeZip, readZip, prepareEntries, safeEntryPath, auditSite,
   MAX_ENTRIES, MAX_ENTRY_BYTES, MAX_TOTAL_BYTES,
 } from '/app/archive.js';
 
@@ -239,6 +239,78 @@ ok('UN SITE LIVRÉ EN ARCHIVE EXPOSE SA PAGE D\'ENTRÉE',
   pages.length === 1 && pages[0].path === 'index.html', lu2.map((e) => e.path).join('|'));
 ok('et ses fichiers voisins gardent leur arborescence',
   lu2.some((e) => e.path === 'css/styles.css') && lu2.some((e) => e.path === 'js/app.js'));
+
+// ---- ce site s'ouvrira-t-il tel quel ? -------------------------------------
+// Une consigne dans la description d'un outil se dilue ; un verdict rendu dans le
+// résultat de l'appel arrive au moment où l'agent peut encore corriger. Encore
+// faut-il que le verdict soit juste : c'est ce que fige la suite ci-dessous.
+const F = (list) => list.map((f) => ({ path: f.path, data: Buffer.from(f.content, 'utf8') }));
+
+const bon = auditSite(F([
+  { path: 'index.html', content: '<!doctype html><link rel="stylesheet" href="style.css">'
+    + '<script src="https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.min.js"></script>'
+    + '<script src="app.js"></script>' },
+  { path: 'style.css', content: 'body{margin:0}' },
+  { path: 'app.js', content: 'console.log(THREE.REVISION);' },
+]));
+ok('UN SITE QUI S\'OUVRE TEL QUEL NE DÉCLENCHE RIEN', bon.length === 0, bon.join(' | '));
+
+// Le cas exact rencontré : projet Vite, imports par nom, chemin absolu, CSS
+// importé depuis un module.
+const vite = auditSite(F([
+  { path: 'index.html', content: '<!doctype html><a class="skip" href="#m">Aller au contenu</a>'
+    + '<div id="app"></div><script type="module" src="/src/main.js"></script>' },
+  { path: 'src/main.js', content: "import * as THREE from 'three';\nimport './styles.css';\n" },
+  { path: 'src/styles.css', content: 'body{margin:0}' },
+  { path: 'package.json', content: '{"dependencies":{"three":"^0.169.0"}}' },
+]));
+ok('UN PROJET VITE EST SIGNALÉ', vite.length >= 3, `${vite.length} : ${vite.join(' | ')}`);
+ok('le chemin absolu est nommé', vite.some((p) => /\/src\/main\.js/.test(p) && /absolu/.test(p)), vite.join(' | '));
+ok('l\'import par nom est nommé', vite.some((p) => /three/.test(p) && /carte d'imports|CDN/.test(p)), vite.join(' | '));
+ok('l\'import de feuille de style est nommé',
+  vite.some((p) => /styles?\.css|feuille de style/.test(p) && /main\.js/.test(p)), vite.join(' | '));
+ok('chaque obstacle dit quoi faire à la place',
+  vite.every((p) => /relatif|CDN|importmap|<link|Écris|Mets/.test(p)), vite.join(' | '));
+
+// Une carte d'imports déjà posée règle le problème : ne pas le signaler quand
+// même, sinon l'agent corrige ce qui est déjà juste.
+const avecCarte = auditSite(F([
+  { path: 'index.html', content: '<!doctype html><script type="importmap">{"imports":{"three":"https://esm.sh/three"}}</script>'
+    + '<script type="module" src="app.js"></script>' },
+  { path: 'app.js', content: "import * as THREE from 'three';" },
+]));
+ok('une carte d\'imports déjà posée n\'est pas reprochée',
+  !avecCarte.some((p) => /nom de paquet/.test(p)), avecCarte.join(' | '));
+
+for (const [ext, mot] of [['tsx', 'TypeScript'], ['jsx', 'JSX'], ['scss', 'Sass']]) {
+  const r = auditSite(F([
+    { path: 'index.html', content: '<!doctype html><script src="app.js"></script>' },
+    { path: 'app.js', content: 'const x = 1;' },
+    { path: `src/a.${ext}`, content: 'x' },
+  ]));
+  ok(`un fichier .${ext} est signalé comme à compiler`,
+    r.some((p) => p.includes(mot) && /compiler/.test(p)), r.join(' | '));
+}
+
+const manquant = auditSite(F([
+  { path: 'index.html', content: '<!doctype html><link rel="stylesheet" href="css/absent.css">' },
+]));
+ok('une référence absente de l\'archive est signalée',
+  manquant.some((p) => /absent/.test(p) && /absent\.css/.test(p)), manquant.join(' | '));
+
+const sansPage = auditSite(F([
+  { path: 'a.js', content: 'x' },
+  { path: 'b.js', content: 'y' },
+]));
+ok('une archive de site sans page HTML est signalée',
+  sansPage.some((p) => /aucune page/i.test(p)), sansPage.join(' | '));
+
+ok('un fichier seul ne déclenche pas de reproche', auditSite(F([{ path: 'notes.md', content: '# x' }])).length === 0);
+ok('une ancre ou une URL externe ne compte pas comme référence locale',
+  auditSite(F([{ path: 'index.html', content: '<a href="#bas">b</a><a href="https://x.fr">e</a>'
+    + '<a href="mailto:a@b.fr">m</a>' }])).length === 0);
+ok('la liste reste courte, même sur un projet entièrement à côté',
+  auditSite(F(Array.from({ length: 40 }, (_, i) => ({ path: `src/c${i}.tsx`, content: 'x' })))).length <= 8);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

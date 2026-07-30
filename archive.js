@@ -213,6 +213,95 @@ export function readZip(buf, { maxEntries = MAX_ENTRIES, maxTotal = 12 * 1024 * 
   return out;
 }
 
+/* ============================================================================
+   Ce site s'ouvrira-t-il tel quel ?
+
+   Les agents livrent volontiers un projet d'outillage moderne : sources en JSX,
+   feuilles en Sass, imports par nom de paquet, chemins absolus depuis la racine.
+   C'est du code juste — et injouable sans compilation. Celui qui reçoit
+   l'archive double-clique sur `index.html` et ne voit rien ; l'aperçu d'AgentHub
+   en rattrape une partie, jamais tout.
+
+   Le dire dans la description de l'outil ne suffit pas : une consigne se perd.
+   On vérifie donc, et on rend le verdict à l'agent dans le résultat de son
+   propre appel, assez précis pour qu'il sache quoi changer. L'archive est
+   publiée quand même : un projet à compiler reste un livrable valable, et ce
+   n'est pas à nous de le refuser à sa place.
+   ========================================================================== */
+
+const NEEDS_BUILD = {
+  '.ts': 'TypeScript', '.tsx': 'TypeScript + JSX', '.jsx': 'JSX',
+  '.scss': 'Sass', '.sass': 'Sass', '.less': 'Less',
+  '.vue': 'composants Vue', '.svelte': 'composants Svelte',
+};
+
+const BARE = /(?:^|[\s;])(?:import|export)(?:\s[\s\S]*?\sfrom|)\s*['"]([^'".][^'"]*)['"]/g;
+
+/**
+ * @param {Array<{path: string, data: Buffer}>} entries
+ * @returns {string[]} ce qui empêchera le site de s'ouvrir tel quel
+ */
+export function auditSite(entries) {
+  const names = new Set(entries.map((e) => e.path));
+  const pages = entries.filter((e) => /\.html?$/i.test(e.path));
+  const scripts = entries.filter((e) => /\.m?js$/i.test(e.path));
+  const problems = [];
+
+  const compiled = new Map();
+  for (const e of entries) {
+    const ext = e.path.slice(e.path.lastIndexOf('.')).toLowerCase();
+    if (NEEDS_BUILD[ext]) compiled.set(NEEDS_BUILD[ext], (compiled.get(NEEDS_BUILD[ext]) || 0) + 1);
+  }
+  for (const [kind, n] of compiled) {
+    problems.push(`${n} fichier(s) en ${kind} : il faut compiler avant d'ouvrir. `
+      + 'Écris du HTML, du CSS et du JavaScript que le navigateur lit directement.');
+  }
+
+  const hasImportMap = pages.some((p) => /type=["']importmap["']/i.test(p.data.toString('utf8')));
+  const bare = new Set();
+  for (const s of scripts) {
+    const src = s.data.toString('utf8');
+    for (const m of src.matchAll(BARE)) {
+      const spec = m[1];
+      if (!/^[./]/.test(spec) && !/^[a-z][a-z0-9+.-]*:/i.test(spec)) bare.add(spec);
+    }
+    if (/(?:^|[\s;])import\s*['"][^'"]+\.(?:css|scss|less)['"]/.test(src)) {
+      problems.push(`${s.path} importe une feuille de style : seul un empaqueteur sait le faire. `
+        + 'Mets-la dans la page avec <link rel="stylesheet">.');
+    }
+  }
+  if (bare.size && !hasImportMap) {
+    problems.push(`imports par nom de paquet (${[...bare].slice(0, 5).join(', ')}) sans carte d'imports : `
+      + 'un navigateur ne sait pas les résoudre. Charge la bibliothèque depuis un CDN '
+      + '(<script src="https://cdn.jsdelivr.net/npm/…">) ou ajoute un <script type="importmap">.');
+  }
+
+  for (const page of pages) {
+    const html = page.data.toString('utf8');
+    for (const m of html.matchAll(/\b(?:src|href)=["'](\/[^"'>]*)["']/g)) {
+      if (m[1].startsWith('//')) continue;
+      problems.push(`${page.path} pointe vers « ${m[1]} », un chemin absolu depuis la racine du serveur. `
+        + 'Hors serveur, il ne mène nulle part : écris le chemin relatif.');
+      break;
+    }
+    // Une référence locale qui ne correspond à aucun fichier de l'archive.
+    for (const m of html.matchAll(/\b(?:src|href)=["']([^"'>#]+)["']/g)) {
+      const ref = m[1].split(/[?#]/)[0];
+      if (!ref || /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(ref) || ref.startsWith('#')) continue;
+      const dir = page.path.includes('/') ? page.path.slice(0, page.path.lastIndexOf('/')) : '';
+      const resolved = safeEntryPath(ref.startsWith('/') ? ref : (dir ? `${dir}/${ref}` : ref));
+      if (resolved && !names.has(resolved)) {
+        problems.push(`${page.path} référence « ${ref} », absent de l'archive.`);
+      }
+    }
+  }
+
+  if (!pages.length && entries.length > 1) {
+    problems.push("aucune page HTML : rien ne pourra s'ouvrir. Ajoute au moins index.html.");
+  }
+  return [...new Set(problems)].slice(0, 8);
+}
+
 /**
  * Prépare une liste de fichiers venue d'un modèle.
  *

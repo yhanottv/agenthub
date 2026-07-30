@@ -18,7 +18,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { Notes, NoteProposals, Search, Attachments, Usage } from './db.js';
 import { generateImage, imageProvider } from './llm.js';
-import { makeZip, prepareEntries, MAX_ENTRIES, MAX_TOTAL_BYTES } from './archive.js';
+import { makeZip, prepareEntries, auditSite, MAX_ENTRIES, MAX_TOTAL_BYTES } from './archive.js';
 
 const UPLOAD_DIR = path.join(process.env.DATA_DIR || './data', 'uploads');
 
@@ -410,7 +410,15 @@ export const TOOL_DEFS = [
       description: "Rassemble plusieurs fichiers dans une archive .zip et la publie dans la conversation, "
         + "prête à télécharger. À utiliser dès qu'un projet dépasse un ou deux fichiers : site web, "
         + "jeu, script avec ses dépendances, dossier de documentation. Écris le contenu complet de "
-        + "chaque fichier — pas un résumé, pas un extrait. "
+        + "chaque fichier — pas un résumé, pas un extrait.\n"
+        + "S'il s'agit d'un site ou d'une page, il doit s'ouvrir tel quel en double-cliquant sur "
+        + "index.html, sans npm ni compilation. Donc : du HTML, du CSS et du JavaScript que le "
+        + "navigateur lit directement, jamais de JSX, de TypeScript ni de Sass ; les bibliothèques "
+        + "chargées depuis un CDN (<script src=\"https://cdn.jsdelivr.net/npm/…\">) ou déclarées dans "
+        + "un <script type=\"importmap\">, jamais un import par nom de paquet seul ; les feuilles de "
+        + "style posées avec <link rel=\"stylesheet\">, jamais importées depuis un fichier .js ; et des "
+        + "chemins relatifs (« src/app.js »), jamais absolus (« /src/app.js ») qui ne mènent nulle "
+        + "part hors serveur.\n"
         + `Limites : ${MAX_ENTRIES} fichiers, ${Math.round(MAX_TOTAL_BYTES / 1048576)} Mo au total.`,
       parameters: {
         type: 'object',
@@ -687,14 +695,25 @@ export async function runTool(name, rawArgs, ctx = {}) {
         ctx.onFile?.(a);
 
         const arbo = kept.map((e) => e.path).slice(0, 40).join(', ');
+        // Le verdict est rendu à l'agent dans le résultat de son propre appel :
+        // c'est le seul moment où il peut encore corriger, et une consigne posée
+        // dans la description de l'outil se dilue au bout de quelques tours.
+        const problemes = auditSite(kept);
+        if (problemes.length) {
+          console.log(`Archive « ${a.name} » : ${problemes.length} obstacle(s) à l'ouverture directe.`);
+        }
         return {
           ok: true,
           text: `Archive « ${a.name} » publiée dans la conversation : ${kept.length} fichier(s), `
             + `${Math.round(bytes / 1024)} Ko décompressés, ${Math.round(a.bytes / 1024)} Ko compressés.\n`
             + `Contenu : ${arbo}${kept.length > 40 ? ', …' : ''}.`
             + (skipped.length ? `\nÉcarté : ${skipped.slice(0, 6).join(', ')}.` : '')
-            + '\nElle est déjà téléchargeable : ne recopie pas les fichiers dans ta réponse, '
-            + 'explique seulement comment s\'en servir.',
+            + (problemes.length
+              ? `\n\n⚠️ Ce site ne s'ouvrira pas tel quel :\n- ${problemes.join('\n- ')}\n`
+                + 'Corrige et republie une archive avec creer_archive, puis dis en une phrase ce que '
+                + 'tu as changé. Ne demande pas confirmation.'
+              : '\nElle est déjà téléchargeable : ne recopie pas les fichiers dans ta réponse, '
+                + 'explique seulement comment s\'en servir.'),
         };
       }
 
