@@ -17,10 +17,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { Notes, NoteProposals, Search, Attachments, Usage } from './db.js';
-import { generateImage, imageProvider } from './llm.js';
+import { generateImage, imageProvider, sniffImage } from './llm.js';
 import { makeZip, prepareEntries, auditSite, MAX_ENTRIES, MAX_TOTAL_BYTES } from './archive.js';
 import { makeXlsx, prepareSheets, MAX_ROWS, MAX_SHEETS } from './sheet.js';
-import * as hf from './higgsfield.js';
 
 // Une vidéo pèse plus qu'une image : la limite des pièces jointes doit suivre,
 // sans devenir un moyen de remplir le disque.
@@ -393,7 +392,9 @@ export const TOOL_DEFS = [
     function: {
       name: 'generer_image',
       description: "Crée une image à partir d'une description et la publie dans la conversation. "
-        + "À utiliser quand on te demande une illustration, un visuel, un logo, une maquette ou un schéma. "
+        + "À utiliser quand on te demande une illustration, un visuel, un logo, une maquette ou un schéma — "
+        + "et pour illustrer un site que tu livres avec creer_archive : une image d'ambiance en tête de "
+        + "page change tout, embarque-la ensuite via piece_jointe. "
         + "Décris la scène précisément : cadrage, style, couleurs, ambiance.",
       parameters: {
         type: 'object',
@@ -425,12 +426,14 @@ export const TOOL_DEFS = [
         + "style posées avec <link rel=\"stylesheet\">, jamais importées depuis un fichier .js ; et des "
         + "chemins relatifs (« src/app.js »), jamais absolus (« /src/app.js ») qui ne mènent nulle "
         + "part hors serveur.\n"
-        + "Pour inclure une vidéo ou une image déjà publiée dans le salon — produite par "
-        + "`generer_video` ou déposée par l'utilisateur — donne son nom dans `piece_jointe` au lieu "
+        + "Pour inclure une image ou une vidéo déjà publiée dans le salon — produite par "
+        + "`generer_image` ou déposée par l'utilisateur — donne son nom dans `piece_jointe` au lieu "
         + "d'un `contenu`, avec le chemin voulu dans l'archive. Le fichier entre alors vraiment dans "
         + "le zip, et la page peut le référencer : <video src=\"videos/clip.mp4\" controls></video>. "
         + "N'invente jamais un chemin de média : sans `piece_jointe`, le fichier sera absent et la "
         + "page cassée.\n"
+        + "Un site gagne beaucoup à être illustré : avant d'assembler l'archive, pense à générer une "
+        + "image d'ambiance avec generer_image et à l'embarquer ainsi, plutôt que de livrer une page nue.\n"
         + `Limites : ${MAX_ENTRIES} fichiers, ${Math.round(MAX_TOTAL_BYTES / 1048576)} Mo au total, `
         + '64 Mo si l\'archive embarque un média.',
       parameters: {
@@ -448,8 +451,8 @@ export const TOOL_DEFS = [
                 piece_jointe: {
                   type: 'string',
                   description: "Nom d'un fichier déjà publié dans ce salon — vidéo, image, archive — à "
-                    + "placer dans l'archive à ce chemin. Sert à inclure un média : une vidéo produite par "
-                    + '`generer_video` ou déposée par l\'utilisateur. Ne mets alors pas de `contenu`.',
+                    + "placer dans l'archive à ce chemin. Sert à inclure un média : une image produite par "
+                    + '`generer_image` ou un fichier déposé par l\'utilisateur. Ne mets alors pas de `contenu`.',
                 },
               },
               required: ['chemin'],
@@ -457,36 +460,6 @@ export const TOOL_DEFS = [
           },
         },
         required: ['nom', 'fichiers'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'generer_video',
-      description: "Produit une vraie vidéo avec Higgsfield et la publie dans la conversation, prête à "
-        + "regarder et à télécharger. À utiliser dès qu'on demande une vidéo, une animation, un clip, "
-        + "une publicité, une démonstration de produit, ou d'animer une image.\n"
-        + "La génération prend de une à plusieurs minutes : appelle l'outil et attends son résultat, "
-        + "n'annonce jamais la vidéo avant de l'avoir reçu.\n"
-        + "Chaque appel consomme des crédits sur le compte de l'utilisateur — une vidéo coûte nettement "
-        + "plus qu'une image. N'en produis qu'une à la fois, et seulement si on te l'a demandée.\n"
-        + "La vidéo est déjà visible une fois publiée : ne la décris pas à nouveau, commente-la.",
-      parameters: {
-        type: 'object',
-        properties: {
-          description: {
-            type: 'string',
-            description: 'Ce que la vidéo doit montrer, en anglais de préférence, précis sur le cadrage, '
-              + "la lumière et le mouvement. C'est le prompt envoyé au modèle.",
-          },
-          modele: {
-            type: 'string',
-            description: "Identifiant du modèle. À omettre pour laisser le choix par défaut "
-              + `(${hf.DEFAULT_VIDEO}). Exemples : kling3_0_turbo, veo3_1_lite, veo3_1.`,
-          },
-        },
-        required: ['description'],
       },
     },
   },
@@ -570,7 +543,6 @@ export const TOOL_LABELS = {
   proposer_note: 'propose une note',
   calculer: 'calcule',
   generer_image: 'dessine',
-  generer_video: 'tourne une vidéo',
   creer_archive: 'prépare une archive',
   creer_tableur: 'prépare un tableur',
   lire_piece_jointe: 'lit un fichier',
@@ -844,83 +816,6 @@ export async function runTool(name, rawArgs, ctx = {}) {
                 + 'tu as changé. Ne demande pas confirmation.'
               : '\nElle est déjà téléchargeable : ne recopie pas les fichiers dans ta réponse, '
                 + 'explique seulement comment s\'en servir.'),
-        };
-      }
-
-      case 'generer_video': {
-        if (!ctx.channel?.id) return { ok: false, text: 'Aucun salon en contexte.' };
-        const desc = String(args.description || '').trim();
-        if (!desc) return { ok: false, text: 'Décris la vidéo à produire.' };
-
-        const st = await hf.status();
-        if (!st.available) {
-          const pourquoi = {
-            'hermes-injoignable': "Hermes est injoignable, or Higgsfield passe par son conteneur.",
-            'cli-absent': "Le CLI Higgsfield n'est pas installé dans le conteneur d'Hermes.",
-            'non-connecte': "Le compte Higgsfield n'est pas connecté. À faire depuis Réglages.",
-            'workspace-non-choisi': "Aucun workspace Higgsfield sélectionné. À choisir depuis Réglages.",
-          }[st.reason] || 'Higgsfield est indisponible.';
-          return { ok: false, text: `${pourquoi} Dis-le simplement, ne propose pas de commande à lancer.` };
-        }
-
-        const model = String(args.modele || hf.DEFAULT_VIDEO).trim();
-        // Le devis est gratuit : mieux vaut refuser avant de consommer que
-        // d'échouer à mi-parcours avec des crédits déjà débités.
-        const devis = await hf.cost(model, desc);
-        if (devis.ok && st.credits !== null && devis.credits > st.credits) {
-          return {
-            ok: false,
-            text: `Crédits insuffisants : cette vidéo coûte ${devis.credits} crédits et il en reste `
-              + `${st.credits}. Dis-le à l'utilisateur, il doit recharger son compte Higgsfield.`,
-          };
-        }
-
-        const r = await hf.generate(model, desc, {
-          signal: ctx.signal,
-          onTick: (etat, sec) => console.log(`Higgsfield ${model} : ${etat} (${sec} s)`),
-        });
-        if (!r.ok) return { ok: false, text: r.text };
-
-        const url = r.urls[0];
-        await assertPublicUrl(url);
-        const res = await fetch(url, { signal: ctx.signal });
-        if (!res.ok) return { ok: false, text: `Téléchargement du média impossible (HTTP ${res.status}).` };
-
-        const annonce = Number(res.headers.get('content-length') || 0);
-        if (annonce > MAX_MEDIA_BYTES) {
-          return { ok: false, text: `Média trop lourd (${Math.round(annonce / 1048576)} Mo).` };
-        }
-        const buffer = Buffer.from(await res.arrayBuffer());
-        if (buffer.length > MAX_MEDIA_BYTES) {
-          return { ok: false, text: `Média trop lourd (${Math.round(buffer.length / 1048576)} Mo).` };
-        }
-
-        const mime = (res.headers.get('content-type') || '').split(';')[0].trim() || 'video/mp4';
-        const ext = { 'video/mp4': 'mp4', 'video/webm': 'webm', 'video/quicktime': 'mov',
-          'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' }[mime]
-          || (url.match(/\.([a-z0-9]{2,4})(?:\?|$)/i) || [])[1]?.toLowerCase() || 'mp4';
-
-        const id = 'at_' + crypto.randomBytes(8).toString('hex');
-        fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-        const diskPath = path.join(UPLOAD_DIR, id);
-        fs.writeFileSync(diskPath, buffer);
-
-        const a = Attachments.create({
-          id,
-          channel_id: ctx.channel.id,
-          message_id: ctx.messageId || null,
-          name: `${slugName(desc)}.${ext}`,
-          mime,
-          bytes: buffer.length,
-          path: diskPath,
-        });
-        ctx.onFile?.(a);
-
-        return {
-          ok: true,
-          text: `Vidéo « ${a.name} » publiée dans la conversation (${Math.round(a.bytes / 1048576 * 10) / 10} Mo, `
-            + `modèle ${model}${devis.ok ? `, ${devis.credits} crédits` : ''}).`
-            + ' Elle est déjà visible et téléchargeable : ne la décris pas à nouveau, commente-la.',
         };
       }
 

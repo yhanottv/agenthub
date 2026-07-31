@@ -657,10 +657,8 @@ function buildSystemPrompt(channel, agent, members, canDelegate, chain = []) {
     lines.push('- `calculer` pour tout calcul, même simple.');
     lines.push('- `proposer_note` quand tu apprends un fait durable sur l\'organisation. Jamais pour un détail de la conversation.');
     if (activeToolDefs().some((t) => t.function.name === 'generer_image')) {
-      lines.push("- `generer_image` dès qu'on te demande un visuel. L'image apparaît seule dans la conversation : ne la décris pas après coup, commente-la.");
-    }
-    if (activeToolDefs().some((t) => t.function.name === 'generer_video')) {
-      lines.push("- `generer_video` dès qu'on te demande une vidéo, une animation ou un clip. La génération prend plusieurs minutes et consomme des crédits : une seule à la fois, et jamais sans qu'on te l'ait demandée. La vidéo apparaît seule dans la conversation, ne la décris pas après coup.");
+      lines.push("- `generer_image` dès qu'on te demande un visuel — et pour illustrer un site que tu livres : une image d'ambiance générée puis embarquée via `piece_jointe` vaut mieux qu'une page nue. L'image apparaît seule dans la conversation : ne la décris pas après coup, commente-la.");
+
     }
     lines.push("- `creer_tableur` pour tout tableau, questionnaire, grille, état des lieux, budget, planning ou inventaire : il publie un vrai fichier .xlsx téléchargeable.");
     lines.push("- `creer_archive` pour livrer plusieurs fichiers d'un coup — un site, un script et ses dépendances, un dossier de documentation. L'archive .zip apparaît dans la conversation. Pour qu'un site contienne une vidéo ou une image déjà publiée dans le salon, donne son nom dans `piece_jointe` : le fichier entre réellement dans l'archive au lieu d'être un lien mort.");
