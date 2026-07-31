@@ -61,6 +61,33 @@ const CORE_EN = {
   'Revérifier': 'Check again',
   'Recentrer': 'Recentre',
   'Pause': 'Pause',
+  'Parler à Jarvis…': 'Talk to Jarvis…',
+  'Parler à Jarvis': 'Talk to Jarvis',
+  'Cerveau actuel': 'Current brain',
+  'aucun cerveau': 'no brain',
+  'Jarvis': 'Jarvis',
+  'EN VEILLE': 'STANDBY',
+  "À L'ÉCOUTE": 'LISTENING',
+  'RÉFLEXION': 'THINKING',
+  'RÉPONSE': 'SPEAKING',
+  'Voix': 'Voice',
+  'Clavier': 'Keyboard',
+  'Choisir la voix de Jarvis': 'Choose the Jarvis voice',
+  'Clique pour parler': 'Click to speak',
+  'Parle — je m\'arrête quand tu te tais': 'Speak — I stop when you do',
+  'Un instant…': 'One moment…',
+  'Parle par-dessus moi pour m\'interrompre': 'Speak over me to interrupt',
+  'Mot de réveil': 'Wake word',
+  'Ouvrir Jarvis quand je dis « Ok Jarvis »': 'Open Jarvis when I say "Ok Jarvis"',
+  'Dis « Ok Jarvis » depuis n\'importe quelle page.': 'Say "Ok Jarvis" from any page.',
+  'Jarvis ouvert.': 'Jarvis opened.',
+  'Le micro a été refusé : le mot de réveil est désactivé.':
+    'The microphone was denied: the wake word is turned off.',
+  'Bonjour Monsieur. Je suis Jarvis, à votre service.': 'Good day, sir. I am Jarvis, at your service.',
+  'Jarvis répond à voix haute': 'Jarvis answers out loud',
+  'Écrire au lieu de parler': 'Type instead of speaking',
+  'glisser pour tourner · molette pour zoomer · clic sur une étoile':
+    'drag to rotate · scroll to zoom · click a star',
   'Reprendre': 'Resume',
   'Envoyer': 'Send',
   'Arrêter': 'Stop',
@@ -407,8 +434,6 @@ const CORE_EN = {
     'Agents using it will switch to another available provider.',
   'Laisse vide pour ne pas être prévenu. L\'alerte n\'arrête rien, elle avertit.':
     'Leave empty for no warning. The alert stops nothing, it warns.',
-  'glisser pour tourner · molette pour zoomer · clic sur une étoile · double-clic met en pause':
-    'drag to rotate · wheel to zoom · click a star · double-click pauses',
   'Tous les messages et toutes les tâches de ce salon seront définitivement effacés. Les agents, eux, sont conservés.':
     'Every message and task in this channel will be permanently erased. The agents themselves are kept.',
 

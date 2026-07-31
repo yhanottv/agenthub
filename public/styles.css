@@ -1647,10 +1647,273 @@ button.tag.on { background: var(--accent); color: var(--on-accent); }
 .gc-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gc-meta { font-size: var(--fs-sm); color: #9aa4cc; margin-top: 3px; line-height: 1.5; }
 
+/* ===========================================================================
+   Jarvis — la carte en grand, et lui par-dessus.
+
+   Les couleurs sont écrites en dur : cette page est un ciel étoilé dans les
+   deux thèmes, elle ne suit pas le clair/sombre du reste de l'interface.
+   =========================================================================== */
+
+/* `.view` défile ; cette page-ci occupe exactement la hauteur restante et ne
+   défile pas — d'où le `100%` plutôt qu'un calcul sur la barre du haut, dont la
+   hauteur varie avec le rembourrage responsive. */
+.view:has(> .jarvis-page) { overflow: hidden; }
+.jarvis-page {
+  position: relative; overflow: hidden; height: 100%; min-height: 420px;
+  background: radial-gradient(120% 90% at 50% 45%, #0b0d15 0%, #060810 50%, #020307 100%);
+}
+.jarvis-page > canvas, .jarvis-void {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  cursor: grab; touch-action: none;
+}
+.jarvis-page > canvas.grabbing { cursor: grabbing; }
+.jarvis-page .galaxy-loading { position: absolute; inset: 0; }
+.jv-empty {
+  position: absolute; top: 12%; left: 50%; transform: translateX(-50%);
+  display: flex; flex-direction: column; gap: 4px; align-items: center;
+  color: #8b96c8; font-size: var(--fs-sm); text-align: center;
+}
+.jv-empty strong { color: #cfd8f5; font-size: var(--fs-base); }
+.jarvis-page .galaxy-warn { z-index: 3; }
+/* Les calques restent en bas à gauche, là où la règle générale les place — la
+   droite appartient à Jarvis. Ne jamais y ajouter `top` sans annuler `bottom` :
+   la boîte s'étirerait du haut au bas de l'écran et les boutons deviendraient
+   des colonnes. */
+.jarvis-page .galaxy-layers { z-index: 2; max-width: min(380px, 42vw); }
+.jarvis-page .galaxy-tools {
+  position: absolute; top: var(--sp-4); right: var(--sp-4); z-index: 2;
+  display: flex; align-items: center; gap: 8px;
+}
+/* La fiche de survol descend au centre : à droite elle passerait sous Jarvis. */
+.jarvis-page .galaxy-card {
+  z-index: 2; right: auto; left: 50%; transform: translateX(-50%);
+}
+
+/* Jarvis est une console, pas une suite d'éléments posés sur la carte : un
+   panneau ancré à droite, avec ses zones — identité, réacteur, échange,
+   commandes. La galaxie garde le centre et la gauche. */
+/* Aucun panneau : le réacteur et ses libellés flottent au-dessus de la galaxie.
+   Le bloc ne capte donc pas la souris — sinon une grande zone invisible
+   empêcherait de faire tourner la carte — seuls ses éléments cliquables le font. */
+.jv {
+  --jv-level: 0;
+  position: absolute; z-index: 3; pointer-events: none;
+  top: 0; bottom: 0; right: clamp(16px, 4vw, 56px);
+  width: min(300px, 30vw);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: var(--sp-2);
+}
+
+.jv-head {
+  display: flex; align-items: center; gap: 8px;
+}
+.jv-led {
+  width: 7px; height: 7px; border-radius: 50%; flex: none;
+  background: #63e0a8; box-shadow: 0 0 9px #63e0a8;
+}
+.jv-brain {
+  font-size: var(--fs-xs); letter-spacing: .12em; text-transform: uppercase;
+  color: #7f8cba; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, .7);
+}
+.jv-brain.changed { color: #63d9ff; }
+
+.jv-reactor { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+
+.jv-ring {
+  pointer-events: auto; position: relative; cursor: pointer;
+  width: min(248px, 52vw); height: min(248px, 52vw);
+  background: none; border: 0; padding: 0;
+  display: grid; place-items: center;
+}
+.jv-ring:focus-visible { outline: 2px solid #63d9ff; outline-offset: 6px; border-radius: 50%; }
+
+/* Le halo suit le niveau du micro : la preuve visible qu'il entend. */
+.jv-halo {
+  position: absolute; inset: 12%; border-radius: 50%; pointer-events: none;
+  background: radial-gradient(circle, rgba(99, 224, 168, .30), transparent 68%);
+  transform: scale(calc(.72 + var(--jv-level) * .5));
+  opacity: calc(.25 + var(--jv-level) * .75);
+  transition: transform 90ms linear, opacity 90ms linear;
+}
+.jv[data-state="idle"] .jv-halo { opacity: 0; }
+.jv[data-state="thinking"] .jv-halo,
+.jv[data-state="speaking"] .jv-halo {
+  background: radial-gradient(circle, color-mix(in srgb, var(--jv-teinte) 34%, transparent), transparent 68%);
+  opacity: .62; transform: scale(.86);
+  animation: jarvis-pulse 1.8s var(--ease) infinite;
+}
+.jv-svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+/* Sauf le cœur, qui est le seul élément plein du dessin. */
+.jv-svg circle:not(.jv-core), .jv-svg path { fill: none; }
+
+/* Toutes les rotations tournent autour du même centre : le viewBox fait 260. */
+.jv-ticks, .jv-ticks-in, .jv-seg-a, .jv-seg-b, .jv-arc-spin { transform-origin: 130px 130px; }
+
+.jv-tick { stroke: rgba(140, 214, 238, .38); stroke-width: 1.6; }
+.jv-tick.long { stroke: rgba(190, 240, 255, .9); stroke-width: 2.4; }
+.jv-ticks { animation: jv-spin 120s linear infinite; }
+.jv-tick-in { stroke: rgba(140, 214, 238, .3); stroke-width: 1.2; }
+.jv-ticks-in { animation: jv-spin 70s linear infinite reverse; }
+
+.jv-c-hair { stroke: rgba(120, 200, 230, .17); stroke-width: 1; }
+.jv-c-rail { stroke: rgba(120, 205, 235, .34); stroke-width: 1.2; }
+
+/* Des segments épais et lumineux : c'est eux qu'on voit en premier. */
+.jv-seg {
+  stroke: url(#jvSpin); stroke-width: 6; stroke-linecap: round;
+  filter: drop-shadow(0 0 7px rgba(90, 225, 250, .5));
+}
+.jv-seg.thin { stroke: rgba(125, 232, 250, .62); stroke-width: 3; filter: none; }
+.jv-seg-a { animation: jv-spin 16s linear infinite; }
+.jv-seg-b { animation: jv-spin 26s linear infinite reverse; }
+
+.jv-arc {
+  stroke: url(#jvArc); stroke-width: 9; stroke-linecap: round;
+  filter: drop-shadow(0 0 10px rgba(240, 160, 60, .5));
+}
+.jv-arc-spin { animation: jv-spin 30s linear infinite reverse; }
+
+.jv-core { fill: url(#jvCore); stroke: none; }
+.jv-core-ring { fill: none; stroke: rgba(120, 225, 235, .3); stroke-width: 1.4; }
+
+@keyframes jv-spin { to { transform: rotate(360deg); } }
+
+/* Le nom vit au centre du réacteur, par-dessus le cœur : c'est le point
+   d'ancrage de tout le dessin, pas une étiquette d'en-tête. */
+.jv-name {
+  position: relative; z-index: 1; pointer-events: none;
+  font-size: clamp(12px, 1.55vw, 17px); letter-spacing: .16em; font-weight: 650;
+  color: #f2fbff; white-space: nowrap;
+  text-shadow: 0 0 16px rgba(120, 235, 255, .6), 0 1px 2px rgba(0, 0, 0, .5);
+}
+
+.jv-state {
+  margin: 0; font-size: var(--fs-sm); letter-spacing: .24em; font-weight: 650;
+  color: #6f7ba8; text-shadow: 0 1px 6px rgba(0, 0, 0, .8);
+}
+.jv-hint { margin: 0; font-size: var(--fs-xs); color: #5d688f; text-shadow: 0 1px 6px rgba(0, 0, 0, .8); }
+
+/* Un état, une couleur — et elle prend TOUT le réacteur, pas seulement un arc :
+   l'écran doit se lire d'un coup d'œil, de loin, sans lire le texte.
+   Réflexion : orange. Parole : rouge. */
+.jv[data-state="listening"] .jv-state { color: #63e0a8; }
+.jv[data-state="listening"] .jv-led { animation: jarvis-pulse 1.1s var(--ease) infinite; }
+.jv[data-state="listening"] .jv-seg-a { animation-duration: 6s; }
+.jv[data-state="listening"] .jv-arc { stroke: #63e0a8; }
+
+.jv[data-state="thinking"] { --jv-teinte: #f39c22; --jv-teinte-claire: #ffc85e; }
+.jv[data-state="speaking"] { --jv-teinte: #e8443c; --jv-teinte-claire: #ff7a6a; }
+
+.jv[data-state="thinking"] .jv-seg-a { animation-duration: 3s; }
+.jv[data-state="thinking"] .jv-arc-spin { animation-duration: 9s; }
+.jv[data-state="speaking"] .jv-arc-spin { animation-duration: 16s; }
+
+/* Une seule teinte pilote tout le dessin : arcs, segments, graduations, cœur. */
+.jv[data-state="thinking"] .jv-state,
+.jv[data-state="speaking"] .jv-state { color: var(--jv-teinte-claire); }
+.jv[data-state="thinking"] .jv-led,
+.jv[data-state="speaking"] .jv-led {
+  background: var(--jv-teinte-claire); box-shadow: 0 0 9px var(--jv-teinte);
+  animation: jarvis-pulse .8s var(--ease) infinite;
+}
+.jv[data-state="thinking"] .jv-arc,
+.jv[data-state="speaking"] .jv-arc {
+  stroke: var(--jv-teinte-claire);
+  filter: drop-shadow(0 0 12px var(--jv-teinte));
+}
+.jv[data-state="thinking"] .jv-seg,
+.jv[data-state="speaking"] .jv-seg {
+  stroke: var(--jv-teinte); filter: drop-shadow(0 0 8px var(--jv-teinte));
+}
+.jv[data-state="thinking"] .jv-seg.thin,
+.jv[data-state="speaking"] .jv-seg.thin { stroke: var(--jv-teinte-claire); filter: none; }
+.jv[data-state="thinking"] .jv-tick.long,
+.jv[data-state="speaking"] .jv-tick.long { stroke: var(--jv-teinte-claire); }
+.jv[data-state="thinking"] .jv-tick,
+.jv[data-state="speaking"] .jv-tick,
+.jv[data-state="thinking"] .jv-tick-in,
+.jv[data-state="speaking"] .jv-tick-in { stroke: var(--jv-teinte); opacity: .5; }
+.jv[data-state="thinking"] .jv-c-rail,
+.jv[data-state="speaking"] .jv-c-rail { stroke: var(--jv-teinte); opacity: .45; }
+.jv[data-state="thinking"] .jv-core-ring,
+.jv[data-state="speaking"] .jv-core-ring { stroke: var(--jv-teinte); opacity: .55; }
+.jv[data-state="thinking"] .jv-name,
+.jv[data-state="speaking"] .jv-name { text-shadow: 0 0 18px var(--jv-teinte), 0 1px 2px rgba(0, 0, 0, .6); }
+
+@keyframes jarvis-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+
+/* L'échange ne s'étire pas : sans panneau, une colonne vide se verrait. Il
+   grandit avec son contenu et s'arrête. Il capte la souris pour rester
+   défilable quand la réponse est longue. */
+.jv-said {
+  pointer-events: auto; max-height: 30vh; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 10px;
+  width: 100%; text-align: center;
+}
+.jv-said:empty { display: none; }
+.jv-line {
+  font-size: var(--fs-sm); line-height: 1.62; white-space: pre-wrap; word-break: break-word;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, .85);
+}
+.jv-line.moi { color: #93a0cc; }
+.jv-line.jarvis { color: #e2ecff; }
+.jv-line.err { color: #ffb9c4; }
+.jv-line.switch { color: #a8e8ff; }
+
+.jv-foot { pointer-events: auto; width: 100%; }
+.jv-controls { display: flex; align-items: center; justify-content: center; gap: 6px; flex-wrap: wrap; }
+.jv-mini {
+  padding: 5px 12px; border-radius: var(--r-pill); cursor: pointer;
+  font-family: inherit; font-size: var(--fs-sm); color: #8fa8c8;
+  background: rgba(10, 16, 34, .8); border: 1px solid rgba(120, 200, 230, .22);
+}
+.jv-mini:hover { color: #dff4ff; }
+.jv-mini.off { opacity: .45; }
+.jv-mini:focus-visible { outline: 2px solid #63d9ff; outline-offset: 2px; }
+.jv-select { max-width: 190px; appearance: none; padding-right: 26px;
+  background-image: linear-gradient(45deg, transparent 50%, #8fa8c8 50%), linear-gradient(135deg, #8fa8c8 50%, transparent 50%);
+  background-position: calc(100% - 14px) center, calc(100% - 9px) center;
+  background-size: 5px 5px, 5px 5px; background-repeat: no-repeat;
+}
+.jv-select.hidden { display: none; }
+.jv-select option { background: #0b1024; color: #dbe7ff; }
+
+.jv-form { display: flex; gap: 6px; margin-bottom: 8px; }
+.jv-form.hidden { display: none; }
+.jv-form input {
+  flex: 1; min-width: 0; padding: 8px 14px; font-family: inherit; font-size: var(--fs-sm);
+  background: rgba(6, 8, 22, .85); color: #e8ecff;
+  border: 1px solid rgba(120, 200, 230, .25); border-radius: var(--r-pill);
+}
+.jv-form input::placeholder { color: #6b76a3; }
+.jv-form input:focus-visible { outline: 2px solid #63d9ff; outline-offset: 1px; }
+.jv-go {
+  flex: none; width: 34px; cursor: pointer; font-family: inherit; font-size: var(--fs-md);
+  color: #63d9ff; background: rgba(10, 16, 34, .8);
+  border: 1px solid rgba(120, 200, 230, .25); border-radius: var(--r-pill);
+}
+.jv-go:hover { background: rgba(30, 46, 82, .9); }
+.jv-go:focus-visible { outline: 2px solid #63d9ff; outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .jv-ticks, .jv-ticks-in, .jv-seg-a, .jv-seg-b, .jv-arc-spin, .jv-led, .jv-halo {
+    animation: none !important; transition: none;
+  }
+}
+
+@media (max-width: 900px) {
+  /* Trop étroit pour deux colonnes : Jarvis reprend le centre. */
+  .jv { left: 0; right: 0; width: auto; padding: 0 var(--sp-3); }
+  .jv-ring { width: min(62vw, 240px); height: min(62vw, 240px); }
+  .jv-said { max-height: 24vh; }
+}
+
 @media (max-width: 720px) {
   .galaxy-wrap { height: 62vh; }
   .galaxy-card { left: var(--sp-4); right: var(--sp-4); max-width: none; bottom: 62px; }
   .galaxy-help { display: none; }
+  .jarvis-page .galaxy-layers { display: none; }
 }
 
 /* ===========================================================================

@@ -805,7 +805,7 @@ export function freeTranscribeOptions() {
     .map((p) => ({ id: p.id, label: p.label }));
 }
 
-async function postAudio({ provider, model, buffer, mime, filename, language, signal }) {
+async function postAudio({ provider, model, buffer, mime, filename, language, prompt, signal }) {
   // Les en-têtes maison passent avant Authorization : un en-tête libre ne doit
   // jamais pouvoir remplacer la clé.
   const headers = { ...(provider.headers || {}), Accept: 'application/json' };
@@ -815,6 +815,10 @@ async function postAudio({ provider, model, buffer, mime, filename, language, si
   form.append('file', new Blob([buffer], { type: mime }), filename);
   form.append('model', model);
   if (language) form.append('language', language);
+  // Whisper accepte un amorçage de vocabulaire : sans lui, un nom propre comme
+  // « Jarvis » ressort en mots français plausibles — « j'en revisse »,
+  // « service » — et rien ne peut le reconnaître ensuite.
+  if (prompt) form.append('prompt', String(prompt).slice(0, 200));
   form.append('response_format', 'json');
 
   const ctrl = new AbortController();
@@ -843,7 +847,7 @@ async function postAudio({ provider, model, buffer, mime, filename, language, si
  * @returns {Promise<{ok:boolean, text?:string, error?:string, needsSetup?:boolean, cost?:number}>}
  */
 export async function transcribeAudio({ buffer, mime = 'audio/webm', filename = 'dictee.webm',
-  language = 'fr', signal } = {}) {
+  language = 'fr', prompt = '', signal } = {}) {
   if (!buffer?.length) return { ok: false, error: 'Enregistrement vide.' };
   if (buffer.length > MAX_AUDIO_BYTES) {
     return { ok: false, error: `Enregistrement trop lourd (${Math.round(buffer.length / 1048576)} Mo, 24 Mo maximum).` };
@@ -857,7 +861,7 @@ export async function transcribeAudio({ buffer, mime = 'audio/webm', filename = 
     };
   }
 
-  const r = await postAudio({ provider, model, buffer, mime, filename, language, signal });
+  const r = await postAudio({ provider, model, buffer, mime, filename, language, prompt, signal });
   if (r.aborted) return { ok: false, error: 'Transcription interrompue.' };
   if (r.netError) return { ok: false, error: r.netError };
   if (r.status !== 200) {

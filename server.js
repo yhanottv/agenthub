@@ -13,6 +13,10 @@ import {
 } from './db.js';
 import { buildGraph, layerCounts, GRAPH_LAYERS, LAYER_META } from './graph.js';
 import { skillsCatalogue, invalidateSkills } from './skills.js';
+import {
+  demander as askJarvis, cerveau as jarvisBrain,
+  parler as jarvisSpeak, voixConfig as jarvisVoiceConfig, TTS_VOIX as JARVIS_VOICES,
+} from './jarvis.js';
 import { mcpCatalogue, invalidateMcp } from './mcp.js';
 import { safeEntryPath, readZip } from './archive.js';
 import {
@@ -111,6 +115,10 @@ app.use((_req, res, next) => {
     'Content-Security-Policy',
     "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
     "img-src 'self' data:; connect-src 'self' ws: wss:; font-src 'self'; " +
+    // La voix de Jarvis arrive en WAV et se joue depuis un blob local : sans
+    // `media-src blob:`, le repli <audio> est refusé par `default-src`. Un
+    // blob est toujours de notre propre origine — rien d'externe ne passe ici.
+    "media-src 'self' blob:; " +
     // La prévisualisation d'une page produite par un agent vit dans une iframe
     // servie par nous ; sans `frame-src`, `default-src` la refuserait.
     "frame-src 'self'; " +
@@ -622,11 +630,15 @@ app.put('/api/settings', requireAuth, (req, res) => {
     'notes_auto', 'notes_budget', 'context_budget',
     'image_provider', 'image_model', 'image_mode',
     'transcribe_provider', 'transcribe_model',
+    'jarvis_voice', 'jarvis_tts',
   ];
-  const FLAGS = ['tools_enabled', 'notes_auto'];
+  const FLAGS = ['tools_enabled', 'notes_auto', 'jarvis_tts'];
   for (const [k, v] of Object.entries(patch)) {
     if (!ALLOWED.includes(k)) continue;
     if (k === 'theme' && !['light', 'dark'].includes(v)) continue;
+    // Une voix inconnue serait refusée par le service au moment de lire : mieux
+    // vaut ne pas l'enregistrer du tout.
+    if (k === 'jarvis_voice' && !JARVIS_VOICES.includes(v)) continue;
     if (k === 'daily_budget' && v !== '' && !(Number(v) >= 0)) continue;
     if ((k === 'notes_budget' || k === 'context_budget') && v !== '' && !(Number(v) > 0)) continue;
     // Une case décochée s'enregistre comme chaîne vide : un '0' serait une
@@ -833,6 +845,44 @@ app.get('/api/notes/graph', requireAuth, (req, res) => {
     counts: layerCounts(),
     meta: LAYER_META,
   });
+});
+
+// ---- Jarvis, l'interlocuteur de la carte ------------------------------------
+app.get('/api/jarvis', requireAuth, (req, res) => {
+  res.json({ brain: jarvisBrain(), voice: { ...jarvisVoiceConfig(), choix: JARVIS_VOICES } });
+});
+
+app.post('/api/jarvis/voice', requireAuth, async (req, res) => {
+  const r = await jarvisSpeak({ texte: req.body?.texte, voix: req.body?.voix });
+  if (!r.ok) { res.status(502).json({ error: r.text }); return; }
+
+  // Une lecture se paie comme un appel modèle : la laisser hors du compteur
+  // ferait mentir le total de la page Consommation.
+  if (r.usage) {
+    Usage.record({
+      channel_id: null, provider: 'openrouter', model: 'openai/gpt-audio-mini',
+      tokens_in: r.usage.prompt_tokens || 0,
+      tokens_out: r.usage.completion_tokens || 0,
+      estimated: 0,
+    });
+  }
+  res.setHeader('Content-Type', 'audio/wav');
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(r.wav);
+});
+
+app.post('/api/jarvis/ask', requireAuth, async (req, res) => {
+  const historique = Array.isArray(req.body?.historique) ? req.body.historique.slice(-8) : [];
+  const r = await askJarvis({
+    question: req.body?.question, historique,
+    // La requête HTTP reste muette jusqu'à la réponse : les étapes passent par
+    // le WebSocket, sinon une recherche web ressemble à une panne.
+    onStep: (texte) => broadcast({ type: 'jarvis.step', texte }),
+  });
+  // Le changement de cerveau touche un réglage global : les autres onglets
+  // ouverts doivent le voir, sinon deux fenêtres affichent deux vérités.
+  if (r.change) broadcast({ type: 'jarvis.brain', brain: r.brain || jarvisBrain(), change: r.change });
+  res.json(r);
 });
 
 // ---- skills Hermes ---------------------------------------------------------
@@ -1660,6 +1710,9 @@ app.post('/api/transcribe',
     const r = await transcribeAudio({
       buffer, mime, filename: `dictee.${ext}`,
       language: String(req.query.lang || 'fr').slice(0, 5),
+      // Amorçage de vocabulaire : le mot de réveil s'en sert pour que
+      // « Jarvis » ressorte en Jarvis, pas en « j'en revisse ».
+      prompt: String(req.query.hint || '').slice(0, 200),
     });
 
     if (!r.ok) return res.status(r.needsSetup ? 409 : 502).json({ error: r.error, needsSetup: r.needsSetup });

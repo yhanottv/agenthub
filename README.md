@@ -51,7 +51,7 @@ Node, JavaScript sans framework, SQLite. Trois dépendances, aucune étape de bu
 | **Délégation** | Sous-agents en parallèle | Vers un rang strictement inférieur, tracée et lisible dans la conversation |
 | **Skills** | Un catalogue que l'agent enrichit lui-même, au standard agentskills.io | L'onglet **Skills** montre le catalogue et ce qui est actif |
 | **MCP** | Déclaré dans `config.yaml` | L'onglet **MCP** montre chaque serveur, son transport et son état |
-| **Mémoire** | Persistante, avec recherche dans les sessions | Partagée entre tous les agents, liée par `[[doubles crochets]]`, avec une vue **Graph** |
+| **Mémoire** | Persistante, avec recherche dans les sessions | Partagée entre tous les agents, liée par `[[doubles crochets]]`, et cartographiée dans **Jarvis** |
 | **Modèles** | Plus de 300, chez plusieurs fournisseurs | Choisis par agent ou pour une seule conversation, avec le coût en euros |
 
 Rien de tout cela ne demande de toucher à l'installation d'Hermes : AgentHub lit
@@ -65,7 +65,8 @@ sa configuration en lecture seule et lui parle par son API.
 |---|---|---|
 | 🏛️ | **Hiérarchie et délégation** | Rangs CEO / manager / worker, délégation sur trois niveaux, emprunt d'un agent à un autre pôle. |
 | 🛠️ | **Outils des agents** | Recherche web, lecture de pages, recherche en mémoire, calcul, lecture des fichiers déposés, génération d'images, tableurs `.xlsx`, archives `.zip`. |
-| 🧠 | **Mémoire partagée** | Des notes injectées dans le prompt de tous les agents, liées entre elles par `[[doubles crochets]]`, avec une vue **Graph** navigable. |
+| 🧠 | **Mémoire partagée** | Des notes injectées dans le prompt de tous les agents, liées entre elles par `[[doubles crochets]]`. |
+| 🛰️ | **Jarvis** | Une page à lui : la carte de l'espace de travail en grand, et un cercle d'écoute au centre. On lui **parle** — il transcrit, répond à voix haute, et change de modèle quand on le lui demande (« change ton cerveau sur Opus 5 »), la carte glitchant le temps de la bascule. |
 | ⚡ | **Skills Hermes** | L'onglet **Skills** liste le catalogue Nous Research et les skills actuellement actifs. |
 | 🔌 | **Serveurs MCP** | L'onglet **MCP** liste ce qu'Hermes peut piloter à distance — Blender, Unreal Engine, n8n, Linear — avec leur transport et leur état. |
 | 👁️ | **Aperçu du code produit** | Copie et téléchargement de chaque bloc de code ; les sites complets s'ouvrent dans un panneau à côté de la conversation, y compris depuis une archive. |
@@ -394,7 +395,6 @@ navigateur ──REST──▶ server.js ──▶ orchestrator.js ──▶ llm
                          ├──▶ mcp.js     (serveurs MCP d'Hermes)
                          ├──▶ archive.js (écriture et lecture de .zip)
                          ├──▶ sheet.js   (écriture de .xlsx)
-                         ├──▶ higgsfield.js (images et vidéos via Hermes)
                          ├──▶ hermes.js  (détection, installation, exec Docker)
                          └──▶ db.js      (SQLite/WAL, FTS5)
 ```
@@ -409,9 +409,9 @@ navigateur ──REST──▶ server.js ──▶ orchestrator.js ──▶ llm
 | `mcp.js` | Catalogue MCP d'Hermes et serveurs branchés, plus un lecteur YAML du strict nécessaire |
 | `archive.js` | Écriture et lecture de `.zip`, sans dépendance, et audit d'un site livré |
 | `sheet.js` | Écriture de `.xlsx` par-dessus le zip d'`archive.js`, sans dépendance |
-| `higgsfield.js` | Images et vidéos Higgsfield, via le CLI du conteneur Hermes |
 | `hermes.js` | Détection et installation d'Hermes |
 | `graph.js` | Groupes et liens de la carte |
+| `jarvis.js` | L'interlocuteur de la carte : mémoire complète, et changement de modèle à la demande |
 | `db.js` | Schéma SQLite, dépôts, index de recherche |
 | `public/` | Le front, sans build ni dépendance |
 

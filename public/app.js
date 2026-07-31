@@ -7,14 +7,14 @@
    ========================================================================== */
 
 // ============================ state =========================================
-const VIEWS = ['home', 'team', 'brain', 'skills', 'mcp', 'usage', 'journal', 'settings'];
+const VIEWS = ['home', 'team', 'brain', 'jarvis', 'skills', 'mcp', 'usage', 'journal', 'settings'];
 
 const S = {
   agents: [], channels: [], settings: {}, providers: [],
   stats: null, activity: [],
   notes: [], usage: null, usageRange: '7d',
   // Second cerveau : trois façons de regarder la même mémoire.
-  brainTab: 'recent',       // recent | notes | graph
+  brainTab: 'recent',       // recent | notes
   brainTag: '',             // filtre par tag dans l'onglet Notes
   noteTags: [], proposals: [], graph: null, graphKey: '',
   notesBudget: 60000, notesBudgetMax: 400000, notesAuto: true,
@@ -232,6 +232,7 @@ const IC = {
   trash: svg('<path d="M4 7h16M9 7V5h6v2M6 7l1 12h10l1-12"/>'),
   graph: svg('<circle cx="6" cy="7" r="2.4"/><circle cx="18" cy="6" r="2.4"/><circle cx="12" cy="17" r="2.4"/><path d="M8 8.4 10.6 15M16.2 8 13.4 15.2M8.3 6.6l7.4-.4"/>'),
   galaxy: svg('<circle cx="12" cy="12" r="2"/><ellipse cx="12" cy="12" rx="9.5" ry="4" transform="rotate(-22 12 12)"/><circle cx="19" cy="8.6" r=".9" fill="currentColor"/><circle cx="5.2" cy="15.6" r=".9" fill="currentColor"/>'),
+  jarvis: svg('<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.2"/><path d="M12 3v2.4M12 18.6V21M3 12h2.4M18.6 12H21"/>'),
   broom: svg('<path d="M3 21h18"/><path d="M8 21v-4a4 4 0 0 1 8 0v4"/><path d="M12 13V3"/><path d="M9 6h6"/>'),
 };
 
@@ -365,6 +366,7 @@ async function boot() {
   refreshDashboard();
   loadNotes();          // the brain feeds every agent, so keep it warm
   loadForView();
+  demarrerReveil();     // « Ok Jarvis », si l'utilisateur l'a demandé
 
   // Presets drive the "connect a service" cards; setup decides whether the
   // welcome wizard opens.
@@ -553,6 +555,7 @@ function renderSidebar() {
       ${navItem('home', IC.home, 'Accueil')}
       ${navItem('team', IC.team, 'Mon équipe')}
       ${navItem('brain', IC.brain, 'Second cerveau')}
+      ${navItem('jarvis', IC.jarvis, 'Jarvis')}
       ${navItem('skills', IC.spark, 'Skills')}
       ${navItem('mcp', IC.plug, 'MCP')}
       ${navItem('usage', IC.tokens, 'Consommation')}
@@ -731,14 +734,15 @@ function renderView() {
     v.classList.add('view-enter');
   }
 
-  // The galaxy runs a rAF loop against its own canvas: leaving the brain view
+  // The galaxy runs a rAF loop against its own canvas: leaving the Jarvis view
   // without stopping it would repaint a detached node for the rest of the session.
-  if (S.view !== 'brain') destroyGalaxy();
+  if (S.view !== 'jarvis') { destroyGalaxy(); stopJarvisVoice(); }
 
   if (S.loading) return renderSkeleton(v);
   if (S.view === 'chat') return renderChat(v);
   if (S.view === 'team') return renderTeam(v);
   if (S.view === 'brain') return renderBrain(v);
+  if (S.view === 'jarvis') return renderJarvis(v);
   if (S.view === 'skills') return renderSkills(v);
   if (S.view === 'mcp') return renderMcp(v);
   if (S.view === 'usage') return renderUsage(v);
@@ -1273,17 +1277,14 @@ function notesUsedChars() {
   return S.notes.reduce((n, x) => n + (x.content.trim() ? x.title.length + x.content.trim().length + 5 : 0), 0);
 }
 
+// La carte a quitté le Second cerveau : elle est devenue le décor de Jarvis,
+// qui est le seul endroit où on la regarde en grand.
 const BRAIN_TABS = [
   ['recent', 'Récent', IC.clock],
   ['notes', 'Notes', IC.note],
-  ['graph', 'Graph', IC.graph],
 ];
 
 function renderBrain(v) {
-  // The galaxy owns a canvas and a rAF loop; leaving one running behind a tab
-  // switch would keep repainting a detached node forever.
-  destroyGalaxy();
-
   const tab = BRAIN_TABS.some(([id]) => id === S.brainTab) ? S.brainTab : 'recent';
   S.brainTab = tab;
 
@@ -1310,8 +1311,7 @@ function renderBrain(v) {
   $('#note-new', v).onclick = () => openNoteModal(null);
 
   const panel = $('#brain-panel', v);
-  if (tab === 'graph') renderBrainGraph(panel);
-  else if (tab === 'notes') renderBrainNotes(panel);
+  if (tab === 'notes') renderBrainNotes(panel);
   else renderBrainRecent(panel);
 }
 
@@ -1507,42 +1507,45 @@ const LAYER_COLOR = {
   notes: '#9db4ff', agents: '#5fd3e0', channels: '#5fe0ab',
   tasks: '#f0c274', skills: '#dd9bf0',
 };
-const GALAXY_HELP = 'glisser pour tourner · molette pour zoomer · clic sur une étoile · double-clic met en pause';
 
 let galaxy = null;
 function destroyGalaxy() {
   if (galaxy) { galaxy.destroy(); galaxy = null; }
 }
 
-async function renderBrainGraph(panel) {
-  panel.innerHTML = '<div class="galaxy-wrap"><div class="galaxy-loading">Construction de la carte…</div></div>';
+/**
+ * La vue Jarvis : la carte en grand, et lui par-dessus.
+ *
+ * La galaxie n'est plus un onglet du Second cerveau mais le décor de cette
+ * page — c'est le même rendu, à pleine hauteur, avec le cercle d'écoute au
+ * centre. On lui parle : le clavier reste là en secours, mais la voix est le
+ * chemin normal.
+ */
+async function renderJarvis(v) {
+  v.innerHTML = `<div class="jarvis-page"><div class="galaxy-loading">Construction de la carte…</div></div>`;
 
   const data = await loadGraph();
-  if (!data) { panel.innerHTML = '<div class="empty">La carte n\'a pas pu être chargée.</div>'; return; }
-  if (S.brainTab !== 'graph') return;      // l'utilisateur a changé d'onglet entre-temps
+  if (S.view !== 'jarvis') return;          // parti ailleurs pendant le chargement
+  const ok = Boolean(data && data.nodes.length);
+  const counts = (data && data.counts) || {};
+  const skillsOff = data && data.skills && !data.skills.mounted;
 
-  const counts = data.counts || {};
-  const skillsOff = data.skills && !data.skills.mounted;
+  // Jarvis reste là même sans carte : c'est lui qu'on vient voir, le ciel
+  // n'est que son décor.
+  const vide = !data
+    ? "La carte n'a pas pu être chargée."
+    : (!data.nodes.length ? "Rien à cartographier pour l'instant." : '');
 
-  if (!data.nodes.length) {
-    panel.innerHTML = `<div class="empty" style="text-align:left;padding:28px;line-height:1.75">
-      <div class="empty-ic" aria-hidden="true">✦</div>
-      <strong>Rien à cartographier pour l'instant.</strong><br>
-      Écris une note, ou active un autre calque.
-    </div>`;
-    return;
-  }
+  v.innerHTML = `<div class="jarvis-page" id="jarvis-page">
+    ${ok ? '<canvas id="galaxy-canvas" aria-label="Carte de l\'espace de travail"></canvas>'
+      : `<div class="jarvis-void"><div class="jv-empty">
+           <strong>${escapeHtml(vide)}</strong>
+           ${data ? '<span>Écris une note, ou active un autre calque.</span>' : ''}
+         </div></div>`}
 
-  panel.innerHTML = `<div class="galaxy-wrap" id="galaxy-wrap">
-    <canvas id="galaxy-canvas" aria-label="Carte de l'espace de travail"></canvas>
+    ${skillsOff ? '<div class="galaxy-warn">Skills invisibles : les dossiers d\'Hermes ne sont pas montés dans le conteneur.</div>' : ''}
 
-    <div class="galaxy-hud">
-      <div class="galaxy-title">MEMORY GALAXY</div>
-      <div class="galaxy-count"><strong>${data.nodes.length}</strong> étoile${data.nodes.length > 1 ? 's' : ''} · <strong>${data.links.length}</strong> lien${data.links.length > 1 ? 's' : ''} · <strong>${data.groups.length}</strong> amas</div>
-      <div class="galaxy-help">${GALAXY_HELP}</div>
-    </div>
-
-    <div class="galaxy-layers" role="group" aria-label="Ce qui apparaît dans la galaxie">
+    ${ok ? `<div class="galaxy-layers" role="group" aria-label="Ce qui apparaît dans la galaxie">
       ${LAYERS.map(([id, label]) => `
         <button class="layer-btn ${S.graphLayers.includes(id) ? 'on' : ''}" type="button"
                 data-layer="${id}" aria-pressed="${S.graphLayers.includes(id)}">
@@ -1550,17 +1553,52 @@ async function renderBrainGraph(panel) {
           <small>${counts[id] ?? 0}</small>
         </button>`).join('')}
     </div>
-
-    ${skillsOff ? `<div class="galaxy-warn">Skills invisibles : les dossiers d'Hermes ne sont pas montés dans le conteneur.</div>` : ''}
-
     <div class="galaxy-card hidden" id="galaxy-card" aria-live="polite"></div>
     <div class="galaxy-tools">
+      <span class="galaxy-help">glisser pour tourner · molette pour zoomer · clic sur une étoile</span>
       <button class="galaxy-btn" id="galaxy-spin" type="button" aria-pressed="true">Pause</button>
       <button class="galaxy-btn" id="galaxy-reset" type="button">Recentrer</button>
-    </div>
+    </div>` : ''}
+
+    <aside class="jv" id="jv" data-state="idle" aria-label="Jarvis">
+      <header class="jv-head">
+        <span class="jv-led" aria-hidden="true"></span>
+        <span class="jv-brain" id="jv-brain" title="Cerveau actuel">…</span>
+      </header>
+
+      <div class="jv-reactor">
+        <button class="jv-ring" id="jv-ring" type="button"
+                aria-label="Parler à Jarvis" title="Parler à Jarvis">
+          ${jarvisRingSvg()}
+          <span class="jv-halo" aria-hidden="true"></span>
+          <span class="jv-name">J.A.R.V.I.S.</span>
+        </button>
+        <p class="jv-state" aria-live="polite"><span id="jv-state">EN VEILLE</span></p>
+        <p class="jv-hint" id="jv-hint">Clique pour parler</p>
+      </div>
+
+      <div class="jv-said" id="jv-said" aria-live="polite"></div>
+
+      <footer class="jv-foot">
+        <form class="jv-form hidden" id="jv-form">
+          <input id="jv-input" type="text" autocomplete="off" maxlength="2000"
+                 placeholder="Parler à Jarvis…" aria-label="Parler à Jarvis">
+          <button class="jv-go" type="submit" aria-label="Envoyer">→</button>
+        </form>
+        <div class="jv-controls">
+          <button class="jv-mini" id="jv-voice" type="button" aria-pressed="true"
+                  title="Jarvis répond à voix haute">Voix</button>
+          <select class="jv-mini jv-select" id="jv-voix" aria-label="Choisir la voix de Jarvis"></select>
+          <button class="jv-mini" id="jv-type" type="button" title="Écrire au lieu de parler">Clavier</button>
+        </div>
+      </footer>
+    </aside>
   </div>`;
 
-  $$('[data-layer]', panel).forEach((b) => b.onclick = () => {
+  mountJarvis(v);
+  if (!ok) return;
+
+  $$('[data-layer]', v).forEach((b) => b.onclick = () => {
     const id = b.dataset.layer;
     const next = S.graphLayers.includes(id)
       ? S.graphLayers.filter((l) => l !== id)
@@ -1571,8 +1609,8 @@ async function renderBrainGraph(panel) {
     renderView();
   });
 
-  const card = $('#galaxy-card', panel);
-  galaxy = new Galaxy3D($('#galaxy-canvas', panel), data, {
+  const card = $('#galaxy-card', v);
+  galaxy = new Galaxy3D($('#galaxy-canvas', v), data, {
     onHover: (node, group) => {
       if (!node) { card.classList.add('hidden'); return; }
       card.classList.remove('hidden');
@@ -1588,13 +1626,13 @@ async function renderBrainGraph(panel) {
     onPick: (node) => pickNode(node),
   });
 
-  const spin = $('#galaxy-spin', panel);
+  const spin = $('#galaxy-spin', v);
   spin.onclick = () => {
     const on = galaxy.toggleSpin();
     spin.textContent = on ? 'Pause' : 'Reprendre';
     spin.setAttribute('aria-pressed', String(on));
   };
-  $('#galaxy-reset', panel).onclick = () => galaxy.reset();
+  $('#galaxy-reset', v).onclick = () => galaxy.reset();
 }
 
 /** Couleur d'une étoile : la sienne s'il en a une, sinon celle de son calque. */
@@ -1605,6 +1643,991 @@ function nodeColor(node, group) {
   }
   if (node.layer === 'skills' && !node.installed) return '#9a7fb0';
   return (group && group.color) || LAYER_COLOR[node.layer] || '#9db4ff';
+}
+
+/**
+ * Le cercle d'écoute. Du SVG plutôt qu'un canvas : les anneaux tournent en CSS,
+ * ils restent nets à toute densité d'écran, et l'état se lit dans une classe.
+ */
+/**
+ * Le réacteur. Tout est calculé : sur un cercle, la moindre irrégularité posée
+ * à la main se voit immédiatement.
+ *
+ * La densité fait le dessin — une bande de graduations, plusieurs couronnes,
+ * des segments d'arc à des rayons différents, et un cœur plein qui donne de la
+ * masse au centre. Un cercle trop vide ne ressemble à rien.
+ */
+function jarvisRingSvg() {
+  const C = 130;                                   // centre du repère
+  const pt = (a, r) => `${(C + Math.cos(a) * r).toFixed(2)} ${(C + Math.sin(a) * r).toFixed(2)}`;
+  const rad = (deg) => (deg - 90) * Math.PI / 180; // 0° en haut, comme un cadran
+
+  /** Un segment d'arc, de `d1` à `d2` degrés, au rayon `r`. */
+  const arc = (d1, d2, r, cls) =>
+    `<path class="${cls}" d="M${pt(rad(d1), r)} A${r} ${r} 0 ${d2 - d1 > 180 ? 1 : 0} 1 ${pt(rad(d2), r)}"/>`;
+
+  /** Une couronne de graduations entre deux rayons. */
+  const ticks = (n, r1, r2, cls, longEvery = 0, rLong = r1) =>
+    Array.from({ length: n }, (_, i) => {
+      const a = (i / n) * Math.PI * 2;
+      const long = longEvery && i % longEvery === 0;
+      return `<path class="${cls}${long ? ' long' : ''}" d="M${pt(a, long ? rLong : r1)} L${pt(a, r2)}"/>`;
+    }).join('');
+
+  return `<svg class="jv-svg" viewBox="0 0 260 260" aria-hidden="true">
+    <defs>
+      <linearGradient id="jvArc" x1="0" y1="1" x2="1" y2="0">
+        <stop offset="0%" stop-color="#e8912c"/>
+        <stop offset="100%" stop-color="#f7cf6a"/>
+      </linearGradient>
+      <linearGradient id="jvSpin" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#7df2ff"/>
+        <stop offset="100%" stop-color="#2f9ecc"/>
+      </linearGradient>
+      <radialGradient id="jvCore">
+        <stop offset="0%" stop-color="rgba(30, 92, 96, .95)"/>
+        <stop offset="70%" stop-color="rgba(16, 58, 66, .92)"/>
+        <stop offset="100%" stop-color="rgba(9, 32, 42, .95)"/>
+      </radialGradient>
+    </defs>
+
+    <!-- bande extérieure : deux couronnes encadrant les graduations -->
+    <circle class="jv-c-hair" cx="130" cy="130" r="126"/>
+    <g class="jv-ticks">${ticks(96, 110, 122, 'jv-tick', 8, 106)}</g>
+    <circle class="jv-c-rail" cx="130" cy="130" r="106"/>
+
+    <!-- segments extérieurs, à contre-sens l'un de l'autre -->
+    <g class="jv-seg-a">
+      ${arc(18, 104, 98, 'jv-seg')}
+      ${arc(200, 250, 98, 'jv-seg thin')}
+    </g>
+    <g class="jv-seg-b">
+      ${arc(128, 196, 88, 'jv-seg thin')}
+    </g>
+
+    <circle class="jv-c-rail" cx="130" cy="130" r="80"/>
+
+    <!-- l'arc ambre : la pièce qui donne son caractère au réacteur -->
+    <g class="jv-arc-spin">${arc(96, 306, 72, 'jv-arc')}</g>
+
+    <circle class="jv-c-hair" cx="130" cy="130" r="62"/>
+    <g class="jv-ticks-in">${ticks(48, 56, 61, 'jv-tick-in')}</g>
+
+    <!-- le cœur plein : sans lui, le centre est un trou -->
+    <circle class="jv-core" cx="130" cy="130" r="52"/>
+    <circle class="jv-core-ring" cx="130" cy="130" r="52"/>
+  </svg>`;
+}
+
+// ---- Jarvis : la voix -------------------------------------------------------
+// Le fil est court et non persistant : Jarvis commente ce qui est là, il ne
+// tient pas un journal. Ce que l'organisation doit retenir a sa place dans une
+// note, pas dans son historique.
+let jarvisFil = [];
+let jvVoice = null;          // enregistrement en cours
+let jvSpeak = localStorage.getItem('ah_jv_voice') !== '0';
+// Posé par `mountJarvis` : démarre l'écoute comme un clic sur le cercle.
+// C'est ce qui permet au mot de réveil d'enchaîner sur la question.
+let jvEcouteAuto = null;
+
+const JV_ETATS = {
+  idle: 'EN VEILLE',
+  listening: 'À L\'ÉCOUTE',
+  thinking: 'RÉFLEXION',
+  speaking: 'RÉPONSE',
+};
+
+const JV_AIDES = {
+  idle: 'Clique pour parler',
+  listening: 'Parle — je m\'arrête quand tu te tais',
+  thinking: 'Un instant…',
+  speaking: 'Parle par-dessus moi pour m\'interrompre',
+};
+
+let jvChrono = null;
+
+function jvSetState(state) {
+  const box = $('#jv');
+  if (!box) return;
+  box.dataset.state = state;
+  if (state !== 'listening') box.style.setProperty('--jv-level', '0');
+  // Pendant qu'il parle, l'électricité circule sur les liens de la carte.
+  if (galaxy?.setEnergie) galaxy.setEnergie(state === 'speaking');
+  // Et le moniteur d'interruption veille : parler par-dessus le fait taire.
+  if (state === 'speaking') jvDemarrerMoniteur();
+  else jvArreterMoniteur();
+  const label = $('#jv-state');
+  if (label) label.textContent = JV_ETATS[state] || JV_ETATS.idle;
+  const aide = $('#jv-hint');
+  if (aide) aide.textContent = JV_AIDES[state] || JV_AIDES.idle;
+
+  // Le temps s'affiche pendant la réflexion : la passerelle de modèles met
+  // parfois une requête en file d'attente pendant une minute ou plus, et un
+  // « RÉFLEXION » figé pendant ce temps ressemble à une panne.
+  clearInterval(jvChrono);
+  jvChrono = null;
+  if (state === 'thinking' && label) {
+    const depuis = Date.now();
+    jvChrono = setInterval(() => {
+      if (!label.isConnected) { clearInterval(jvChrono); return; }
+      const s = Math.round((Date.now() - depuis) / 1000);
+      if (s >= 5) label.textContent = `${JV_ETATS.thinking} · ${s} s`;
+      // Passé trente secondes, dire pourquoi c'est long — c'est la passerelle,
+      // pas une panne.
+      if (s === 30) {
+        const a = $('#jv-hint');
+        if (a) a.textContent = 'Le fournisseur met la requête en file d\'attente — ça arrive, j\'attends.';
+      }
+    }, 1000);
+  }
+}
+
+function jarvisBrainLabel(brain) {
+  if (!brain || !brain.configured) return 'aucun cerveau';
+  return brain.model || brain.label || 'inconnu';
+}
+
+// ---- « Ok Jarvis » : le mot de réveil ---------------------------------------
+// L'écoute est LOCALE : un analyseur de niveau surveille le micro en continu —
+// gratuit, rien ne sort de la machine — et seuls les instants où quelqu'un
+// parle sont enregistrés puis transcrits par le service Whisper d'AgentHub.
+//
+// Surtout pas la reconnaissance vocale du navigateur : elle dépend d'un service
+// distant que Brave débranche et que Firefox n'a pas — l'API existe, `start()`
+// réussit, et il ne se passe jamais rien. C'est exactement le piège dans lequel
+// la première version est tombée.
+
+const REVEIL_KEY = 'ah_reveil';
+const REVEIL_SEUIL = 0.022;       // niveau RMS à partir duquel « quelqu'un parle » —
+                                  // plus bas que la dictée : on parle depuis la pièce,
+                                  // pas dans le micro
+const REVEIL_MAX_MS = 2800;       // « Ok Jarvis » tient largement dedans
+const REVEIL_SILENCE_MS = 800;    // fin de phrase
+const REVEIL_ENTRE_MS = 2500;     // délai minimal entre deux transcriptions
+let reveil = null;                // l'écouteur : { stream, ctx, timer, … }
+let reveilDerniereTx = 0;
+
+const reveilVoulu = () => localStorage.getItem(REVEIL_KEY) === '1';
+
+/**
+ * « Ok Jarvis », et rien d'autre.
+ *
+ * Deux exigences. La phrase doit OUVRIR l'énoncé — un « ok jarvis » perdu au
+ * milieu d'une conversation n'est pas un appel — et le préfixe est « ok »
+ * seul : les béquilles d'avant (« c'est », « et », « hey », « gervais »)
+ * compensaient un Whisper non amorcé, elles ne créaient plus que des faux
+ * déclenchements depuis que l'indice lui souffle la graphie exacte. Restent
+ * tolérés : ses hésitations d'orthographe sur le nom, la ponctuation, et un
+ * ou deux mots de remplissage devant (« euh… ok jarvis »).
+ */
+function estMotDeReveil(phrase) {
+  const t = String(phrase || '').toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/\./g, ' ')                          // « O.K. » → « o k »
+    .replace(/\s+/g, ' ').trim();
+  return /^(?:(?:euh|hum|hmm|ben|bah|alors)[, ]+){0,2}(?:ok|o k|okay|oke)[,!? ]+(?:jarvis|jarviss|jarvys|jarvi|djarvis)\b/.test(t);
+}
+
+/**
+ * Le micro sert-il à autre chose, ou Jarvis parle-t-il ?
+ *
+ * Vérifié au moment d'agir plutôt que tenu par un compteur de pauses : la
+ * première version comptait, une interruption sautait un décrément, et
+ * l'écoute restait suspendue pour toujours.
+ */
+function reveilOccupe() {
+  return Boolean(jvVoice || jvSource || jvAudio || recorder || dictation
+    || (window.speechSynthesis && window.speechSynthesis.speaking));
+}
+
+function reveilDeclenche() {
+  reveilDerniereTx = Date.now() + 4000;           // anti-rebond après ouverture
+  if (S.view !== 'jarvis') navigate('jarvis');
+  announce('Jarvis ouvert.');
+  // Après « Ok Jarvis », la personne enchaîne sa question : Jarvis doit se
+  // mettre à écouter, pas rester en veille à attendre un clic. Le délai laisse
+  // la vue se construire — `mountJarvis` pose le déclencheur en s'installant.
+  setTimeout(() => { jvEcouteAuto?.(); }, 600);
+}
+
+/** Capture une phrase (fin au silence, ou au plafond), puis la fait transcrire. */
+function reveilCapture(etat) {
+  const type = AUDIO_TYPES.find((t) => window.MediaRecorder?.isTypeSupported?.(t)) || '';
+  let rec;
+  try { rec = new MediaRecorder(etat.stream, type ? { mimeType: type } : undefined); } catch { return; }
+
+  const chunks = [];
+  rec.ondataavailable = (e) => { if (e.data?.size) chunks.push(e.data); };
+  rec.onstop = async () => {
+    etat.enCours = null;
+    if (etat.mort || reveilOccupe()) return;
+
+    // Une prise de parole qui a rempli le plafond est une conversation
+    // normale : « Ok Jarvis » tient en une seconde. On la jette ICI, en
+    // local — elle n'est jamais transcrite, ni pour le coût ni pour la
+    // discrétion. Le délai anti-rebond s'applique quand même : pas la peine
+    // de recapturer la suite de la même phrase.
+    if (etat.capDepassee) {
+      etat.capDepassee = false;
+      reveilDerniereTx = Date.now();
+      return;
+    }
+
+    const blob = new Blob(chunks, { type: rec.mimeType || type || 'audio/webm' });
+    if (blob.size < 1200) return;                 // un claquement de porte, pas une phrase
+
+    reveilDerniereTx = Date.now();
+    try {
+      // `hint` amorce Whisper : sans lui, « Jarvis » ressort en mots français
+      // plausibles — « j'en revisse », « service » — impossibles à reconnaître.
+      const r = await fetch(`/api/transcribe?type=${encodeURIComponent(blob.type)}&hint=${encodeURIComponent('Ok Jarvis.')}`, {
+        method: 'POST', headers: { 'Content-Type': blob.type }, body: blob,
+      });
+      const data = await r.json().catch(() => null);
+      if (!r.ok) return;                          // service en panne : on réessaiera à la phrase suivante
+      // Dans la console exprès : c'est ce qui permet de voir en une seconde si
+      // le micro entend, et ce que Whisper comprend.
+      console.log('[réveil] entendu :', JSON.stringify(data?.text || ''));
+      if (estMotDeReveil(data?.text)) reveilDeclenche();
+    } catch { /* réseau : la phrase suivante retentera */ }
+  };
+
+  rec.start();
+  etat.enCours = rec;
+  etat.debutCapture = performance.now();
+  etat.silenceDepuis = 0;
+}
+
+/** La boucle de surveillance : ~8 fois par seconde, à peu près rien à faire. */
+function reveilTic(etat) {
+  if (etat.mort) return;
+  etat.analyser.getByteTimeDomainData(etat.data);
+  let somme = 0;
+  for (const x of etat.data) { const d = (x - 128) / 128; somme += d * d; }
+  const niveau = Math.sqrt(somme / etat.data.length);
+  const now = performance.now();
+
+  if (etat.enCours) {
+    // Fin de capture : un vrai silence, ou le plafond. Le plafond est retenu :
+    // une phrase qui le remplit est une conversation, pas un appel.
+    if (niveau < REVEIL_SEUIL) etat.silenceDepuis = etat.silenceDepuis || now;
+    else etat.silenceDepuis = 0;
+    const parSilence = etat.silenceDepuis && now - etat.silenceDepuis > REVEIL_SILENCE_MS;
+    const parPlafond = now - etat.debutCapture > REVEIL_MAX_MS;
+    if ((parSilence || parPlafond) && etat.enCours.state === 'recording') {
+      etat.capDepassee = parPlafond;
+      etat.enCours.stop();
+    }
+    return;
+  }
+
+  // Début de capture : quelqu'un parle, le micro est libre, et la dernière
+  // transcription ne date pas d'il y a une seconde.
+  if (niveau > REVEIL_SEUIL && !reveilOccupe() && Date.now() - reveilDerniereTx > REVEIL_ENTRE_MS) {
+    reveilCapture(etat);
+  }
+}
+
+// Pourquoi l'écoute ne tourne pas — pour l'afficher au lieu de le deviner.
+let reveilRaison = 'jamais démarrée';
+
+/** L'état de l'écoute, lisible par un humain. */
+function reveilEtat() {
+  if (!reveilVoulu()) return { actif: false, texte: 'désactivée' };
+  if (!reveil) return { actif: false, texte: `à l'arrêt — ${reveilRaison}` };
+  if (reveil.ctx.state === 'suspended') {
+    return { actif: false, texte: 'suspendue par le navigateur — clique n\'importe où sur la page pour l\'armer' };
+  }
+  return { actif: true, texte: 'active — dis « Ok Jarvis »' };
+}
+
+async function demarrerReveil() {
+  if (!reveilVoulu()) { reveilRaison = 'option décochée'; return; }
+  if (reveil) return;
+  // Sans service de transcription, rien ne peut reconnaître la phrase.
+  if (!transcribeReady()) {
+    reveilRaison = 'aucun service de transcription configuré';
+    console.log('[réveil]', reveilRaison);
+    return;
+  }
+
+  const id = localStorage.getItem(MIC_KEY) || '';
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: id ? { deviceId: { ideal: id } } : true });
+  } catch (err) {
+    reveilRaison = `micro refusé (${err?.name || 'erreur'})`;
+    console.log('[réveil]', reveilRaison);
+    localStorage.removeItem(REVEIL_KEY);
+    toast('Le micro a été refusé : le mot de réveil est désactivé.', { kind: 'warn' });
+    return;
+  }
+
+  let ctx;
+  try {
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const source = ctx.createMediaStreamSource(stream);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 1024;
+    source.connect(analyser);
+    const etat = { stream, ctx, analyser, data: new Uint8Array(analyser.fftSize), enCours: null, mort: false };
+    // setInterval et non requestAnimationFrame : l'écoute doit continuer quand
+    // l'onglet n'est plus au premier plan, là où rAF s'arrête.
+    etat.timer = setInterval(() => reveilTic(etat), 120);
+    reveil = etat;
+    armerContexte(etat);
+    console.log('[réveil] écoute démarrée — contexte', ctx.state);
+  } catch (err) {
+    reveilRaison = `analyse audio impossible (${err?.name || 'erreur'})`;
+    console.log('[réveil]', reveilRaison);
+    stream.getTracks().forEach((t) => t.stop());
+  }
+}
+
+/**
+ * Réveille le contexte audio de l'écouteur.
+ *
+ * Créé hors d'un geste — au chargement de la page, donc à chaque
+ * rechargement — un AudioContext naît « suspended » : l'analyseur ne lit
+ * alors qu'un silence parfait et l'écoute paraît morte. On tente la reprise
+ * tout de suite, et sinon au premier geste venu, n'importe où sur la page.
+ */
+function armerContexte(etat) {
+  const essaie = () => { if (!etat.mort && etat.ctx.state === 'suspended') etat.ctx.resume().catch(() => {}); };
+  essaie();
+
+  const arme = () => { essaie(); desarme(); };
+  const desarme = () => {
+    document.removeEventListener('pointerdown', arme, true);
+    document.removeEventListener('keydown', arme, true);
+  };
+  document.addEventListener('pointerdown', arme, true);
+  document.addEventListener('keydown', arme, true);
+  etat.desarmer = desarme;
+
+  // La reprise est asynchrone : on ne juge l'état qu'après un instant, et on
+  // ne dérange l'utilisateur que si elle a vraiment échoué.
+  setTimeout(() => {
+    if (!etat.mort && etat.ctx.state === 'suspended') {
+      toast('« Ok Jarvis » s\'armera à ton premier clic sur la page.', { timeout: 6000 });
+    }
+  }, 600);
+}
+
+function arreterReveil() {
+  const e = reveil;
+  reveil = null;
+  if (!e) return;
+  e.mort = true;
+  clearInterval(e.timer);
+  e.desarmer?.();
+  if (e.enCours) { try { e.enCours.stop(); } catch { /* déjà fini */ } }
+  e.stream.getTracks().forEach((t) => t.stop());
+  try { e.ctx.close(); } catch { /* déjà fermé */ }
+}
+
+/** Coupe tout : micro ouvert, moniteur, lecture serveur et voix de synthèse. */
+function stopJarvisVoice() {
+  if (jvVoice) { try { jvVoice.abort(); } catch { /* déjà fermé */ } jvVoice = null; }
+  jvArreterMoniteur();
+  jvArreterSon();
+  try { window.speechSynthesis?.cancel(); } catch { /* pas de synthèse */ }
+}
+
+/**
+ * Toutes les voix françaises, la plus naturelle d'abord.
+ *
+ * Les systèmes modernes embarquent deux générations très différentes sous la
+ * même API : les anciennes voix concaténatives, métalliques, et les neuronales
+ * — « Natural », « Neural », « Online », « Premium », « Enhanced » selon les
+ * éditeurs. Prendre la première venue tombait presque toujours sur l'ancienne,
+ * d'où le côté robot. On les classe donc par ces marqueurs.
+ */
+function jvVoixFr() {
+  const synth = window.speechSynthesis;
+  if (!synth) return [];
+  const score = (v) => {
+    const n = `${v.name} ${v.voiceURI || ''}`.toLowerCase();
+    let s = 0;
+    if (/natural|neural/.test(n)) s += 100;      // Microsoft Natural, Azure Neural
+    if (/online/.test(n)) s += 60;               // Microsoft « Online » = neuronal
+    if (/premium|enhanced|siri/.test(n)) s += 55; // Apple
+    if (/google/.test(n)) s += 45;               // Chrome, nettement au-dessus des locales
+    if (/eloquence|compact|espeak/.test(n)) s -= 60;
+    if (/fr-fr/i.test(v.lang)) s += 10;          // le français de France avant le canadien
+    if (v.localService) s -= 5;
+    return s;
+  };
+  return synth.getVoices().filter((v) => /^fr/i.test(v.lang)).sort((a, b) => score(b) - score(a));
+}
+
+/** La voix retenue : celle choisie à la main, sinon la mieux classée. */
+function jvVoixChoisie() {
+  const voix = jvVoixFr();
+  if (!voix.length) return null;
+  const garde = localStorage.getItem('ah_jv_voix') || '';
+  return voix.find((v) => v.voiceURI === garde) || voix[0];
+}
+
+// ---- lecture à voix haute : préparer le texte -------------------------------
+// Une voix anglaise lisant du français prononce « 16 » « one six » et écorche
+// tout le reste. On écrit donc les nombres en toutes lettres et on retire ce qui
+// ne se prononce pas, pour ne jamais dépendre de l'intelligence du moteur.
+
+const NB_UNITES = ['zéro', 'un', 'deux', 'trois', 'quatre', 'cinq', 'six', 'sept', 'huit', 'neuf',
+  'dix', 'onze', 'douze', 'treize', 'quatorze', 'quinze', 'seize', 'dix-sept', 'dix-huit', 'dix-neuf'];
+const NB_DIZAINES = ['', '', 'vingt', 'trente', 'quarante', 'cinquante', 'soixante', 'soixante', 'quatre-vingt', 'quatre-vingt'];
+
+/** 0 à 99. Le français a ses pièges : soixante-dix, quatre-vingts, et le « et ». */
+function nbSousCent(n) {
+  if (n < 20) return NB_UNITES[n];
+  const d = Math.floor(n / 10);
+  const u = n % 10;
+  if (d === 7 || d === 9) return `${NB_DIZAINES[d]}-${NB_UNITES[10 + u]}`;
+  if (u === 0) return d === 8 ? 'quatre-vingts' : NB_DIZAINES[d];
+  if (u === 1 && d !== 8) return `${NB_DIZAINES[d]}-et-un`;
+  return `${NB_DIZAINES[d]}-${NB_UNITES[u]}`;
+}
+
+function nbSousMille(n) {
+  const c = Math.floor(n / 100);
+  const r = n % 100;
+  if (!c) return nbSousCent(r);
+  const tete = c === 1 ? 'cent' : `${NB_UNITES[c]} cent`;
+  if (!r) return c === 1 ? 'cent' : `${NB_UNITES[c]} cents`;
+  return `${tete} ${nbSousCent(r)}`;
+}
+
+// « cent » et « vingt » perdent leur « s » dès qu'un mot les suit :
+// « trois cents », mais « trois cent mille ».
+const sansPluriel = (s) => s.replace(/(cent|vingt)s$/, '$1');
+
+/** Un entier en toutes lettres, jusqu'au million. */
+function nombreEnLettres(n) {
+  if (n === 0) return 'zéro';
+  const parts = [];
+  const millions = Math.floor(n / 1000000);
+  const milliers = Math.floor((n % 1000000) / 1000);
+  const reste = n % 1000;
+  if (millions) parts.push(`${millions === 1 ? 'un' : sansPluriel(nbSousMille(millions))} million${millions > 1 ? 's' : ''}`);
+  if (milliers) parts.push(milliers === 1 ? 'mille' : `${sansPluriel(nbSousMille(milliers))} mille`);
+  if (reste) parts.push(nbSousMille(reste));
+  return parts.join(' ');
+}
+
+/**
+ * Le texte tel qu'il doit être entendu.
+ *
+ * Tout ce qui est balisage, lien ou symbole disparaît — un moteur le prononce
+ * caractère par caractère — et les nombres passent en toutes lettres.
+ */
+function jvPourLaVoix(texte) {
+  let t = String(texte || '');
+
+  t = t.replace(/```[\s\S]*?```/g, ' ');                 // blocs de code : illisibles à voix haute
+  t = t.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1');         // [libellé](url) → libellé
+  t = t.replace(/https?:\/\/\S+|www\.\S+/g, ' ');        // URLs nues
+  t = t.replace(/^\s*[-*+]\s+/gm, '');                   // puces de liste en début de ligne
+  t = t.replace(/[\r\n]+/g, ' . ');                      // un saut de ligne s'entend comme une pause
+  t = t.replace(/[*_`~#>|]+/g, ' ');                     // gras, italique, code, tableaux, citations
+  t = t.replace(/[•·]+|[—–]+|-{2,}/g, ' ');              // puces, tirets longs, filets de tableau
+  t = t.replace(/\p{Extended_Pictographic}/gu, ' ');     // émojis
+
+  // Les nombres, en toutes lettres. Un espace ne réunit deux groupes que s'il
+  // sépare des milliers — sans quoi « Opus 5 | 12,5 crédits » deviendrait le
+  // nombre 512,5. Au-delà de sept chiffres, c'est un identifiant : on n'y touche pas.
+  t = t.replace(/\d{1,3}(?:[\s.]\d{3})+(?:,\d+)?|\d+(?:,\d+)?/g, (brut) => {
+    const [ent, dec] = brut.replace(/[\s.]/g, '').split(',');
+    if (!/^\d+$/.test(ent) || ent.length > 7) return brut;
+    const debut = nombreEnLettres(Number(ent));
+    if (dec && /^\d+$/.test(dec)) return `${debut} virgule ${dec.split('').map((c) => NB_UNITES[Number(c)]).join(' ')}`;
+    return debut;
+  });
+
+  t = t.replace(/\s*°\s*C\b/g, ' degrés').replace(/%/g, ' pour cent').replace(/&/g, ' et ');
+  return t.replace(/\s{2,}/g, ' ').trim();
+}
+
+/**
+ * Dit la réponse à voix haute, par la synthèse du navigateur.
+ *
+ * Locale et gratuite — aucun aller-retour, aucun service à configurer. Le texte
+ * est découpé par phrases : au-delà de deux cents caractères la plupart des
+ * moteurs s'étranglent ou se coupent, et une pause entre les phrases sonne de
+ * toute façon plus juste qu'un débit continu.
+ */
+let jvSansVoixFrDit = false;
+let jvAudio = null;              // lecture serveur en cours
+let jvVoixServeur = null;        // { actif, voix, choix, disponible }
+
+// La lecture passe par l'API Web Audio, pas par un élément <audio>.
+//
+// Un <audio> reste soumis à la politique de lecture automatique : entre le clic
+// et la réponse il s'écoule une dizaine de secondes — enregistrer, transcrire,
+// réfléchir, synthétiser — et le navigateur considère alors que le son n'est
+// plus lié au geste, donc il le refuse. Un `AudioContext` repris pendant un
+// clic, lui, reste utilisable sans limite de temps : c'est le seul mécanisme
+// qui tienne sur toute la durée d'un échange.
+let jvCtx = null;
+let jvSource = null;
+
+function jvDebloquerAudio() {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    if (!jvCtx) jvCtx = new Ctx();
+    if (jvCtx.state === 'suspended') jvCtx.resume();
+  } catch { /* pas de Web Audio : on retombera sur l'élément <audio> */ }
+}
+
+function jvArreterSon() {
+  if (jvSource) {
+    try { jvSource.onended = null; jvSource.stop(); } catch { /* déjà fini */ }
+    jvSource = null;
+  }
+  if (jvAudio) { try { jvAudio.pause(); } catch { /* déjà arrêté */ } jvAudio = null; }
+}
+
+// Le premier geste venu — n'importe où, n'importe quand — arme le lecteur pour
+// toute la session. Le flux « Ok Jarvis » ne comporte aucun clic : sans ça, sa
+// réponse vocale retombait sur un <audio> soumis à la politique de lecture.
+document.addEventListener('pointerdown', () => jvDebloquerAudio(), { once: true, capture: true });
+document.addEventListener('keydown', () => jvDebloquerAudio(), { once: true, capture: true });
+
+// ---- l'interrompre à la voix ------------------------------------------------
+// Pendant qu'il parle, un moniteur surveille le micro : une voix soutenue le
+// fait taire et rouvre l'écoute — on coupe la parole à un majordome, il
+// n'insiste pas. L'annulation d'écho est indispensable : sans elle, il
+// s'entendrait dans les haut-parleurs et se couperait tout seul.
+let jvMoniteur = null;
+
+async function jvDemarrerMoniteur() {
+  // Pas de condition sur la transcription : le faire taire ne demande rien.
+  // C'est l'écoute qui suit, elle, qui en a besoin — et elle se débrouille.
+  if (jvMoniteur || S.view !== 'jarvis') return;
+  const etat = { mort: false };
+  jvMoniteur = etat;
+
+  const id = localStorage.getItem(MIC_KEY) || '';
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        ...(id ? { deviceId: { ideal: id } } : {}),
+        echoCancellation: true, noiseSuppression: true,
+      },
+    });
+  } catch {
+    if (jvMoniteur === etat) jvMoniteur = null;
+    return;
+  }
+  if (etat.mort) { stream.getTracks().forEach((t) => t.stop()); return; }
+
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 1024;
+    ctx.createMediaStreamSource(stream).connect(analyser);
+    const data = new Uint8Array(analyser.fftSize);
+    let depuis = 0;
+
+    etat.stop = () => {
+      clearInterval(etat.timer);
+      stream.getTracks().forEach((t) => t.stop());
+      try { ctx.close(); } catch { /* déjà fermé */ }
+    };
+    etat.timer = setInterval(() => {
+      if (etat.mort) return;
+      analyser.getByteTimeDomainData(data);
+      let somme = 0;
+      for (const x of data) { const d = (x - 128) / 128; somme += d * d; }
+      const niveau = Math.sqrt(somme / data.length);
+      const now = performance.now();
+      // 150 ms de voix au-dessus du seuil : assez pour écarter un claquement
+      // ou le résidu d'écho, assez court pour qu'il se taise dans l'instant.
+      if (niveau > 0.04) depuis = depuis || now;
+      else depuis = 0;
+      if (depuis && now - depuis > 150) {
+        jvArreterMoniteur();
+        jvArreterSon();
+        try { window.speechSynthesis?.cancel(); } catch { /* pas de synthèse */ }
+        jvSetState('idle');
+        jvEcouteAuto?.();              // il se tait, et c'est à toi
+      }
+    }, 50);
+  } catch {
+    jvArreterMoniteur();
+    stream.getTracks().forEach((t) => t.stop());
+  }
+}
+
+function jvArreterMoniteur() {
+  const m = jvMoniteur;
+  jvMoniteur = null;
+  if (m) { m.mort = true; m.stop?.(); }
+}
+
+/**
+ * Lit la réponse avec le modèle audio du serveur.
+ *
+ * C'est la voie normale : le rendu ne dépend plus des voix installées sur la
+ * machine — donc plus d'accent anglais ni de nombres épelés — et il est le même
+ * partout. La synthèse du navigateur reste le filet de sécurité, mais un échec
+ * se dit à voix haute plutôt que de dégrader en silence : c'est ce silence qui
+ * a fait croire que la voix serveur ne marchait pas.
+ */
+async function jvParlerServeur(texte, apres) {
+  const propre = jvPourLaVoix(texte);
+  if (!propre) { apres(); return true; }
+
+  let blob;
+  try {
+    jvSetState('thinking');
+    const r = await fetch('/api/jarvis/voice', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ texte: propre }),
+    });
+    if (!r.ok) {
+      const detail = await r.json().catch(() => null);
+      toast(detail?.error || `La voix a échoué (HTTP ${r.status}).`, { kind: 'warn', title: 'Voix de Jarvis' });
+      return false;
+    }
+    blob = await r.blob();
+  } catch (err) {
+    toast(`Voix injoignable : ${err.message}`, { kind: 'warn', title: 'Voix de Jarvis' });
+    return false;
+  }
+  if (!blob.size) { toast('Le service de voix n\'a rien renvoyé.', { kind: 'warn' }); return false; }
+
+  jvArreterSon();
+  jvSetState('speaking');
+  // Le mot de réveil n'a pas besoin d'être suspendu ici : son écouteur vérifie
+  // lui-même `reveilOccupe()` — qui couvre cette lecture — au moment d'agir.
+
+  // Voie normale : Web Audio, insensible à la politique de lecture automatique
+  // une fois le contexte repris pendant un clic.
+  if (jvCtx) {
+    try {
+      if (jvCtx.state === 'suspended') await jvCtx.resume();
+      const donnees = await blob.arrayBuffer();
+      const son = await jvCtx.decodeAudioData(donnees);
+      const src = jvCtx.createBufferSource();
+      src.buffer = son;
+      src.connect(jvCtx.destination);
+      src.onended = () => { if (jvSource === src) jvSource = null; apres(); };
+      src.start();
+      jvSource = src;
+      return true;
+    } catch { /* décodage ou reprise impossible : on tente l'élément <audio> */ }
+  }
+
+  // Repli : un élément <audio>. Il peut être bloqué, et on le dit alors.
+  const url = URL.createObjectURL(blob);
+  const audio = new Audio(url);
+  jvAudio = audio;
+  const finir = () => {
+    URL.revokeObjectURL(url);
+    if (jvAudio === audio) jvAudio = null;
+    apres();
+  };
+  audio.onended = finir;
+  audio.onerror = finir;
+  try {
+    await audio.play();
+  } catch {
+    URL.revokeObjectURL(url);
+    jvAudio = null;
+    toast('Ton navigateur a bloqué la lecture audio. Reclique sur le cercle pour l\'autoriser.',
+      { kind: 'warn', title: 'Voix de Jarvis' });
+    apres();
+    return true;
+  }
+  return true;
+}
+
+function jvParler(texte, apres = () => {}) {
+  const synth = window.speechSynthesis;
+  const propre = jvPourLaVoix(texte);
+  if (!jvSpeak || !synth || !propre) { apres(); return; }
+
+  const voix = jvVoixChoisie();
+  // Sans voix française installée, le navigateur prend la sienne — anglaise le
+  // plus souvent — qui écorche le français et épelle les nombres. Mieux vaut le
+  // dire une fois que de laisser croire à un bug de Jarvis.
+  // Ce repli ne sert que si le modèle audio du serveur est indisponible. On ne
+  // prévient qu'une fois, et seulement dans ce cas : sinon le message laissait
+  // croire que Jarvis dépendait encore des voix du système.
+  if (!voix && !jvSansVoixFrDit) {
+    jvSansVoixFrDit = true;
+    toast('Repli sur la voix du navigateur, et aucune voix française n\'est installée ici : '
+      + 'la lecture aura un accent étranger.', { kind: 'warn', timeout: 9000 });
+  }
+
+  const morceaux = propre.match(/[^.!?…]+[.!?…]*/g) || [propre];
+  const phrases = [];
+  for (const m of morceaux) {
+    const t = m.trim();
+    if (!t) continue;
+    // On recolle les fragments courts : « Oui. » seul sonne haché.
+    if (phrases.length && (phrases[phrases.length - 1].length + t.length) < 180) {
+      phrases[phrases.length - 1] += ' ' + t;
+    } else phrases.push(t);
+  }
+
+  try {
+    synth.cancel();
+    jvSetState('speaking');
+    phrases.slice(0, 12).forEach((phrase, i) => {
+      const u = new SpeechSynthesisUtterance(phrase);
+      // La langue reste le français même sans voix française : certains moteurs
+      // s'en servent pour choisir leurs règles de prononciation.
+      u.lang = voix?.lang || 'fr-FR';
+      if (voix) u.voice = voix;
+      // Légèrement posé et un ton en dessous : c'est ce qui fait la différence
+      // entre une annonce de gare et quelqu'un qui parle.
+      u.rate = 0.97;
+      u.pitch = 0.92;
+      if (i === phrases.length - 1) { u.onend = apres; u.onerror = apres; }
+      synth.speak(u);
+    });
+  } catch { apres(); }
+}
+
+/**
+ * Écoute, puis rend le texte.
+ *
+ * L'enregistrement s'arrête tout seul après un silence : on parle à Jarvis, on
+ * ne clique pas deux fois. Le seuil est mesuré sur le signal lui-même, pas sur
+ * une durée fixe, sinon une phrase posée serait coupée en plein milieu.
+ */
+async function jvEcouter(onTexte) {
+  const id = localStorage.getItem(MIC_KEY) || '';
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: id ? { deviceId: { ideal: id } } : true });
+  } catch (err) {
+    toast(micErrorText(err), { kind: 'warn' });
+    jvSetState('idle');
+    return;
+  }
+
+  const type = AUDIO_TYPES.find((t) => window.MediaRecorder?.isTypeSupported?.(t)) || '';
+  let rec;
+  try {
+    rec = new MediaRecorder(stream, type ? { mimeType: type } : undefined);
+  } catch {
+    stream.getTracks().forEach((t) => t.stop());
+    toast('Ce navigateur ne sait pas enregistrer d\'audio.', { kind: 'warn' });
+    jvSetState('idle');
+    return;
+  }
+
+  const chunks = [];
+  let annule = false;
+  rec.ondataavailable = (e) => { if (e.data?.size) chunks.push(e.data); };
+
+  // Détection de fin de phrase : on n'arrête qu'après avoir entendu quelque
+  // chose, sinon un micro silencieux se couperait avant le premier mot.
+  let audioCtx = null;
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const source = audioCtx.createMediaStreamSource(stream);
+    const analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 1024;
+    source.connect(analyser);
+    const data = new Uint8Array(analyser.fftSize);
+    let parleDepuis = 0;
+    let silenceDepuis = 0;
+
+    const veille = () => {
+      if (rec.state !== 'recording') return;
+      analyser.getByteTimeDomainData(data);
+      let somme = 0;
+      for (const x of data) { const d = (x - 128) / 128; somme += d * d; }
+      const niveau = Math.sqrt(somme / data.length);
+      // Le niveau remonte jusqu'au CSS : le halo suit la voix, ce qui prouve
+      // d'un coup d'œil que le micro entend vraiment quelque chose.
+      const box = $('#jv');
+      if (box) box.style.setProperty('--jv-level', Math.min(1, niveau * 7).toFixed(3));
+      const now = performance.now();
+      if (niveau > 0.035) { parleDepuis = parleDepuis || now; silenceDepuis = 0; }
+      else if (parleDepuis) { silenceDepuis = silenceDepuis || now; }
+      // 1,4 s de silence après avoir parlé : la phrase est finie.
+      if (silenceDepuis && now - silenceDepuis > 1400) { rec.stop(); return; }
+      requestAnimationFrame(veille);
+    };
+    requestAnimationFrame(veille);
+  } catch { /* sans analyseur, il reste le clic et le délai maximum */ }
+
+  rec.onstop = async () => {
+    stream.getTracks().forEach((t) => t.stop());
+    try { audioCtx?.close(); } catch { /* déjà fermé */ }
+    jvVoice = null;
+    if (annule) { jvSetState('idle'); return; }
+
+    const blob = new Blob(chunks, { type: rec.mimeType || type || 'audio/webm' });
+    if (blob.size < 1500) { jvSetState('idle'); announce('Enregistrement trop court.'); return; }
+
+    jvSetState('thinking');
+    try {
+      const r = await fetch(`/api/transcribe?type=${encodeURIComponent(blob.type)}`, {
+        method: 'POST', headers: { 'Content-Type': blob.type }, body: blob,
+      });
+      const data = await r.json().catch(() => null);
+      if (!r.ok) {
+        toast(data?.error || `Transcription refusée (HTTP ${r.status}).`, { kind: 'warn' });
+        jvSetState('idle');
+        return;
+      }
+      onTexte(String(data?.text || '').trim());
+    } catch {
+      toast('Serveur injoignable — vérifie ta connexion.', { kind: 'warn' });
+      jvSetState('idle');
+    }
+  };
+
+  rec.start();
+  jvVoice = { stop: () => rec.state === 'recording' && rec.stop(), abort: () => { annule = true; rec.state === 'recording' && rec.stop(); } };
+  jvSetState('listening');
+  setTimeout(() => { if (jvVoice) jvVoice.stop(); }, RECORD_MAX_MS);
+}
+
+async function mountJarvis(root) {
+  const said = $('#jv-said', root);
+  const brainEl = $('#jv-brain', root);
+  const ring = $('#jv-ring', root);
+  const form = $('#jv-form', root);
+  const input = $('#jv-input', root);
+  if (!ring || !said) return;
+
+  const etat = await tryApi(api('GET', '/api/jarvis'), 'État de Jarvis');
+  if (brainEl) brainEl.textContent = jarvisBrainLabel(etat && etat.brain);
+  jvVoixServeur = etat?.voice || null;
+
+  const montrer = (role, texte, classe = '') => {
+    const ligne = el('div', `jv-line ${role} ${classe}`);
+    ligne.textContent = texte;
+    said.appendChild(ligne);
+    // Deux tours suffisent à l'écran : au-delà, la carte disparaît sous le texte.
+    while (said.children.length > 4) said.removeChild(said.firstChild);
+    said.scrollTop = said.scrollHeight;
+    return ligne;
+  };
+
+  const demander = async (q) => {
+    if (!q) { jvSetState('idle'); return; }
+    montrer('moi', q);
+    jvSetState('thinking');
+
+    const r = await tryApi(api('POST', '/api/jarvis/ask', { question: q, historique: jarvisFil }), 'Jarvis');
+    if (!r) { jvSetState('idle'); return; }
+    if (!r.ok) { montrer('jarvis', r.text || 'Je n\'ai pas pu répondre.', 'err'); jvSetState('idle'); return; }
+
+    // Le glitch d'abord : la bascule doit se voir avant de s'entendre.
+    if (r.change && galaxy) galaxy.glitchNow();
+    // « Zoome sur… » : la caméra part pendant qu'il répond.
+    if (r.focus && galaxy) {
+      if (r.focus.group) galaxy.focusOnGroup(r.focus.id);
+      else galaxy.focusOn(r.focus.id);
+    }
+    if (r.change && brainEl) {
+      brainEl.textContent = jarvisBrainLabel(r.brain);
+      brainEl.classList.add('changed');
+      setTimeout(() => brainEl.classList.remove('changed'), 1800);
+    }
+
+    montrer('jarvis', r.text, r.change ? 'switch' : '');
+    jarvisFil = [...jarvisFil, { role: 'user', content: q }, { role: 'assistant', content: r.text }].slice(-8);
+
+    // S'il finit sur une question, il attend ta réponse : l'écoute rouvre
+    // d'elle-même — une conversation ne se relance pas au clic.
+    const questionPosee = /\?\s*[»")\]]*\s*$/.test(String(r.text || '').trim());
+    const fini = () => {
+      jvSetState('idle');
+      if (questionPosee) jvEcouteAuto?.();
+    };
+    if (!jvSpeak) { fini(); return; }
+    // Le modèle audio d'abord ; la voix du navigateur seulement s'il a échoué.
+    const parServeur = jvVoixServeur?.actif && jvVoixServeur?.disponible
+      ? await jvParlerServeur(r.text, fini)
+      : false;
+    if (!parServeur) jvParler(r.text, fini);
+  };
+
+  ring.onclick = () => {
+    // Le clic est le seul moment où le navigateur autorise à ouvrir le son :
+    // on en profite, même si la lecture n'aura lieu que dix secondes plus tard.
+    jvDebloquerAudio();
+
+    // Parler pendant que Jarvis répond doit l'interrompre : c'est ce qu'on
+    // attend d'une conversation.
+    if (jvSource || jvAudio) { jvArreterSon(); jvSetState('idle'); return; }
+    if (window.speechSynthesis?.speaking) { window.speechSynthesis.cancel(); jvSetState('idle'); return; }
+    if (jvVoice) { jvVoice.stop(); return; }
+    if (!transcribeReady()) {
+      toast('Aucun service de transcription configuré. Réglages → Microphone.', { kind: 'warn' });
+      return;
+    }
+    jvEcouter(demander);
+  };
+
+  // Le mot de réveil passe par ici pour enchaîner sur la question — mêmes
+  // conditions qu'un clic, sans en exiger un.
+  jvEcouteAuto = () => {
+    if (S.view !== 'jarvis' || jvVoice || jvSource || jvAudio) return;
+    if (!transcribeReady()) return;
+    jvEcouter(demander);
+  };
+
+  const voix = $('#jv-voice', root);
+  if (voix) {
+    voix.setAttribute('aria-pressed', String(jvSpeak));
+    voix.classList.toggle('off', !jvSpeak);
+    voix.onclick = () => {
+      jvSpeak = !jvSpeak;
+      localStorage.setItem('ah_jv_voice', jvSpeak ? '1' : '0');
+      voix.setAttribute('aria-pressed', String(jvSpeak));
+      voix.classList.toggle('off', !jvSpeak);
+      if (!jvSpeak) window.speechSynthesis?.cancel();
+    };
+  }
+
+  // Les voix du modèle audio, servies par le serveur. Le navigateur n'en
+  // fournit plus : son rendu dépendait des voix installées sur la machine.
+  const selecteur = $('#jv-voix', root);
+  if (selecteur) {
+    const dispo = jvVoixServeur?.disponible ? (jvVoixServeur.choix || []) : [];
+    if (!dispo.length) selecteur.classList.add('hidden');
+    else {
+      selecteur.classList.remove('hidden');
+      selecteur.innerHTML = dispo.map((v) =>
+        `<option value="${escapeAttr(v)}"${v === jvVoixServeur.voix ? ' selected' : ''}>${escapeHtml(v)}</option>`).join('');
+      selecteur.onchange = async () => {
+        jvDebloquerAudio();          // ce changement est un geste : on en profite
+        const r = await tryApi(api('PUT', '/api/settings', { jarvis_voice: selecteur.value }), 'Voix de Jarvis');
+        if (!r) return;
+        jvVoixServeur = { ...jvVoixServeur, voix: selecteur.value };
+        // Un échantillon immédiat : c'est le seul moyen de choisir une voix.
+        jvSpeak = true;
+        await jvParlerServeur('Bonjour Monsieur. Je suis Jarvis, à votre service.', () => jvSetState('idle'));
+      };
+    }
+  }
+
+  const clavier = $('#jv-type', root);
+  if (clavier && form) {
+    clavier.onclick = () => {
+      form.classList.toggle('hidden');
+      if (!form.classList.contains('hidden')) input.focus();
+    };
+    form.onsubmit = (e) => {
+      e.preventDefault();
+      const q = input.value.trim();
+      input.value = '';
+      demander(q);
+    };
+  }
 }
 
 class Galaxy3D {
@@ -1659,10 +2682,13 @@ class Galaxy3D {
       // Disque plutôt que sphère : les amas restent distincts vus de face, et
       // la profondeur sert la lisibilité au lieu de tout mélanger.
       const t = G === 1 ? 0 : i / (G - 1);
-      const rad = spread * Math.sqrt(0.12 + t * 0.88);
+      // Rayon et hauteur chahutés (déterministes) : un nuage organique plutôt
+      // qu'un anneau régulier — la référence est un graphe de notes, pas un
+      // système solaire.
+      const rad = spread * Math.sqrt(0.12 + t * 0.88) * (0.72 + (((i * 53) % 100) / 100) * 0.5);
       const ang = i * golden;
       g.cx = Math.cos(ang) * rad;
-      g.cy = (((i * 41) % 100) / 100 - 0.5) * spread * 0.30;
+      g.cy = (((i * 41) % 100) / 100 - 0.5) * spread * 0.55;
       g.cz = Math.sin(ang) * rad;
 
       const members = byGroup.get(g.id);
@@ -1693,6 +2719,20 @@ class Galaxy3D {
     }
     for (const s of this.nodes) s.r += Math.min(2.2, (this.degree.get(s.node.id) || 0) * 0.5);
 
+    // Les nœuds marquants portent leur nom en permanence, comme sur un graphe
+    // de notes : c'est ce qui fait carte plutôt que décor. Les autres, au survol.
+    this.labeled = new Set(
+      [...this.nodes]
+        .sort((a, b) => ((b.node.weight || 1) + (this.degree.get(b.node.id) || 0))
+          - ((a.node.weight || 1) + (this.degree.get(a.node.id) || 0)))
+        .slice(0, 26)
+        .map((s) => s.node.id),
+    );
+
+    // Les influx qui parcourent les liens quand Jarvis parle.
+    this.pulses = [];
+    this.energie = false;
+
     this.radius = this.nodes.reduce((m, s) => Math.max(m, Math.hypot(s.x, s.y, s.z)), 1);
 
     // Poussière : purement décoratif, mais c'est ce qui fait lire le vide comme
@@ -1717,17 +2757,41 @@ class Galaxy3D {
    */
   sprite(color) {
     if (this.sprites.has(color)) return this.sprites.get(color);
-    const S = 64;
+    const S = 96;
     const c = document.createElement('canvas');
     c.width = c.height = S;
     const g = c.getContext('2d');
-    const grad = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
-    grad.addColorStop(0, '#ffffff');
-    grad.addColorStop(0.18, color);
-    grad.addColorStop(0.45, withAlpha(color, 0.35));
-    grad.addColorStop(1, withAlpha(color, 0));
-    g.fillStyle = grad;
+    const cx = S / 2, cy = S / 2, R = S * 0.30;
+
+    // Halo court : exister de loin sans rayonner sur les voisines.
+    let gr = g.createRadialGradient(cx, cy, R * 0.55, cx, cy, S / 2);
+    gr.addColorStop(0, withAlpha(color, 0.30));
+    gr.addColorStop(1, withAlpha(color, 0));
+    g.fillStyle = gr;
     g.fillRect(0, 0, S, S);
+
+    // Le corps : éclairé en haut-gauche, assombri vers le bord. C'est le
+    // dégradé qui fait la sphère — le bord sombre la décolle du fond noir.
+    gr = g.createRadialGradient(cx - R * 0.38, cy - R * 0.38, R * 0.08, cx, cy, R);
+    gr.addColorStop(0, shade(color, 0.55));
+    gr.addColorStop(0.5, color);
+    gr.addColorStop(0.92, shade(color, -0.28));
+    gr.addColorStop(1, shade(color, -0.42));
+    g.fillStyle = gr;
+    g.beginPath();
+    g.arc(cx, cy, R, 0, Math.PI * 2);
+    g.fill();
+
+    // Le reflet, décalé comme l'éclairage : c'est lui qui fait la bille.
+    gr = g.createRadialGradient(cx - R * 0.42, cy - R * 0.45, 0, cx - R * 0.42, cy - R * 0.45, R * 0.55);
+    gr.addColorStop(0, 'rgba(255,255,255,.8)');
+    gr.addColorStop(0.35, 'rgba(255,255,255,.22)');
+    gr.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = gr;
+    g.beginPath();
+    g.arc(cx, cy, R, 0, Math.PI * 2);
+    g.fill();
+
     this.sprites.set(color, c);
     return c;
   }
@@ -1741,6 +2805,9 @@ class Galaxy3D {
 
     this.onDown = (e) => {
       this.dragging = true;
+      // Reprendre la main annule le vol de caméra et le marquage en cours.
+      this.anim = null;
+      this.focusId = null;
       this.lastX = e.clientX; this.lastY = e.clientY; this.moved = 0;
       c.setPointerCapture?.(e.pointerId);
       c.classList.add('grabbing');
@@ -1785,7 +2852,49 @@ class Galaxy3D {
   }
 
   toggleSpin() { this.spin = !this.spin; return this.spin; }
-  reset() { this.yaw = 0.4; this.pitch = -0.34; this.zoom = 1; }
+  reset() { this.yaw = 0.4; this.pitch = -0.34; this.zoom = 1; this.anim = null; this.focusId = null; }
+
+  /**
+   * Amène la caméra sur un nœud — c'est ce qui répond à « zoome sur… ».
+   *
+   * Le lacet vise l'azimut du nœud côté caméra, l'assiette le centre, et le
+   * zoom le grossit. La rotation automatique s'arrête : on vient de pointer
+   * quelque chose, la carte doit rester dessus.
+   */
+  focusOn(nodeId) {
+    const i = this.index.get(nodeId);
+    if (i === undefined) return false;
+    const s = this.nodes[i];
+    this.volVers(s.x, s.y, s.z, 2.1);
+    this.focusId = nodeId;
+    return true;
+  }
+
+  /** Même vol, vers le centre d'un amas — « les tâches terminées ». */
+  focusOnGroup(groupId) {
+    const g = this.groups.find((x) => x.id === groupId);
+    if (!g) return false;
+    this.volVers(g.cx, g.cy, g.cz, 1.6);
+    this.focusId = null;
+    return true;
+  }
+
+  volVers(x, y, z, zoomCible) {
+    const toYaw = Math.atan2(x, z) + Math.PI;
+    const z1 = -Math.hypot(x, z) || -1;
+    const toPitch = Math.atan(y / z1);
+
+    // Toujours par le plus court chemin angulaire, sinon la carte fait un tour
+    // complet pour rejoindre une cible à dix degrés.
+    const wrap = (d) => ((d + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
+    this.anim = {
+      t0: performance.now(), ms: this.reduced ? 0 : 1200,
+      fromYaw: this.yaw, dYaw: wrap(toYaw - this.yaw),
+      fromPitch: this.pitch, dPitch: toPitch - this.pitch,
+      fromZoom: this.zoom, toZoom: Math.max(this.zoom, zoomCible),
+    };
+    this.spin = false;
+  }
 
   resize() {
     const wrap = this.canvas.parentElement;
@@ -1822,8 +2931,72 @@ class Galaxy3D {
 
   loop() {
     this.raf = requestAnimationFrame(this.loop);
-    if (this.spin && !this.dragging) this.yaw += 0.0013;
+    // La rotation s'interrompt dès qu'une bille est survolée : on est en train
+    // de lire, la carte n'a pas à se dérober sous le curseur.
+    if (this.spin && !this.dragging && !this.hover && !this.anim) this.yaw += 0.0013;
+
+    // Vol de caméra en cours — « zoome sur… ».
+    if (this.anim) {
+      const a = this.anim;
+      const t = a.ms ? Math.min(1, (performance.now() - a.t0) / a.ms) : 1;
+      const e = t < 0.5 ? 2 * t * t : 1 - ((-2 * t + 2) ** 2) / 2;   // accélère puis freine
+      this.yaw = a.fromYaw + a.dYaw * e;
+      this.pitch = a.fromPitch + a.dPitch * e;
+      this.zoom = a.fromZoom + (a.toZoom - a.fromZoom) * e;
+      if (t >= 1) this.anim = null;
+    }
     this.draw();
+    if (this.glitchUntil && performance.now() < this.glitchUntil) this.drawGlitch();
+  }
+
+  /**
+   * Secoue la carte le temps que Jarvis change de cerveau.
+   *
+   * L'effet est appliqué *après* le dessin, en recopiant le canvas sur
+   * lui-même par bandes décalées : aucune passe de rendu supplémentaire, et
+   * `draw()` n'a pas à savoir qu'un glitch existe.
+   */
+  glitchNow(ms = 1400) {
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    this.glitchUntil = performance.now() + ms;
+    this.glitchFrom = performance.now();
+  }
+
+  /** Allume ou éteint les influx sur les liens — appelé quand Jarvis parle.
+      Les charges en vol finissent leur course : l'électricité ne se fige pas. */
+  setEnergie(on) { this.energie = Boolean(on); }
+
+  drawGlitch() {
+    const ctx = this.ctx;
+    const { w, h } = this;
+    const t = (performance.now() - this.glitchFrom) / (this.glitchUntil - this.glitchFrom);
+    // L'intensité retombe vers la fin : la carte se « recompose » au lieu de
+    // s'arrêter net.
+    const force = Math.max(0, 1 - t) * (0.55 + 0.45 * Math.sin(t * 34));
+
+    const bandes = 3 + Math.round(force * 7);
+    for (let i = 0; i < bandes; i++) {
+      const y = Math.random() * h;
+      const hauteur = 6 + Math.random() * (30 + force * 60);
+      const dx = (Math.random() - 0.5) * force * 90;
+      ctx.drawImage(this.canvas, 0, y, w, hauteur, dx, y, w, hauteur);
+    }
+
+    // Aberration chromatique : deux copies teintées, très légèrement décalées.
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.14 * force;
+    ctx.fillStyle = '#25e0ff';
+    ctx.fillRect(-force * 7, 0, w, h);
+    ctx.fillStyle = '#ff2f8a';
+    ctx.fillRect(force * 7, 0, w, h);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+
+    // Quelques lignes de balayage, comme un signal qui accroche mal.
+    ctx.globalAlpha = 0.10 * force;
+    ctx.fillStyle = '#cfe0ff';
+    for (let y = (performance.now() / 6) % 4; y < h; y += 4) ctx.fillRect(0, y, w, 1);
+    ctx.globalAlpha = 1;
   }
 
   draw() {
@@ -1832,25 +3005,24 @@ class Galaxy3D {
     if (!w || !h) return;
     this.fit = Math.min(w, h) / (this.radius * 2.5);
 
-    // Fond : un dégradé chaud au centre, noir aux bords. C'est lui qui donne
-    // la sensation de profondeur avant même la première étoile.
+    // Fond : un noir presque pur, à peine creusé au centre. Le style visé est
+    // celui d'un graphe de notes — ce sont les billes qui portent la couleur.
     const bg = ctx.createRadialGradient(w / 2, h * 0.48, 0, w / 2, h * 0.48, Math.max(w, h) * 0.8);
-    bg.addColorStop(0, '#1c1f47');
-    bg.addColorStop(0.45, '#0e1029');
-    bg.addColorStop(1, '#05060f');
+    bg.addColorStop(0, '#0b0d15');
+    bg.addColorStop(0.55, '#060810');
+    bg.addColorStop(1, '#020307');
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, w, h);
 
-    ctx.globalCompositeOperation = 'lighter';
+    // La poussière reste, mais discrète : un soupçon de vie dans le vide.
     for (const d of this.dust) {
       const p = this.project(d);
       if (!p) continue;
-      ctx.globalAlpha = 0.10 + 0.18 * Math.min(1, p.k * 2);
-      ctx.fillStyle = '#aab6ff';
+      ctx.globalAlpha = 0.04 + 0.08 * Math.min(1, p.k * 2);
+      ctx.fillStyle = '#8b96b4';
       ctx.fillRect(p.x, p.y, d.s, d.s);
     }
     ctx.globalAlpha = 1;
-    ctx.globalCompositeOperation = 'source-over';
 
     const proj = this.nodes.map((s) => this.project(s));
 
@@ -1864,7 +3036,9 @@ class Galaxy3D {
       }
     }
 
-    ctx.lineWidth = 1;
+    // Les liens font partie du dessin, pas du décor : bien visibles, dans un
+    // vert-gris désaturé — c'est eux qui donnent le côté « réseau de neurones ».
+    ctx.lineWidth = 0.8;
     for (const l of this.data.links) {
       const a = this.index.get(l.source), b = this.index.get(l.target);
       if (a === undefined || b === undefined) continue;
@@ -1872,11 +3046,52 @@ class Galaxy3D {
       if (!pa || !pb) continue;
       const lit = hoverId && (l.source === hoverId || l.target === hoverId);
       if (hoverId && !lit) continue;              // au survol, seuls les liens concernés
-      ctx.strokeStyle = lit ? 'rgba(200,216,255,.85)' : 'rgba(150,168,240,.13)';
+      ctx.strokeStyle = lit ? 'rgba(200,232,224,.9)' : 'rgba(126,158,146,.22)';
       ctx.beginPath();
       ctx.moveTo(pa.x, pa.y);
       ctx.lineTo(pb.x, pb.y);
       ctx.stroke();
+    }
+
+    // Les influx : des charges lumineuses qui parcourent les liens quand
+    // Jarvis parle — la carte devient son cerveau, l'électricité y circule.
+    if (this.energie && !this.reduced && this.pulses.length < 30 && this.data.links.length) {
+      for (let n = 0; n < 2; n++) {
+        if (Math.random() < 0.55) {
+          const l = this.data.links[(Math.random() * this.data.links.length) | 0];
+          const a = this.index.get(l.source), b = this.index.get(l.target);
+          if (a !== undefined && b !== undefined) {
+            // Lentes exprès : une charge doit se suivre des yeux le long du
+            // fil, pas clignoter d'un bout à l'autre.
+            this.pulses.push({ a, b, t: 0, v: 0.004 + Math.random() * 0.006 });
+          }
+        }
+      }
+    }
+    if (this.pulses.length) {
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.lineCap = 'round';
+      this.pulses = this.pulses.filter((pu) => {
+        pu.t += pu.v;
+        if (pu.t >= 1) return false;
+        const pa = proj[pu.a], pb = proj[pu.b];
+        if (!pa || !pb) return true;
+        const queue = Math.max(0, pu.t - 0.12);
+        const x1 = pa.x + (pb.x - pa.x) * queue, y1 = pa.y + (pb.y - pa.y) * queue;
+        const x2 = pa.x + (pb.x - pa.x) * pu.t, y2 = pa.y + (pb.y - pa.y) * pu.t;
+        const fade = Math.sin(pu.t * Math.PI);
+        ctx.globalAlpha = 0.5 * fade;
+        ctx.strokeStyle = '#8fe8ff';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+        ctx.globalAlpha = 0.9 * fade;
+        ctx.fillStyle = '#eafcff';
+        ctx.beginPath(); ctx.arc(x2, y2, 1.7, 0, Math.PI * 2); ctx.fill();
+        return true;
+      });
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.lineWidth = 0.8;
     }
 
     // Du plus lointain au plus proche : les étoiles de devant couvrent celles
@@ -1884,8 +3099,9 @@ class Galaxy3D {
     const order = this.nodes.map((_, i) => i).filter((i) => proj[i])
       .sort((a, b) => proj[b].z - proj[a].z);
 
+    // `source-over` et non `lighter` : des billes mates s'occultent, elles ne
+    // s'additionnent pas en soleil quand elles se superposent.
     let best = null, bestD = 20;
-    ctx.globalCompositeOperation = 'lighter';
     for (const i of order) {
       const s = this.nodes[i];
       const p = proj[i];
@@ -1901,12 +3117,32 @@ class Galaxy3D {
       const depth = 0.42 + 0.58 * Math.min(1, p.k * 1.5);
       const alpha = (dim ? 0.16 : 1) * depth;
 
-      const size = r * (s.node.stub ? 5 : 7);
-      ctx.globalAlpha = alpha * (s.node.stub ? 0.45 : 0.95);
+      // Le cœur du sprite occupe 30 % de sa surface : le multiplicateur suit,
+      // sinon les sphères doubleraient de taille.
+      const size = r * (s.node.stub ? 2.3 : 3.1);
+      ctx.globalAlpha = alpha * (s.node.stub ? 0.45 : 1);
       ctx.drawImage(this.sprite(s.color), p.x - size, p.y - size, size * 2, size * 2);
     }
     ctx.globalCompositeOperation = 'source-over';
     ctx.globalAlpha = 1;
+
+    // Étiquettes permanentes des nœuds marquants, posées à droite de leur
+    // bille — la signature du style graphe de notes.
+    ctx.textAlign = 'left';
+    for (const i of order) {
+      const s = this.nodes[i];
+      if (!this.labeled.has(s.node.id)) continue;
+      const p = proj[i];
+      if (p.k < 0.55) continue;                    // trop loin : le nom bruiterait
+      if (hoverId && s.node.id !== hoverId && !near.has(s.node.id)) continue;
+      const r = Math.max(0.8, s.r * p.k);
+      ctx.globalAlpha = Math.min(0.8, (p.k - 0.4) * 1.4);
+      ctx.font = `500 ${Math.round(9 + p.k * 2)}px ui-sans-serif, system-ui, sans-serif`;
+      ctx.fillStyle = '#c6cfdf';
+      ctx.fillText(s.node.title.slice(0, 24), p.x + r * 3 + 5, p.y + 3);
+    }
+    ctx.globalAlpha = 1;
+    ctx.textAlign = 'center';
 
     // Nom des amas, posé au centre de chacun : c'est ce qui fait la différence
     // entre une carte et une nébuleuse.
@@ -1915,12 +3151,30 @@ class Galaxy3D {
       const p = this.project({ x: g.cx, y: g.cy, z: g.cz });
       if (!p || p.k < 0.25) continue;
       const dimmed = hoverId && this.hover.group.id !== g.id;
-      ctx.globalAlpha = Math.min(0.92, p.k * 1.3) * (dimmed ? 0.35 : 1);
-      ctx.font = `600 ${Math.round(10 + p.k * 3)}px ui-sans-serif, system-ui, sans-serif`;
+      // Discret : sur le style graphe de notes, ce sont les nœuds qui parlent,
+      // le nom d'amas n'est qu'un repère.
+      ctx.globalAlpha = Math.min(0.55, p.k * 0.8) * (dimmed ? 0.3 : 1);
+      ctx.font = `500 ${Math.round(10 + p.k * 2)}px ui-sans-serif, system-ui, sans-serif`;
       ctx.fillStyle = g.color;
       ctx.fillText(`${g.label} · ${g.count}`, p.x, p.y - 6);
     }
     ctx.globalAlpha = 1;
+
+    // L'anneau de visée sur la cible d'un « zoome sur… » : sans lui, la caméra
+    // s'arrête et on ne sait pas sur quoi.
+    if (this.focusId) {
+      const fi = this.index.get(this.focusId);
+      const p = fi !== undefined ? proj[fi] : null;
+      if (p) {
+        const r = Math.max(0.8, this.nodes[fi].r * p.k);
+        const halo = r * 3 + 7 + Math.sin(performance.now() / 320) * 2.5;
+        ctx.strokeStyle = 'rgba(150,230,255,.8)';
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, halo, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
 
     // Le titre de l'étoile survolée, et rien d'autre : afficher deux cents
     // libellés reviendrait à n'en afficher aucun.
@@ -1964,6 +3218,17 @@ function withAlpha(color, a) {
   if (full.length !== 6) return `rgba(160, 180, 255, ${a})`;
   const n = parseInt(full, 16);
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+}
+
+/** Éclaircit (f > 0) ou assombrit (f < 0) une couleur hexadécimale. */
+function shade(color, f) {
+  const hex = String(color || '').replace('#', '');
+  const full = hex.length === 3 ? hex.split('').map((c) => c + c).join('') : hex;
+  if (full.length !== 6) return color;
+  const vers = f > 0 ? 255 : 0;
+  const k = Math.min(1, Math.abs(f));
+  const mix = (i) => Math.round(parseInt(full.slice(i, i + 2), 16) * (1 - k) + vers * k);
+  return `rgb(${mix(0)}, ${mix(2)}, ${mix(4)})`;
 }
 
 /** Chaque famille s'ouvre là où elle vit réellement. */
@@ -3666,6 +4931,20 @@ function renderSettings(v) {
           transcrit lui-même, en visant l'entrée choisie ci-dessus. Facturé à la
           seconde d'audio, et compté dans la consommation.
         </div>
+
+        <div class="mic-sep"></div>
+        <div class="field-label">Mot de réveil</div>
+        <label class="check" style="margin-top:6px">
+          <input type="checkbox" id="set-reveil">
+          <span>Ouvrir Jarvis quand je dis « Ok Jarvis »</span>
+        </label>
+        <div class="field-hint" style="margin-top:8px" id="reveil-state">
+          Le micro reste alors ouvert depuis n'importe quelle page, surveillé en local.
+          Seules les phrases courtes — la longueur d'un « Ok Jarvis » — sont envoyées au
+          service ci-dessus pour vérification ; une conversation normale est jetée sur
+          place, sans transcription. L'écoute s'ignore pendant que tu dictes ou que
+          Jarvis parle.
+        </div>
       </div>
 
       <div class="agent-card">
@@ -4348,6 +5627,59 @@ function initMicPanel(v) {
   };
 
   initTranscribePanel(v);
+  initReveilPanel(v);
+}
+
+/** L'interrupteur du mot de réveil. */
+function initReveilPanel(v) {
+  const box = $('#set-reveil', v);
+  const etat = $('#reveil-state', v);
+  if (!box) return;
+
+  // C'est la transcription qui reconnaît la phrase : sans elle, rien à écouter.
+  if (!transcribeReady()) {
+    box.disabled = true;
+    box.checked = false;
+    if (etat) etat.textContent = 'Le mot de réveil demande un service de transcription — '
+      + 'configure-le ci-dessus, puis reviens cocher cette case.';
+    return;
+  }
+
+  box.checked = reveilVoulu();
+
+  // L'état réel, affiché en continu tant que le panneau est ouvert : c'est ce
+  // qui évite de deviner dans la console pourquoi rien ne se passe.
+  const etatLigne = document.createElement('div');
+  etatLigne.className = 'field-hint';
+  etatLigne.style.marginTop = '8px';
+  etat?.after(etatLigne);
+  const majEtat = () => {
+    if (!etatLigne.isConnected) { clearInterval(minuteur); return; }
+    const e = reveilEtat();
+    etatLigne.textContent = `Écoute : ${e.texte}`;
+    etatLigne.style.color = e.actif ? 'var(--ok, #4a9)' : '';
+  };
+  const minuteur = setInterval(majEtat, 1200);
+  majEtat();
+
+  box.onchange = async () => {
+    if (box.checked) {
+      localStorage.setItem(REVEIL_KEY, '1');
+      // Cocher est un geste : on en profite pour ouvrir le contexte audio, sans
+      // quoi la réponse à un réveil vocal serait bloquée faute de clic.
+      jvDebloquerAudio();
+      await demarrerReveil();
+      // `demarrerReveil` retire la clé quand le micro est refusé : la case doit
+      // alors le montrer au lieu de rester cochée sur une écoute morte.
+      box.checked = reveilVoulu();
+      if (box.checked) toast('Dis « Ok Jarvis » depuis n\'importe quelle page.', { kind: 'success' });
+    } else {
+      localStorage.removeItem(REVEIL_KEY);
+      arreterReveil();
+      reveilRaison = 'option décochée';
+    }
+    majEtat();
+  };
 }
 
 /** La transcription côté serveur : son état, et le bouton qui la met en place. */
@@ -6026,6 +7358,22 @@ function handleEvent(e) {
       if (inChat(e.channelId)) applyDelta(e.id, e.delta);
       break;
 
+    // Une étape de la réflexion en cours — recherche web, lecture de page.
+    case 'jarvis.step': {
+      const aide = $('#jv-hint');
+      if (aide && $('#jv')?.dataset.state === 'thinking') aide.textContent = e.texte;
+      break;
+    }
+
+    // Le cerveau de Jarvis est un réglage global : un autre onglet ouvert sur
+    // la carte doit le voir changer, sinon deux fenêtres affichent deux vérités.
+    case 'jarvis.brain': {
+      const b = $('#jv-brain');
+      if (b) b.textContent = jarvisBrainLabel(e.brain);
+      if (galaxy) galaxy.glitchNow();
+      break;
+    }
+
     case 'message.reasoning':
       if (inChat(e.channelId)) applyReasoning(e.id, e.delta);
       break;
@@ -6083,7 +7431,7 @@ function handleEvent(e) {
       // The layout is derived from the edges, so a stale graph would draw the
       // old constellation until the next full reload.
       S.graph = null;
-      if (S.view === 'brain' && S.brainTab === 'graph') renderView();
+      if (S.view === 'jarvis') renderView();
       break;
 
     case 'message.update':
@@ -6171,16 +7519,17 @@ function handleEvent(e) {
       if (i >= 0) S.notes[i] = e.note; else S.notes.push(e.note);
       S.notes.sort((a, b) => (b.pinned - a.pinned) || (b.updated_at - a.updated_at));
       S.graph = null;
-      // Re-rendering the graph tab on every note edit would restart the layout
-      // and yank the map from under the cursor; the other tabs are cheap.
-      if (S.view === 'brain' && S.brainTab !== 'graph') renderView();
+      // La carte n'est PAS redessinée ici : relancer sa mise en page à chaque
+      // note éditée l'arracherait sous le curseur. Le Second cerveau, lui, est
+      // bon marché à reconstruire.
+      if (S.view === 'brain') renderView();
       break;
     }
 
     case 'note.remove':
       S.notes = S.notes.filter((n) => n.id !== e.id);
       S.graph = null;
-      if (S.view === 'brain' && S.brainTab !== 'graph') renderView();
+      if (S.view === 'brain') renderView();
       break;
 
     case 'providers.update':
