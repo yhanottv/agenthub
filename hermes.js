@@ -22,6 +22,7 @@ import http from 'node:http';
 import os from 'node:os';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
+import { Providers } from './db.js';
 
 const SOCKET = process.env.DOCKER_SOCKET || '/var/run/docker.sock';
 const API = 'v1.43';                    // largement compatible, Docker négocie à la baisse
@@ -392,16 +393,18 @@ const HERMES_TIMEOUT_MS = 8 * 60 * 1000;
 const MAX_TACHE = 4000;
 const MAX_SORTIE = 12000;
 
-/** Les fournisseurs qu'Hermes sait piloter, sous le nom qu'il leur donne. */
-const PROVIDERS_HERMES = { openrouter: 'openrouter', openai: 'openai', groq: 'groq' };
-
 /**
  * Confie une tâche à l'agent Hermes et rend son compte rendu.
  *
- * `agent` porte le fournisseur et le modèle choisis dans AgentHub : quand
- * Hermes sait les piloter, ils lui sont imposés — le travail tourne alors sur
- * le modèle de l'organisation, pas sur celui d'Hermes. Sinon on le laisse
- * prendre le sien, et on le dit.
+ * Le fournisseur et le modèle viennent d'AgentHub, pas d'Hermes. Ils lui sont
+ * passés par son profil `custom` — celui qui couvre « tout endpoint compatible
+ * OpenAI » — avec l'URL et la clé du fournisseur choisi. Sans ça, Hermes
+ * retombait sur SON modèle par défaut : l'utilisateur voyait sa facture partir
+ * chez un service qu'il n'avait pas choisi pour ce travail.
+ *
+ * La clé est passée en variable d'environnement de l'appel, jamais écrite dans
+ * la configuration d'Hermes : rien à dupliquer sur disque, rien à révoquer à
+ * deux endroits, et changer de fournisseur dans AgentHub suffit.
  */
 export async function deleguer({ tache, provider, model, signal } = {}) {
   const t = String(tache || '').trim().slice(0, MAX_TACHE);
@@ -410,9 +413,18 @@ export async function deleguer({ tache, provider, model, signal } = {}) {
   const container = await hermesContainer();
   if (!container) return { ok: false, text: 'Hermes est injoignable.' };
 
-  const impose = PROVIDERS_HERMES[provider] && model
-    ? ['--provider', PROVIDERS_HERMES[provider], '-m', model]
-    : [];
+  const env = ['HOME=/opt/data', 'HERMES_HOME=/opt/data'];
+  let impose = [];
+  let signature = "celui d'Hermes";
+
+  // `hermes` comme fournisseur ferait tourner la tâche en rond : Hermes
+  // s'appellerait lui-même. On le laisse alors prendre sa propre configuration.
+  const p = provider && provider !== 'hermes' ? Providers.get(provider) : null;
+  if (p && p.base_url && p.api_key && model) {
+    impose = ['--provider', 'custom', '-m', model];
+    env.push(`CUSTOM_API_KEY=${p.api_key}`, `HERMES_MODEL_BASE_URL=${p.base_url}`);
+    signature = `${p.label || provider} / ${model}`;
+  }
 
   try {
     const { output } = await execIn(
@@ -421,10 +433,10 @@ export async function deleguer({ tache, provider, model, signal } = {}) {
       'hermes',
       {
         timeoutMs: HERMES_TIMEOUT_MS,
-        // Hermes lit sa configuration et ses clés dans son dossier personnel :
-        // sans ces variables, `docker exec` démarre sans elles et l'agent
-        // répond qu'aucun fournisseur n'est configuré.
-        env: ['HOME=/opt/data', 'HERMES_HOME=/opt/data'],
+        // Hermes lit sa configuration dans son dossier personnel : sans ces
+        // variables, `docker exec` démarre sans elles et l'agent répond
+        // qu'aucun fournisseur n'est configuré.
+        env,
       },
     );
     const texte = String(output || '').trim();
@@ -435,7 +447,7 @@ export async function deleguer({ tache, provider, model, signal } = {}) {
     return {
       ok: true,
       text: texte.slice(0, MAX_SORTIE) + (texte.length > MAX_SORTIE ? '\n[…] compte rendu tronqué.' : ''),
-      modele: impose.length ? `${provider}/${model}` : 'celui d\'Hermes',
+      modele: signature,
     };
   } catch (err) {
     if (/délai|timeout/i.test(err.message)) {
