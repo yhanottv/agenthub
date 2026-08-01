@@ -368,20 +368,111 @@ export async function startGateway(name, { onProgress = () => {} } = {}) {
  * l'image d'Hermes, à un chemin qu'aucun montage d'AgentHub ne couvre. Lire par
  * ici évite de demander à l'utilisateur de modifier son docker-compose.yml.
  */
-export async function execIn(containerId, cmd, user) {
+export async function execIn(containerId, cmd, user, { timeoutMs, env } = {}) {
   const created = await dockerRequest('POST', `/containers/${containerId}/exec`, {
     AttachStdout: true, AttachStderr: true, Tty: false, Cmd: cmd,
     ...(user ? { User: user } : {}),
+    ...(env ? { Env: env } : {}),
   });
-  const output = await execStart(created.Id);
+  const output = await execStart(created.Id, timeoutMs);
   return { output };
+}
+
+// ---- déléguer une tâche à Hermes --------------------------------------------
+// L'API d'Hermes ne fait que de l'inférence : aucun point d'entrée n'expose son
+// agent. Mais son CLI a un mode tâche unique — `hermes -z "…"` — qui lance
+// l'agent complet, avec ses outils et ses serveurs MCP. On passe donc par là,
+// comme le catalogue MCP passe déjà par le socket Docker.
+//
+// SÉCURITÉ — la consigne vient d'une conversation, donc d'un modèle : elle est
+// passée en TABLEAU d'arguments, jamais à un shell. Avec `Cmd: [...]`, Docker
+// exécute le binaire directement et le texte n'est jamais interprété.
+
+const HERMES_TIMEOUT_MS = 8 * 60 * 1000;
+const MAX_TACHE = 4000;
+const MAX_SORTIE = 12000;
+
+/** Les fournisseurs qu'Hermes sait piloter, sous le nom qu'il leur donne. */
+const PROVIDERS_HERMES = { openrouter: 'openrouter', openai: 'openai', groq: 'groq' };
+
+/**
+ * Confie une tâche à l'agent Hermes et rend son compte rendu.
+ *
+ * `agent` porte le fournisseur et le modèle choisis dans AgentHub : quand
+ * Hermes sait les piloter, ils lui sont imposés — le travail tourne alors sur
+ * le modèle de l'organisation, pas sur celui d'Hermes. Sinon on le laisse
+ * prendre le sien, et on le dit.
+ */
+export async function deleguer({ tache, provider, model, signal } = {}) {
+  const t = String(tache || '').trim().slice(0, MAX_TACHE);
+  if (!t) return { ok: false, text: 'Décris la tâche à confier.' };
+
+  const container = await hermesContainer();
+  if (!container) return { ok: false, text: 'Hermes est injoignable.' };
+
+  const impose = PROVIDERS_HERMES[provider] && model
+    ? ['--provider', PROVIDERS_HERMES[provider], '-m', model]
+    : [];
+
+  try {
+    const { output } = await execIn(
+      container,
+      ['hermes', ...impose, '-z', t],
+      'hermes',
+      {
+        timeoutMs: HERMES_TIMEOUT_MS,
+        // Hermes lit sa configuration et ses clés dans son dossier personnel :
+        // sans ces variables, `docker exec` démarre sans elles et l'agent
+        // répond qu'aucun fournisseur n'est configuré.
+        env: ['HOME=/opt/data', 'HERMES_HOME=/opt/data'],
+      },
+    );
+    const texte = String(output || '').trim();
+    if (!texte) return { ok: false, text: "Hermes n'a rien répondu." };
+    if (/No inference provider configured/i.test(texte)) {
+      return { ok: false, text: "Hermes n'a pas de modèle configuré. À faire une fois, dans son conteneur : `hermes model`." };
+    }
+    return {
+      ok: true,
+      text: texte.slice(0, MAX_SORTIE) + (texte.length > MAX_SORTIE ? '\n[…] compte rendu tronqué.' : ''),
+      modele: impose.length ? `${provider}/${model}` : 'celui d\'Hermes',
+    };
+  } catch (err) {
+    if (/délai|timeout/i.test(err.message)) {
+      return { ok: false, text: `Hermes n'a pas terminé en ${Math.round(HERMES_TIMEOUT_MS / 60000)} minutes.` };
+    }
+    return { ok: false, text: `Délégation impossible : ${err.message}` };
+  }
+}
+
+// Disponibilité en cache, pour les décisions qui ne peuvent pas attendre un
+// aller-retour Docker — en particulier la liste des outils proposés au modèle,
+// reconstruite à chaque message. `unref` : ce minuteur ne doit pas retenir un
+// processus de test qui a fini.
+let hermesLa = false;
+export function hermesJoignable() { return hermesLa; }
+setInterval(() => { hermesContainer().then((c) => { hermesLa = Boolean(c); }).catch(() => {}); }, 5 * 60 * 1000).unref?.();
+setTimeout(() => { hermesContainer().then((c) => { hermesLa = Boolean(c); }).catch(() => {}); }, 2500).unref?.();
+
+/** Le conteneur Hermes qui tourne, ou null. Mis en cache une minute. */
+let containerCache = { name: null, at: 0 };
+async function hermesContainer() {
+  if (containerCache.name && Date.now() - containerCache.at < 60000) return containerCache.name;
+  const docker = await dockerStatus();
+  if (!docker.available) return null;
+  try {
+    const r = await discover();
+    const hit = (r.found || []).find((f) => f.running);
+    containerCache = { name: hit ? hit.name : null, at: Date.now() };
+    return containerCache.name;
+  } catch { return null; }
 }
 
 /**
  * `exec/start` répond en flux multiplexé : chaque bloc est précédé d'un en-tête
  * de huit octets qu'il faut retirer, sinon la sortie est parasitée.
  */
-function execStart(execId) {
+function execStart(execId, timeoutMs = 60000) {
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify({ Detach: false, Tty: false });
     const req = http.request({
@@ -389,7 +480,7 @@ function execStart(execId) {
       path: `/${API}/exec/${execId}/start`,
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
-      timeout: 60000,
+      timeout: timeoutMs,
     }, (res) => {
       const chunks = [];
       res.on('data', (c) => chunks.push(c));

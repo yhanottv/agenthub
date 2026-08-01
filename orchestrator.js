@@ -350,6 +350,9 @@ export class Orchestrator {
           const r = await runTool(call.name, call.args, {
             agent,
             channel,
+            // Le modèle retenu pour ce salon : une délégation à Hermes doit
+            // tourner sur celui-là, pas sur celui d'Hermes.
+            override,
             // Une image produite pendant ce tour appartient à ce message-là :
             // sans cet identifiant elle flotterait sans attache et le nettoyage
             // des dépôts abandonnés l'emporterait au bout de six heures.
@@ -659,6 +662,9 @@ function buildSystemPrompt(channel, agent, members, canDelegate, chain = []) {
     if (activeToolDefs().some((t) => t.function.name === 'generer_image')) {
       lines.push("- `generer_image` dès qu'on te demande un visuel — et pour illustrer un site que tu livres : une image d'ambiance générée puis embarquée via `piece_jointe` vaut mieux qu'une page nue. L'image apparaît seule dans la conversation : ne la décris pas après coup, commente-la.");
 
+    }
+    if (activeToolDefs().some((t) => t.function.name === 'deleguer_a_hermes')) {
+      lines.push("- `deleguer_a_hermes` quand la demande suppose d'AGIR et non d'écrire : lancer une commande, manipuler un fichier du serveur, piloter un logiciel branché en MCP (Blender, Linear, n8n, Unreal). Hermes a un terminal, toi non. Écris-lui une consigne complète : il ne voit pas votre conversation.");
     }
     lines.push("- `creer_tableur` pour tout tableau, questionnaire, grille, état des lieux, budget, planning ou inventaire : il publie un vrai fichier .xlsx téléchargeable.");
     lines.push("- `creer_archive` pour livrer plusieurs fichiers d'un coup — un site, un script et ses dépendances, un dossier de documentation. L'archive .zip apparaît dans la conversation. Pour qu'un site contienne une vidéo ou une image déjà publiée dans le salon, donne son nom dans `piece_jointe` : le fichier entre réellement dans l'archive au lieu d'être un lien mort.");

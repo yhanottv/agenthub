@@ -68,7 +68,7 @@ sa configuration en lecture seule et lui parle par son API.
 | 🧠 | **Mémoire partagée** | Des notes injectées dans le prompt de tous les agents, liées entre elles par `[[doubles crochets]]`. |
 | 🛰️ | **Jarvis** | Une page à lui : la carte de l'espace de travail en grand, et un cercle d'écoute au centre. On lui **parle** — il transcrit, répond à voix haute, et change de modèle quand on le lui demande (« change ton cerveau sur Opus 5 »), la carte glitchant le temps de la bascule. |
 | ⚡ | **Skills Hermes** | L'onglet **Skills** liste le catalogue Nous Research et les skills actuellement actifs. |
-| 🔌 | **Serveurs MCP** | L'onglet **MCP** liste ce qu'Hermes peut piloter à distance — Blender, Unreal Engine, n8n, Linear — avec leur transport et leur état. |
+| 🔌 | **Serveurs MCP** | L'onglet **MCP** liste ce qu'Hermes peut piloter — Blender, Unreal Engine, n8n, Linear — et l'outil `deleguer_a_hermes` permet à tes agents de lui confier une tâche qui s'en serve, sur le modèle que tu as choisi. |
 | 👁️ | **Aperçu du code produit** | Copie et téléchargement de chaque bloc de code ; les sites complets s'ouvrent dans un panneau à côté de la conversation, y compris depuis une archive. |
 | 🎙️ | **Dictée et interface bilingue** | Saisie vocale dans le composeur, et bascule de toute l'interface en anglais. |
 | 🔀 | **Fournisseurs de modèles** | Hermes, AgentRouter, OpenRouter, OpenAI, Gemini, Groq, Together, Ollama et tout endpoint compatible OpenAI. Réglable par agent ou pour une seule conversation. |
@@ -486,8 +486,11 @@ voit qu'en demandant vraiment les fichiers.
   module réinjectée dans la page. Un projet qui a réellement besoin d'être compilé — JSX,
   TypeScript, Sass — ne s'ouvrira pas, et l'outil d'archive le dit à l'agent au moment où
   il peut encore corriger.
-- **AgentHub ne parle pas MCP lui-même.** Il montre ce que ton Hermes peut piloter et rend
-  la commande ; c'est Hermes qui se connecte.
+- **AgentHub ne parle pas MCP lui-même.** Il montre ce que ton Hermes peut piloter, et lui
+  confie le travail par `deleguer_a_hermes` : c'est Hermes qui se connecte, avec ses
+  outils et son terminal. Un serveur MCP joignable depuis son conteneur — Linear, n8n,
+  Unreal en HTTP — est donc utilisable ; un logiciel qui tourne sur **ta** machine, comme
+  Blender sur `localhost`, ne l'est pas sans tunnel depuis ton poste.
 
 ---
 

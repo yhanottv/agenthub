@@ -17,7 +17,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { Notes, NoteProposals, Search, Attachments, Usage } from './db.js';
-import { generateImage, imageProvider, sniffImage } from './llm.js';
+import { generateImage, imageProvider, sniffImage, resolveForAgent } from './llm.js';
+import { deleguer as deleguerAHermes, hermesJoignable } from './hermes.js';
 import { makeZip, prepareEntries, auditSite, MAX_ENTRIES, MAX_TOTAL_BYTES } from './archive.js';
 import { makeXlsx, prepareSheets, MAX_ROWS, MAX_SHEETS } from './sheet.js';
 
@@ -466,6 +467,31 @@ export const TOOL_DEFS = [
   {
     type: 'function',
     function: {
+      name: 'deleguer_a_hermes',
+      description: "Confie une tâche à Hermes Agent, qui dispose d'un terminal, d'un système de "
+        + "fichiers et de serveurs MCP — Blender, Linear, n8n, Unreal Engine. C'est le seul moyen "
+        + "de faire AGIR quelque chose : toi, tu ne peux qu'écrire.\n"
+        + "À utiliser quand la demande suppose d'exécuter une commande, de manipuler un fichier sur "
+        + "le serveur, ou de piloter un logiciel branché en MCP. Formule une consigne complète et "
+        + "autonome : Hermes ne voit pas votre conversation, seulement ce que tu lui écris.\n"
+        + "Une tâche prend de quelques secondes à plusieurs minutes. Rends compte de ce qu'il a "
+        + "répondu sans le réinventer, et signale honnêtement s'il a échoué.",
+      parameters: {
+        type: 'object',
+        properties: {
+          tache: {
+            type: 'string',
+            description: "La consigne pour Hermes, rédigée pour être comprise seule, avec le "
+              + 'contexte nécessaire et le résultat attendu.',
+          },
+        },
+        required: ['tache'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'creer_tableur',
       description: "Produit un vrai fichier Excel (.xlsx) et le publie dans la conversation, prêt à "
         + "télécharger. À utiliser dès qu'on demande un tableau, un questionnaire, une grille, un "
@@ -533,7 +559,14 @@ export const TOOL_DEFS = [
  */
 export function activeToolDefs() {
   const canDraw = Boolean(imageProvider().provider);
-  return TOOL_DEFS.filter((t) => canDraw || t.function.name !== 'generer_image');
+  const canAct = hermesJoignable();
+  return TOOL_DEFS.filter((t) => {
+    if (t.function.name === 'generer_image') return canDraw;
+    // Sans Hermes, promettre une délégation revient à promettre une action qui
+    // n'arrivera jamais.
+    if (t.function.name === 'deleguer_a_hermes') return canAct;
+    return true;
+  });
 }
 
 export const TOOL_LABELS = {
@@ -546,6 +579,7 @@ export const TOOL_LABELS = {
   creer_archive: 'prépare une archive',
   creer_tableur: 'prépare un tableur',
   lire_piece_jointe: 'lit un fichier',
+  deleguer_a_hermes: 'confie une tâche à Hermes',
 };
 
 // L'API attend des dimensions, l'agent raisonne en cadrage.
@@ -816,6 +850,26 @@ export async function runTool(name, rawArgs, ctx = {}) {
                 + 'tu as changé. Ne demande pas confirmation.'
               : '\nElle est déjà téléchargeable : ne recopie pas les fichiers dans ta réponse, '
                 + 'explique seulement comment s\'en servir.'),
+        };
+      }
+
+      case 'deleguer_a_hermes': {
+        const tache = String(args.tache || '').trim();
+        if (!tache) return { ok: false, text: 'Décris la tâche à confier à Hermes.' };
+
+        // Le modèle de l'organisation, pas celui d'Hermes : c'est l'agent
+        // appelant qui décide avec quoi le travail est fait.
+        const { provider, model } = resolveForAgent(ctx.agent || {}, ctx.override || null);
+        const r = await deleguerAHermes({
+          tache,
+          provider: provider ? provider.id : '',
+          model,
+          signal: ctx.signal,
+        });
+        if (!r.ok) return { ok: false, text: r.text };
+        return {
+          ok: true,
+          text: `Hermes a traité la tâche (modèle : ${r.modele}). Son compte rendu :\n\n${r.text}`,
         };
       }
 
