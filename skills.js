@@ -89,6 +89,12 @@ function firstParagraph(text) {
   return out.join(' ').slice(0, 240);
 }
 
+// Chemin réel de chaque skill, gardé ici et jamais ailleurs : le catalogue qui
+// part vers le navigateur ne porte que des métadonnées. C'est aussi ce qui rend
+// la lecture sûre — on ouvre un fichier trouvé par le scan, jamais un chemin
+// fabriqué à partir d'un nom fourni par un modèle.
+const fichiers = new Map();
+
 function readSkill(file, { installed, rootDir }) {
   let text;
   try {
@@ -106,9 +112,11 @@ function readSkill(file, { installed, rootDir }) {
 
   const name = String(fm.name || path.basename(dir));
   const tags = Array.isArray(hermes.tags) ? hermes.tags.map(String).slice(0, 12) : [];
+  const id = `${installed ? 'i' : 'o'}_${name}`.toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+  fichiers.set(id, file);
 
   return {
-    id: `${installed ? 'i' : 'o'}_${name}`.toLowerCase().replace(/[^a-z0-9_-]/g, '-'),
+    id,
     name,
     title: name.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
     description: String(fm.description || firstParagraph(text) || ''),
@@ -134,6 +142,53 @@ function walk(dir, depth, acc) {
   }
 }
 
+/** Retrouve un skill par son nom, au plus proche. */
+export function findSkill(nom) {
+  const cible = String(nom || '').toLowerCase().trim().replace(/[\s_]+/g, '-');
+  if (!cible) return null;
+  const { skills } = skillsCatalogue();
+  const nu = (s) => s.name.toLowerCase();
+  return skills.find((s) => nu(s) === cible)
+    || skills.find((s) => s.id.toLowerCase() === cible)
+    || skills.find((s) => nu(s).includes(cible) || cible.includes(nu(s)))
+    || null;
+}
+
+/**
+ * Le mode d'emploi complet d'un skill.
+ *
+ * C'est le fichier lui-même, front-matter compris : un skill n'est pas une
+ * fiche descriptive, c'est un texte d'instructions destiné à être suivi. On
+ * signale aussi ses fichiers compagnons — scripts, gabarits, références — sans
+ * les lire : leur seule existence change ce qu'on peut en dire.
+ */
+export function skillBody(nom, { max = 14000 } = {}) {
+  const s = findSkill(nom);
+  if (!s) return { ok: false, error: `Aucun skill ne s'appelle « ${String(nom || '').slice(0, 60)} ».` };
+
+  const file = fichiers.get(s.id);
+  if (!file) return { ok: false, error: `Le fichier du skill « ${s.name} » est introuvable.` };
+
+  let texte;
+  try { texte = fs.readFileSync(file, 'utf8'); } catch { return { ok: false, error: `Le skill « ${s.name} » est illisible.` }; }
+
+  let compagnons = [];
+  try {
+    compagnons = fs.readdirSync(path.dirname(file), { withFileTypes: true })
+      .filter((e) => e.name.toUpperCase() !== 'SKILL.MD')
+      .map((e) => e.name + (e.isDirectory() ? '/' : ''))
+      .slice(0, 20);
+  } catch { /* dossier illisible : le corps suffit */ }
+
+  const coupe = texte.length > max;
+  return {
+    ok: true,
+    skill: s,
+    contenu: texte.slice(0, max) + (coupe ? '\n\n[…] Mode d\'emploi tronqué.' : ''),
+    compagnons,
+  };
+}
+
 function scan(rootDir, installed) {
   if (!rootDir || !fs.existsSync(rootDir)) return [];
   const files = [];
@@ -155,6 +210,7 @@ const TTL_MS = 5 * 60 * 1000;
 export function skillsCatalogue(force = false) {
   if (cache && !force && Date.now() - cachedAt < TTL_MS) return cache;
 
+  fichiers.clear();
   const installed = scan(INSTALLED_DIR, true);
   const installedNames = new Set(installed.map((s) => s.name.toLowerCase()));
   // Un skill déjà actif ne doit pas réapparaître comme « à installer ».

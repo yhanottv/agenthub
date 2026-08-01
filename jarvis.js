@@ -18,6 +18,7 @@
 import { Settings, Providers, Notes, Agents, Channels, Tasks } from './db.js';
 import { streamChat } from './llm.js';
 import { layerCounts, buildGraph } from './graph.js';
+import { skillsCatalogue, skillBody } from './skills.js';
 import { TOOL_DEFS, runTool } from './tools.js';
 
 const CLE_PROVIDER = 'jarvis_provider';
@@ -111,6 +112,38 @@ export function veutBasculer(phrase) {
     || /\b(?:passe|passez|bascule|basculez|switch)\b\s+(?:sur|en|vers|to)\b\s*\S+/i.test(s);
 }
 
+/**
+ * Les skills qui répondent à une requête, les actifs d'abord.
+ *
+ * Le catalogue en compte près de deux cents : les lister tous noierait la
+ * réponse. On rend les dix meilleurs, avec de quoi décider lequel ouvrir.
+ */
+export function chercherSkills(requete) {
+  const nu = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const q = nu(requete).trim();
+  if (!q) return 'Précise ce que tu cherches.';
+  const mots = q.split(/[^a-z0-9]+/).filter((m) => m.length > 2);
+
+  const { skills } = skillsCatalogue();
+  const notes = [];
+  for (const s of skills) {
+    const foin = nu(`${s.name} ${s.title} ${s.description} ${s.category} ${(s.tags || []).join(' ')}`);
+    let score = 0;
+    if (nu(s.name) === q) score = 1000;
+    else if (foin.includes(q)) score = 400;
+    else score = mots.filter((m) => foin.includes(m)).length * 60;
+    if (!score) continue;
+    if (s.installed) score += 45;             // ce qu'il a vraiment sous la main d'abord
+    notes.push({ s, score });
+  }
+  if (!notes.length) return `Aucun skill ne correspond à « ${String(requete).slice(0, 60)} ».`;
+
+  notes.sort((a, b) => b.score - a.score);
+  return notes.slice(0, 10).map(({ s }) =>
+    `- ${s.name}${s.installed ? '' : ' (au catalogue, non installé)'} — ${s.description.slice(0, 160)}`).join('\n')
+    + '\n\nOuvre le plus pertinent avec `utiliser_skill`, puis applique-le.';
+}
+
 /** Ce que Jarvis voit de la carte, en quelques lignes. */
 function etatDuGraphe() {
   const c = layerCounts();
@@ -200,6 +233,44 @@ export function trouverNoeud(demande) {
   return best;
 }
 
+const OUTIL_SKILL_CHERCHE = {
+  type: 'function',
+  function: {
+    name: 'chercher_skill',
+    description: "Cherche dans le catalogue de skills d'Hermes — des modes d'emploi écrits par des "
+      + "spécialistes, sur des sujets précis. À utiliser avant de répondre de mémoire sur un domaine "
+      + "technique : il existe peut-être un skill qui dit exactement comment faire.",
+    parameters: {
+      type: 'object',
+      properties: {
+        requete: { type: 'string', description: 'Le sujet cherché. Ex : « diagramme », « pdf », « github », « débogage ».' },
+      },
+      required: ['requete'],
+    },
+  },
+};
+
+const OUTIL_SKILL_OUVRE = {
+  type: 'function',
+  function: {
+    name: 'utiliser_skill',
+    description: "Ouvre un skill et te donne son mode d'emploi complet, que tu appliques ensuite pour "
+      + "répondre. À appeler dès qu'un skill trouvé paraît pertinent, et dès qu'on te demande "
+      + "d'utiliser un skill nommé.\n"
+      + "Tu n'as ni terminal ni système de fichiers : quand un skill demande de lancer des commandes, "
+      + "tu expliques la marche à suivre et donnes les commandes exactes, sans prétendre les avoir "
+      + 'exécutées. Ce que tu peux appliquer toi-même — méthode, structure, rédaction, analyse — tu '
+      + "l'appliques directement.",
+    parameters: {
+      type: 'object',
+      properties: {
+        nom: { type: 'string', description: 'Le nom du skill, tel qu\'il apparaît au catalogue. Ex : « architecture-diagram ».' },
+      },
+      required: ['nom'],
+    },
+  },
+};
+
 const OUTIL_ZOOM = {
   type: 'function',
   function: {
@@ -282,6 +353,23 @@ export function promptSysteme() {
     etatDuGraphe(),
   ];
 
+  // Les skills : les noms seulement. Deux cents descriptions noieraient le
+  // prompt, et `chercher_skill` est là pour le détail.
+  try {
+    const cat = skillsCatalogue();
+    const actifs = cat.skills.filter((s) => s.installed).map((s) => s.name);
+    if (actifs.length) {
+      lignes.push('');
+      lignes.push('## Tes skills');
+      lignes.push(`Tu disposes de ${actifs.length} skills actifs — des modes d'emploi écrits par des `
+        + `spécialistes — et de ${cat.counts.available} autres au catalogue. Devant une demande `
+        + "technique, cherche d'abord s'il en existe un plutôt que de répondre de mémoire : "
+        + '`chercher_skill` pour trouver, `utiliser_skill` pour lire et appliquer.');
+      lignes.push('');
+      lignes.push(`Actifs : ${actifs.join(', ')}.`);
+    }
+  } catch { /* dossiers non montés : Jarvis s'en passe */ }
+
   const dispo = modelesDisponibles();
   if (dispo.length) {
     lignes.push('');
@@ -346,7 +434,7 @@ export async function demander({ question, historique = [], signal, onStep = () 
     ? { type: 'function', function: { name: 'changer_de_cerveau' } }
     : null;
 
-  const outils = [OUTIL_CERVEAU, OUTIL_ZOOM, ...OUTILS_WEB];
+  const outils = [OUTIL_CERVEAU, OUTIL_ZOOM, OUTIL_SKILL_CHERCHE, OUTIL_SKILL_OUVRE, ...OUTILS_WEB];
   let agent = { provider: c.provider, model: c.model };
   let change = null;
   let focus = null;
@@ -406,6 +494,25 @@ export async function demander({ question, historique = [], signal, onStep = () 
           contenu = `La carte est maintenant centrée sur « ${noeud.title} ». Dis-le en une phrase, sans redécrire l'élément.`;
         } else {
           contenu = `Rien dans la carte ne s'appelle « ${String(args.cible || '').slice(0, 60)} ». Dis-le simplement.`;
+        }
+      } else if (t.name === 'chercher_skill') {
+        let args = {};
+        try { args = JSON.parse(t.args || '{}'); } catch { /* arguments illisibles */ }
+        onStep('cherche un skill…');
+        contenu = chercherSkills(args.requete);
+      } else if (t.name === 'utiliser_skill') {
+        let args = {};
+        try { args = JSON.parse(t.args || '{}'); } catch { /* arguments illisibles */ }
+        const lu = skillBody(args.nom);
+        if (!lu.ok) contenu = lu.error;
+        else {
+          onStep(`applique le skill « ${lu.skill.name} »…`);
+          contenu = `Mode d'emploi du skill « ${lu.skill.name} »`
+            + `${lu.skill.installed ? ' (actif chez Hermes)' : ' (au catalogue, non installé)'} :\n\n`
+            + lu.contenu
+            + (lu.compagnons.length ? `\n\nFichiers fournis avec ce skill : ${lu.compagnons.join(', ')}.` : '')
+            + "\n\nApplique-le maintenant pour répondre. Tu n'as pas de terminal : ce qui demande une "
+            + 'commande se donne à lancer, le reste se fait directement.';
         }
       } else if (NOMS_WEB.has(t.name)) {
         // L'appelant relaie ce pas vers l'interface : une recherche web au
