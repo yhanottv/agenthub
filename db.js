@@ -791,18 +791,26 @@ export const Providers = {
     if (!id) return null;
     const cur = Providers.get(id);
     const ts = now();
+    /** Le champ fourni, ou celui déjà en base quand l'appelant l'omet. */
+    const garde = (donne, actuel, max) =>
+      (donne === undefined || donne === null ? (actuel ?? '') : clampText(donne, max));
     const row = {
       id,
       label: clampText(p.label, 60) || cur?.label || id,
-      base_url: clampText(p.base_url, 300) ?? cur?.base_url ?? '',
+      // `?? cur?.x` ne servait à rien : `clampText` rend '' — pas `undefined` —
+      // quand le champ est absent, donc le `??` ne se déclenchait jamais et une
+      // mise à jour partielle EFFAÇAIT l'URL, le modèle par défaut et le reste.
+      // Changer le seul `enabled` d'un fournisseur suffisait à le débrancher
+      // pour de bon. Le champ absent doit se lire « garde ce qu'il y avait ».
+      base_url: garde(p.base_url, cur?.base_url, 300),
       // An absent or empty key means "keep the existing one", so the UI can
       // save a provider without ever round-tripping the secret.
       api_key: p.api_key === undefined || p.api_key === '' ? (cur?.api_key || '') : String(p.api_key).trim().slice(0, 400),
-      default_model: clampText(p.default_model, 120) ?? cur?.default_model ?? '',
+      default_model: garde(p.default_model, cur?.default_model, 120),
       models: JSON.stringify(Array.isArray(p.models) ? p.models.filter((m) => typeof m === 'string').slice(0, 400)
         : (cur?.models || [])),
-      hint: clampText(p.hint, 200) ?? cur?.hint ?? '',
-      session_header: clampText(p.session_header, 60) ?? cur?.session_header ?? '',
+      hint: garde(p.hint, cur?.hint, 200),
+      session_header: garde(p.session_header, cur?.session_header, 60),
       headers: JSON.stringify(p.headers !== undefined ? cleanHeaders(p.headers) : (cur?.headers || {})),
       needs_key: p.needs_key === undefined ? (cur ? cur.needs_key : 1) : (p.needs_key ? 1 : 0),
       enabled: p.enabled === undefined ? (cur ? cur.enabled : 1) : (p.enabled ? 1 : 0),

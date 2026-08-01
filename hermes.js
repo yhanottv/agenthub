@@ -22,7 +22,7 @@ import http from 'node:http';
 import os from 'node:os';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
-import { Providers } from './db.js';
+import { fournisseurPour, modelePour, CHEMIN_INFERENCE } from './inference.js';
 
 const SOCKET = process.env.DOCKER_SOCKET || '/var/run/docker.sock';
 const API = 'v1.43';                    // largement compatible, Docker négocie à la baisse
@@ -396,15 +396,27 @@ const MAX_SORTIE = 12000;
 /**
  * Confie une tâche à l'agent Hermes et rend son compte rendu.
  *
- * Le fournisseur et le modèle viennent d'AgentHub, pas d'Hermes. Ils lui sont
- * passés par son profil `custom` — celui qui couvre « tout endpoint compatible
- * OpenAI » — avec l'URL et la clé du fournisseur choisi. Sans ça, Hermes
- * retombait sur SON modèle par défaut : l'utilisateur voyait sa facture partir
- * chez un service qu'il n'avait pas choisi pour ce travail.
+ * Le modèle vient d'AgentHub, pas d'Hermes — sinon l'utilisateur voit sa
+ * facture partir chez un service qu'il n'a pas choisi pour ce travail.
  *
- * La clé est passée en variable d'environnement de l'appel, jamais écrite dans
- * la configuration d'Hermes : rien à dupliquer sur disque, rien à révoquer à
- * deux endroits, et changer de fournisseur dans AgentHub suffit.
+ * La première version passait la clé et l'URL du fournisseur en variables
+ * d'environnement de l'appel. Les deux étaient inopérantes, et le code
+ * l'ignorait :
+ *
+ *   - `HERMES_MODEL_BASE_URL` n'existe pas. L'endpoint se règle par
+ *     `model.base_url` dans sa configuration, jamais par l'environnement.
+ *   - `CUSTOM_API_KEY` était systématiquement écrasée : Hermes charge son
+ *     propre `.env` avec `override=True` (`hermes_cli/env_loader.py`), donc
+ *     ce qu'on passe à `docker exec` ne survit pas.
+ *
+ * Le compte rendu annonçait pourtant le fournisseur d'AgentHub. Il tournait en
+ * réalité sur celui d'Hermes : le code affirmait une provenance qu'il ne
+ * contrôlait pas, ce qui est pire que de ne rien affirmer.
+ *
+ * La bonne voie est la passerelle : Hermes pointe sur `/inference/v1`
+ * d'AgentHub, qui détient les clés et relaie. On ne lui impose donc plus qu'un
+ * modèle, et on ne nomme le fournisseur que lorsqu'on a VÉRIFIÉ que sa
+ * configuration passe bien par nous.
  */
 export async function deleguer({ tache, provider, model, signal } = {}) {
   const t = String(tache || '').trim().slice(0, MAX_TACHE);
@@ -414,16 +426,20 @@ export async function deleguer({ tache, provider, model, signal } = {}) {
   if (!container) return { ok: false, text: 'Hermes est injoignable.' };
 
   const env = ['HOME=/opt/data', 'HERMES_HOME=/opt/data'];
-  let impose = [];
+  const impose = [];
   let signature = "celui d'Hermes";
 
-  // `hermes` comme fournisseur ferait tourner la tâche en rond : Hermes
-  // s'appellerait lui-même. On le laisse alors prendre sa propre configuration.
-  const p = provider && provider !== 'hermes' ? Providers.get(provider) : null;
-  if (p && p.base_url && p.api_key && model) {
-    impose = ['--provider', 'custom', '-m', model];
-    env.push(`CUSTOM_API_KEY=${p.api_key}`, `HERMES_MODEL_BASE_URL=${p.base_url}`);
-    signature = `${p.label || provider} / ${model}`;
+  // Ce qu'on sait vraiment : Hermes passe-t-il par notre passerelle ?
+  const parNous = await passerelleActive(container);
+  if (parNous) {
+    // `hermes` comme fournisseur ferait tourner la tâche en rond ; la
+    // passerelle l'écarte de son côté aussi.
+    const p = fournisseurPour(provider && provider !== 'hermes' ? provider : '');
+    if (p) {
+      const m = modelePour(p, model);
+      if (m) impose.push('-m', m);
+      signature = `${p.label || p.id} / ${m || 'modèle par défaut'} (par AgentHub)`;
+    }
   }
 
   try {
@@ -455,6 +471,34 @@ export async function deleguer({ tache, provider, model, signal } = {}) {
     }
     return { ok: false, text: `Délégation impossible : ${err.message}` };
   }
+}
+
+/**
+ * Hermes est-il configuré pour passer par la passerelle d'AgentHub ?
+ *
+ * Lu dans sa configuration, jamais supposé : c'est la différence entre dire
+ * « ça tourne sur AgentRouter » et le savoir. Sa configuration peut être
+ * changée depuis son propre conteneur, à tout moment et sans nous prévenir ;
+ * la seule réponse honnête vient du fichier.
+ *
+ * Mis en cache cinq minutes — la question se pose à chaque délégation, et un
+ * aller-retour Docker par appel n'apporterait rien.
+ */
+let passerelleCache = { valeur: false, at: 0 };
+async function passerelleActive(container) {
+  if (Date.now() - passerelleCache.at < 5 * 60 * 1000) return passerelleCache.valeur;
+  let valeur = false;
+  try {
+    const { output } = await execIn(
+      container,
+      ['sh', '-lc', 'cat "${HERMES_HOME:-/opt/data}/config.yaml" 2>/dev/null | head -40'],
+      'hermes',
+      { timeoutMs: 15000, env: ['HOME=/opt/data', 'HERMES_HOME=/opt/data'] },
+    );
+    valeur = String(output || '').includes(CHEMIN_INFERENCE);
+  } catch { /* illisible : on n'affirmera rien */ }
+  passerelleCache = { valeur, at: Date.now() };
+  return valeur;
 }
 
 // Disponibilité en cache, pour les décisions qui ne peuvent pas attendre un

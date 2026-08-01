@@ -112,7 +112,12 @@ services:
     #
     # labels:
     #   - traefik.enable=true
-    #   - traefik.http.routers.agenthub.rule=Host(`agenthub.${TRAEFIK_HOST}`)
+    #   # `!PathPrefix(/inference)` n'est PAS décoratif. `/inference/v1` est la
+    #   # passerelle par laquelle Hermes emprunte tes fournisseurs : elle est
+    #   # faite pour être jointe par le réseau Docker, jamais par Internet. Un
+    #   # jeton la protège déjà, mais une route qui n'existe pas publiquement
+    #   # vaut mieux qu'une route bien gardée.
+    #   - traefik.http.routers.agenthub.rule=Host(`agenthub.${TRAEFIK_HOST}`) && !PathPrefix(`/inference`)
     #   - traefik.http.routers.agenthub.entrypoints=websecure
     #   - traefik.http.routers.agenthub.tls.certresolver=letsencrypt
     #   - traefik.http.services.agenthub.loadbalancer.server.port=8090

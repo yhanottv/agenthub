@@ -164,6 +164,37 @@ Pour voir les **skills** d'Hermes dans AgentHub, monte ses dossiers en lecture s
 `docker-compose.yml` contient le bloc tout prêt, il n'y a que le nom du volume à
 ajuster.
 
+#### Faire travailler Hermes sur TES modèles
+
+Par défaut, une tâche confiée à Hermes par `deleguer_a_hermes` tourne sur le modèle
+qu'**il** a dans sa configuration — pas sur celui que tu as choisi dans AgentHub. Tu peux
+donc voir partir une facture chez un service que tu n'avais pas retenu pour ce travail.
+
+AgentHub expose pour ça une passerelle compatible OpenAI sur `/inference/v1` : Hermes y
+envoie ses appels, AgentHub les relaie vers ton fournisseur avec ta clé. **Hermes ne voit
+aucune de tes clés** — juste un jeton qui n'ouvre que cette route.
+
+Récupère le bloc tout prêt (connecté à ton AgentHub) :
+
+```bash
+curl -s -b "ah_session=TON_COOKIE" http://localhost:8090/api/hermes/passerelle
+```
+
+Il rend le jeton et le `config.yaml` à coller. Côté Hermes, deux choses :
+
+```bash
+echo "AGENTHUB_API_KEY=<le jeton rendu ci-dessus>" >> /opt/data/.env
+```
+
+puis le bloc `model:` / `custom_providers:` fourni, dans son `config.yaml`.
+
+> `provider: custom:agenthub`, avec le suffixe. Écrit `custom` tout court, Hermes ne
+> retrouve pas l'entrée, n'envoie aucune clé, et la passerelle refuse l'appel.
+
+Une fois branché, le compte rendu de délégation nomme le fournisseur réellement employé.
+Tant que ce n'est pas fait, il annonce honnêtement « celui d'Hermes » : AgentHub lit sa
+configuration avant d'affirmer quoi que ce soit.
+
 ### Derrière un nom de domaine (HTTPS)
 
 C'est la bonne façon d'y accéder au quotidien : ton mot de passe ne circule plus en
@@ -396,6 +427,7 @@ navigateur ──REST──▶ server.js ──▶ orchestrator.js ──▶ llm
                          ├──▶ archive.js (écriture et lecture de .zip)
                          ├──▶ sheet.js   (écriture de .xlsx)
                          ├──▶ hermes.js  (détection, installation, exec Docker)
+                         ├──▶ inference.js (passerelle : Hermes emprunte tes fournisseurs)
                          └──▶ db.js      (SQLite/WAL, FTS5)
 ```
 
@@ -409,7 +441,8 @@ navigateur ──REST──▶ server.js ──▶ orchestrator.js ──▶ llm
 | `mcp.js` | Catalogue MCP d'Hermes et serveurs branchés, plus un lecteur YAML du strict nécessaire |
 | `archive.js` | Écriture et lecture de `.zip`, sans dépendance, et audit d'un site livré |
 | `sheet.js` | Écriture de `.xlsx` par-dessus le zip d'`archive.js`, sans dépendance |
-| `hermes.js` | Détection et installation d'Hermes |
+| `hermes.js` | Détection et installation d'Hermes, et délégation d'une tâche |
+| `inference.js` | Passerelle compatible OpenAI : Hermes emprunte les fournisseurs d'AgentHub sans jamais voir leurs clés |
 | `graph.js` | Groupes et liens de la carte |
 | `jarvis.js` | L'interlocuteur de la carte : mémoire complète, et changement de modèle à la demande |
 | `db.js` | Schéma SQLite, dépôts, index de recherche |
@@ -441,7 +474,7 @@ coupait des requêtes saines.
 
 ## Tests
 
-Onze suites, à lancer contre l'image construite :
+Douze suites, à lancer contre l'image construite :
 
 ```bash
 docker build -t agenthub:latest . && npm test
@@ -458,6 +491,7 @@ docker build -t agenthub:latest . && npm test
 | `sheet` | Un `.xlsx` s'ouvre sans réparation : parties présentes, ordre imposé par le schéma respecté, et rien venu d'un modèle ne peut casser le XML |
 | `preview` | En HTTP contre le vrai serveur : un site à modules tourne sans compilation, rien ne sort de l'aperçu, on ne remonte pas hors du site |
 | `mcp` | Le lecteur YAML forme par forme, l'état réel d'un serveur, et le fait qu'une valeur d'environnement ne traverse jamais |
+| `inference` | La passerelle ne renvoie jamais Hermes vers lui-même, n'ouvre que sur présentation du jeton, et une mise à jour partielle de fournisseur n'efface plus les champs absents |
 | `readme` | Ce fichier ne promet rien qui n'existe : fichiers cités, suites annoncées, variables documentées, liens du sommaire |
 | `style` | Aucune règle CSS n'en écrase une autre en silence, et les deux thèmes définissent les mêmes couleurs |
 

@@ -14,6 +14,10 @@ import {
 import { buildGraph, layerCounts, GRAPH_LAYERS, LAYER_META } from './graph.js';
 import { skillsCatalogue, invalidateSkills } from './skills.js';
 import {
+  relayer as relayerInference, modelesPour as modelesInference, jetonInference,
+  consignePasserelle, CHEMIN_INFERENCE,
+} from './inference.js';
+import {
   demander as askJarvis, cerveau as jarvisBrain,
   parler as jarvisSpeak, voixConfig as jarvisVoiceConfig, TTS_VOIX as JARVIS_VOICES,
 } from './jarvis.js';
@@ -845,6 +849,84 @@ app.get('/api/notes/graph', requireAuth, (req, res) => {
     counts: layerCounts(),
     meta: LAYER_META,
   });
+});
+
+// ---- passerelle d'inférence pour Hermes -------------------------------------
+// Volontairement AVANT `requireAuth` : l'appelant est un conteneur voisin, pas
+// un navigateur avec une session. Il présente le jeton d'inférence, et rien
+// d'autre ne passe.
+
+/**
+ * Le jeton, et rien d'autre.
+ *
+ * La version précédente acceptait aussi tout appel venu du réseau Docker,
+ * faute de savoir faire présenter un jeton à Hermes. C'était un refus sur
+ * détection — « je bloque si je reconnais une requête venue d'Internet » —
+ * alors qu'il faut une acceptation sur preuve. Le label Traefik du compose est
+ * un `Host(...)` sans règle de chemin : cette route est publiée avec le reste
+ * du site, et le seul verrou était la présence d'un en-tête posé par le proxy.
+ * Un jour où le proxy change, elle devient un relais ouvert sur des clés
+ * payantes.
+ *
+ * Hermes sait très bien présenter un jeton : `key_env` dans son entrée
+ * `custom_providers` nomme la variable, et son `.env` la fournit. C'est
+ * documenté et vérifié — l'échec d'hier venait d'ailleurs.
+ */
+function inferenceAutorisee(req) {
+  const donne = Buffer.from(
+    String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim(),
+    'utf8',
+  );
+  const attendu = Buffer.from(jetonInference(), 'utf8');
+  // Comparer les longueurs en OCTETS, pas en caractères : `timingSafeEqual`
+  // exige des tampons de même taille et lève sinon. Un jeton de la bonne
+  // longueur en caractères mais contenant des accents fait plus d'octets, et
+  // l'exception remontait en 500 au lieu d'un refus.
+  if (donne.length !== attendu.length) return false;
+  return crypto.timingSafeEqual(donne, attendu);
+}
+
+// Ce qu'il faut écrire chez Hermes pour qu'il emprunte nos fournisseurs.
+// Derrière `requireAuth` : cette réponse contient le jeton de la passerelle.
+app.get('/api/hermes/passerelle', requireAuth, (req, res) => {
+  res.json(consignePasserelle({ port: PORT }));
+});
+
+app.get(`${CHEMIN_INFERENCE}/models`, (req, res) => {
+  if (!inferenceAutorisee(req)) return res.status(401).json({ error: 'jeton invalide' });
+  res.json(modelesInference(req.headers['x-agenthub-provider']));
+});
+
+app.post(`${CHEMIN_INFERENCE}/chat/completions`, express.raw({ type: '*/*', limit: '24mb' }), async (req, res) => {
+  if (!inferenceAutorisee(req)) return res.status(401).json({ error: 'jeton invalide' });
+
+  const r = await relayerInference({
+    chemin: 'chat/completions',
+    corps: Buffer.isBuffer(req.body) ? req.body.toString('utf8') : JSON.stringify(req.body || {}),
+    providerVoulu: req.headers['x-agenthub-provider'],
+  });
+  if (!r.ok) return res.status(r.status).json({ error: { message: r.erreur } });
+
+  // La réponse est recopiée telle quelle, en flux : le streaming doit rester du
+  // streaming, sinon l'agent d'en face attend une réponse qui n'arrive jamais.
+  res.status(r.reponse.status);
+
+  // Le type est la seule chose qu'on corrige, et pour une raison précise :
+  // AgentRouter étiquette ses réponses non streamées `text/plain` alors qu'il
+  // renvoie du JSON. Recopié tel quel, le client d'Hermes refusait de le lire
+  // et échouait sur « 'NoneType' object has no attribute 'choices' » — un
+  // message qui ne désigne ni la passerelle ni le fournisseur.
+  //
+  // Le flux garde son type, lui : c'est ce qui le distingue. Tout le reste est
+  // du JSON par contrat — c'est un endpoint compatible OpenAI.
+  const type = String(r.reponse.headers.get('content-type') || '');
+  res.setHeader('Content-Type', /event-stream/i.test(type) ? type : 'application/json');
+  res.setHeader('Cache-Control', 'no-store');
+  if (!r.reponse.body) { res.end(); return; }
+  try {
+    for await (const bloc of r.reponse.body) res.write(bloc);
+  } catch { /* flux coupé : rien à rattraper */ }
+  res.end();
 });
 
 // ---- Jarvis, l'interlocuteur de la carte ------------------------------------
